@@ -393,3 +393,61 @@ fn parent_walk_abort_rejects_parent() {
         "loose root rejected at ~/x: walk aborted (entries)"
     );
 }
+
+#[test]
+fn parent_components_are_cleaned_before_the_denylist() {
+    let f = FakeProbe::new()
+        .home("/h")
+        .file("/h/notes/a.md", "")
+        .file("/h/Downloads/x.md", "");
+    let (out, probe) = run(f, "/h/notes/../Downloads/./x.md", &[], &[]);
+    assert_eq!(out.root, None);
+    assert_eq!(out.reason, "single-file: Downloads");
+    assert_eq!(probe.read_dir_total(), 0);
+}
+
+#[test]
+fn dotdot_above_root_stays_at_root() {
+    let f = FakeProbe::new().home("/h").file("/x.md", "");
+    let (out, probe) = run(f, "/../../x.md", &[], &[]);
+    assert_eq!(out.root, None);
+    assert_eq!(out.reason, "single-file: filesystem root");
+    assert_eq!(probe.read_dir_total(), 0);
+}
+
+#[test]
+fn link_dir_with_dotdot_contributes_its_cleaned_dir() {
+    let f = FakeProbe::new()
+        .home("/h")
+        .file("/h/w/a/x.md", "")
+        .file("/h/w/b/y.md", "")
+        .file("/h/w/z.txt", "");
+    let (out, _) = run(f, "/h/w/a/x.md", &["/h/w/a/../b"], &["/h/w"]);
+    assert_eq!(out.root, Some(p("/h/w")));
+    assert_eq!((out.stats.md, out.stats.files), (2, 3));
+}
+
+#[test]
+fn climb_measures_depth_from_the_candidate_root() {
+    // The start /h/x/s holds notes 8 levels down (its own walk fits the
+    // loose depth budget); /h/x would put them at depth 9.
+    let deep = "/h/x/s/1/2/3/4/5/6/7/8";
+    let f = files(FakeProbe::new().home("/h"), deep, 30, 30);
+    let f = files(f, "/h/x", 30, 30);
+    let (out, probe) = run(f, "/h/x/s/f.md", &[], &["/h/x/s"]);
+    assert_eq!(out.root, Some(p("/h/x/s")));
+    assert_eq!(out.abort, None);
+    assert_eq!(out.stats.max_depth, 8);
+    assert_eq!(out.reason, "loose root rejected at ~/x: depth budget");
+    assert_eq!(probe.read_dir_count(Path::new("/h/x")), 0);
+}
+
+#[test]
+fn climb_accepts_parent_when_depth_fits() {
+    let deep = "/h/x/s/1/2/3/4/5/6/7";
+    let f = files(FakeProbe::new().home("/h"), deep, 30, 30);
+    let f = files(f, "/h/x", 30, 30);
+    let (out, _) = run(f, "/h/x/s/f.md", &[], &["/h/x"]);
+    assert_eq!(out.root, Some(p("/h/x")));
+    assert_eq!(out.stats.max_depth, 8);
+}

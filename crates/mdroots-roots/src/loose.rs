@@ -117,6 +117,24 @@ fn below_virtual_mount(probe: &dyn Probe, mut dir: &Path, dev: u64, home: Option
     }
 }
 
+/// `p` with `.` dropped and each `..` removing the component before it
+/// (a `..` at `/` stays at `/`). Purely lexical, like the denylist.
+fn clean(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            // `/` has no parent, so `pop` leaves it. Relative input stays
+            // relative and callers reject it.
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// The deepest common ancestor of `a` and `b`, component-wise.
 fn common_ancestor(a: &Path, b: &Path) -> PathBuf {
     a.components()
@@ -140,6 +158,7 @@ fn abort_name(a: Abort) -> String {
 }
 
 /// `a` plus `b`; `ms_per_dir` is the dir-weighted mean of both medians.
+/// `max_depth` is left 0: it depends on where the subtrees sit.
 fn add(a: &WalkStats, b: &WalkStats) -> WalkStats {
     let ms_per_dir = match (a.ms_per_dir, b.ms_per_dir) {
         (Some(x), Some(y)) => {
@@ -155,6 +174,7 @@ fn add(a: &WalkStats, b: &WalkStats) -> WalkStats {
         dirs: a.dirs + b.dirs,
         ms: a.ms + b.ms,
         ms_per_dir,
+        max_depth: 0,
     }
 }
 
@@ -165,8 +185,10 @@ fn rule_a(s: &WalkStats) -> bool {
 /// The loose root for `file` (absolute) per docs/specs/roots.md §2.
 ///
 /// `link_dirs` are the directories of the buffer's relative link targets,
-/// absolute; relative or missing ones are ignored. The start directory is
-/// the deepest common ancestor of `dir(file)` and the existing link dirs.
+/// absolute; relative or missing ones are ignored. `file` and the link dirs
+/// are cleaned lexically first (`.` dropped, `..` applied), so the denylist
+/// sees the real target. The start directory is the deepest common ancestor
+/// of `dir(file)` and the existing link dirs.
 ///
 /// - Start denied: `root: None`, reason `single-file: <why>`, no `read_dir`.
 /// - Otherwise the start is walked with [`Budget::loose`] and accepted. If
@@ -177,7 +199,9 @@ fn rule_a(s: &WalkStats) -> bool {
 ///   start of this call), and accepted iff (a) the cumulative subtree has at
 ///   least 20 notes and a note density of at least 30%, or (b) it adds more
 ///   notes outside the child than the child holds. The climb stops at the
-///   first denied or rejected parent; an aborted parent walk rejects it.
+///   first denied or rejected parent; an aborted parent walk rejects it, and
+///   so does a parent below which the child's deepest dir would exceed the
+///   loose depth budget (`loose root rejected at <dir>: depth budget`).
 ///
 /// `reason` is the last decision: the rejection line, `stopped at <dir>:
 /// denied (<why>)`, `loose root accepted at <top>: <md> md / <files> files`,
@@ -197,14 +221,18 @@ pub fn find_loose_root(
         stats: WalkStats::default(),
         abort: None,
     };
+    let file = clean(file);
     let Some(dir) = file.parent().filter(|d| d.is_absolute()) else {
         return single("no parent directory");
     };
     let mut start = dir.to_path_buf();
-    for l in link_dirs {
-        let lexical = !l.components().any(|c| c == Component::ParentDir);
-        if l.is_absolute() && lexical && probe.stat(l).is_ok_and(|s| s.is_dir) {
-            start = common_ancestor(&start, l);
+    for l in link_dirs
+        .iter()
+        .filter(|l| l.is_absolute())
+        .map(|l| clean(l))
+    {
+        if probe.stat(&l).is_ok_and(|s| s.is_dir) {
+            start = common_ancestor(&start, &l);
         }
     }
     if let Some(why) = is_denied(probe, &start) {
@@ -261,6 +289,12 @@ pub fn find_loose_root(
             reason = format!("stopped at {shown}: denied ({why})");
             break;
         }
+        // Depth counts from the candidate root: the child's deepest dir is
+        // one level deeper below the parent.
+        if stats.max_depth + 1 > loose.depth {
+            reason = format!("loose root rejected at {shown}: depth budget");
+            break;
+        }
         let budget = Budget {
             entries: loose.entries.saturating_sub(stats.entries),
             md: loose.md.saturating_sub(stats.md),
@@ -285,7 +319,10 @@ pub fn find_loose_root(
             break;
         }
         let added = out.stats;
-        let total = add(&stats, &added);
+        let total = WalkStats {
+            max_depth: added.max_depth.max(stats.max_depth + 1),
+            ..add(&stats, &added)
+        };
         if rule_a(&total) || added.md > stats.md {
             stats = total;
             child = parent;

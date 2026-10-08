@@ -74,6 +74,8 @@ pub struct WalkStats {
     pub ms: f64,
     /// Median `read_dir` time; `None` if no directory was listed.
     pub ms_per_dir: Option<f64>,
+    /// Depth of the deepest directory listed (the root is 0).
+    pub max_depth: usize,
 }
 
 /// Why a walk stopped early.
@@ -409,6 +411,7 @@ impl Walker<'_> {
             return self.timing_checks();
         };
         self.out.stats.dirs += 1;
+        self.out.stats.max_depth = self.out.stats.max_depth.max(item.depth);
 
         let mut matchers = item.matchers;
         let gi = self.matcher(&item.abs, item.depth == 0, &listing);

@@ -285,6 +285,7 @@ fn depth_budget_aborts() {
     let (out, _) = run(FakeProbe::new().file("/n/a/b/x.md", ""), &opts);
     assert_eq!(out.abort, None);
     assert_eq!(out.md, strs(&["a/b/x.md"]));
+    assert_eq!(out.stats.max_depth, 2);
 }
 
 #[test]
