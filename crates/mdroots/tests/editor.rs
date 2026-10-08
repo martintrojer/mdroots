@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mdroots::{
-    Cancel, ErrorKind, FileSystem, NoEnumerator, Options, StdFs, StdProbe, TextEdit, Workspace,
-    Workspaces,
+    Cancel, ErrorKind, FileSystem, IndexMode, NoEnumerator, Options, StdFs, StdProbe, TextEdit,
+    Workspace, Workspaces,
 };
 use mdroots_core::MemFs;
 use mdroots_roots::probe::FakeProbe;
@@ -292,6 +292,7 @@ fn std_opts() -> Options {
         .fs(Arc::new(StdFs))
         .probe(Arc::new(StdProbe))
         .enumerator(Arc::new(NoEnumerator))
+        .index(IndexMode::Memory)
 }
 
 fn write(path: &Path, text: &str) {

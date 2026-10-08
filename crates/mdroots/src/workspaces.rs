@@ -8,7 +8,8 @@ use mdroots_core::Error;
 use crate::workspace::{Options, Workspace};
 
 /// Maps files to [`Workspace`]s, opening each root once. Cheap to clone
-/// (clones share the cache); `Send + Sync`.
+/// (clones share the cache); `Send + Sync`. Every workspace shares one
+/// cache dir and root registry, resolved in [`Workspaces::new`].
 #[derive(Clone)]
 pub struct Workspaces {
     opts: Options,
@@ -31,7 +32,7 @@ const _: () = {
 impl Workspaces {
     pub fn new(opts: Options) -> Workspaces {
         Workspaces {
-            opts,
+            opts: opts.with_shared_cache(),
             cache: Arc::default(),
         }
     }

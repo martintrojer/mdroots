@@ -59,9 +59,13 @@ struct Run {
 }
 
 fn run_in(cwd: &Path, args: &[&str], v: &Vault) -> Run {
+    // The cache dir resolves under XDG_CACHE_HOME: never the real one.
+    let cache = v.canon.join("cache");
     let out = Command::new(env!("CARGO_BIN_EXE_mdroots"))
         .args(args)
         .current_dir(cwd)
+        .env("XDG_CACHE_HOME", &cache)
+        .env("HOME", &cache)
         .output()
         .unwrap();
     Run {

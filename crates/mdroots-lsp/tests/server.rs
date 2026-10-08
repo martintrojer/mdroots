@@ -7,7 +7,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
-use mdroots::{NoEnumerator, Options};
+use mdroots::{IndexMode, NoEnumerator, Options};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -40,9 +40,15 @@ impl Client {
         }
     }
 
+    /// Starts the server with an in-memory index: tests never touch the
+    /// user's cache dir.
     fn spawn(&mut self) {
+        self.spawn_with(Options::default().index(IndexMode::Memory));
+    }
+
+    fn spawn_with(&mut self, opts: Options) {
         let conn = self.server_conn.take().unwrap();
-        let opts = Options::default().enumerator(std::sync::Arc::new(NoEnumerator));
+        let opts = opts.enumerator(std::sync::Arc::new(NoEnumerator));
         self.server = Some(std::thread::spawn(move || {
             mdroots_lsp::serve_with(conn, opts)
         }));

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mdroots_core::{Cancel, Diagnostic, DiagnosticPolicy, Error, ErrorKind, FileSystem, MemStore};
@@ -11,11 +11,28 @@ use mdroots_resolve::ResolveStep;
 use mdroots_resolve::ladder::LinkStatus;
 use mdroots_roots::discover::{DiscoverOptions, Enumerator, discover};
 use mdroots_roots::probe::Probe;
+use mdroots_roots::registry::{DiscoverLock, Registry};
 use mdroots_roots::{MemRegistry, RootMode};
 use mdroots_syntax::{Context, Dialect, Document, LinkKind, PositionEncoding, parse};
 
+use crate::indexing::{self, CacheCtx, IndexState, Listing};
+
 /// Most entries a lazy working set takes from the opened file's directory.
 const WORKING_SET_CAP: usize = 2_000;
+
+/// Where a workspace keeps its index.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IndexMode {
+    /// A per-root [SQLite](https://sqlite.org) DB in the cache dir: the
+    /// [`Options::cache_dir`] if set; else in memory when `fs` or `probe`
+    /// was set (in-memory trees); else the user's cache dir
+    /// (docs/specs/roots.md §5), or memory if none is usable.
+    #[default]
+    Auto,
+    /// In memory only; the cache dir is never touched.
+    Memory,
+}
 
 /// How to open a [`Workspace`]. `fs` and `probe` are set together or not at
 /// all (then [`StdFs`](mdroots_core::StdFs) and
@@ -27,6 +44,11 @@ pub struct Options {
     cancel: Cancel,
     fs: Option<Arc<dyn FileSystem>>,
     probe: Option<Arc<dyn Probe>>,
+    index: IndexMode,
+    cache_dir: Option<PathBuf>,
+    /// The cache a [`Workspaces`](crate::Workspaces) shares with its
+    /// workspaces: `Some(None)` is a resolved in-memory index.
+    shared: Option<Option<CacheCtx>>,
 }
 
 impl Options {
@@ -59,6 +81,46 @@ impl Options {
     pub fn probe(mut self, p: Arc<dyn Probe>) -> Self {
         self.probe = Some(p);
         self
+    }
+
+    /// Where the index lives; default [`IndexMode::Auto`].
+    pub fn index(mut self, m: IndexMode) -> Self {
+        self.index = m;
+        self
+    }
+
+    /// The cache dir to use instead of the user's (tests use a temp dir).
+    /// Created if missing. Ignored with [`IndexMode::Memory`].
+    pub fn cache_dir(mut self, p: PathBuf) -> Self {
+        self.cache_dir = Some(p);
+        self
+    }
+
+    pub(crate) fn index_mode(&self) -> IndexMode {
+        self.index
+    }
+
+    pub(crate) fn explicit_cache_dir(&self) -> Option<&Path> {
+        self.cache_dir.as_deref()
+    }
+
+    pub(crate) fn has_explicit_io(&self) -> bool {
+        self.fs.is_some() || self.probe.is_some()
+    }
+
+    /// Resolve the cache once, for every workspace opened with the result.
+    pub(crate) fn with_shared_cache(mut self) -> Self {
+        if self.shared.is_none() {
+            self.shared = Some(CacheCtx::for_options(&self));
+        }
+        self
+    }
+
+    fn cache(&self) -> Option<CacheCtx> {
+        match &self.shared {
+            Some(c) => c.clone(),
+            None => CacheCtx::for_options(self),
+        }
     }
 
     pub(crate) fn io(&self) -> Result<Io, Error> {
@@ -176,15 +238,47 @@ pub struct DocLink {
 
 struct Inner {
     fs: Arc<dyn FileSystem>,
+    probe: Arc<dyn Probe>,
+    enumerator: Arc<dyn Enumerator>,
     root: RootInfo,
     freshness: Freshness,
     /// A single-file or lazy-without-root workspace: only its opened file
     /// belongs to it (see [`Workspaces`](crate::Workspaces)).
     single: bool,
+    /// How [`Workspace::refresh`] re-lists the root.
+    listing: Listing,
+    /// The file the workspace was opened for, root-relative (empty for
+    /// [`Workspace::open_at`]).
+    opened: String,
+    /// The persistent index; `None` in memory mode.
+    index: Mutex<Option<IndexState>>,
+    /// Editor overlays by root-relative path, re-applied after a refresh
+    /// rebuilds the store.
+    overlays: Mutex<BTreeMap<String, String>>,
     store: RwLock<MemStore>,
 }
 
-/// One root indexed in memory. Cheap to clone; `Send + Sync`.
+/// What [`Workspace::new`] assembles.
+struct Parts {
+    fs: Arc<dyn FileSystem>,
+    probe: Arc<dyn Probe>,
+    enumerator: Arc<dyn Enumerator>,
+    root: RootInfo,
+    freshness: Freshness,
+    single: bool,
+    listing: Listing,
+    opened: String,
+    index: Option<IndexState>,
+    store: MemStore,
+}
+
+/// One root, served from memory and, unless in memory mode, cached in a
+/// per-root DB that one process (the reconciler) writes and the others
+/// (peers) read. Cheap to clone; `Send + Sync`.
+///
+/// All work is synchronous: there is no background thread, so a
+/// short-lived process leaves nothing running (docs/specs/index.md §1.5).
+/// Changes on disk are picked up by [`Workspace::refresh`].
 #[derive(Clone)]
 pub struct Workspace {
     inner: Arc<Inner>,
@@ -200,6 +294,13 @@ impl Workspace {
     /// whole root, or for lazy and single-file decisions a working set (the
     /// file's directory, one level; or the file alone). The opened file is
     /// always indexed, and read even if dataless.
+    ///
+    /// With a cache (see [`IndexMode`]) discovery runs under the cache's
+    /// `discover.lock` with the persistent registry, and a registered root
+    /// is served from its DB: the reconciler (first process) re-lists and
+    /// writes it, a peer reads the DB and re-reads only changed files. A
+    /// single-file or rootless workspace, or a root without a registry row,
+    /// stays in memory.
     pub fn open_for(path: &Path, opts: Options) -> Result<Workspace, Error> {
         let (fs, probe) = opts.io()?;
         let cancel = &opts.cancel;
@@ -218,8 +319,25 @@ impl Workspace {
             ..Default::default()
         };
         let enumerator = opts.enumerator_or_default();
-        let mut registry = MemRegistry::new();
-        let d = discover(&*probe, &mut registry, &*enumerator, &file, &dopts, cancel);
+        let cache = opts.cache();
+        let (d, root_id) = match &cache {
+            Some(c) => {
+                let _lock = DiscoverLock::acquire(&c.dir)?;
+                let mut reg = c.registry();
+                let d = discover(&*probe, &mut *reg, &*enumerator, &file, &dopts, cancel);
+                let id = d.root.as_deref().and_then(|r| {
+                    reg.lookup(r)
+                        .filter(|rec| rec.path == r)
+                        .map(|rec| rec.root_id)
+                });
+                (d, id)
+            }
+            None => {
+                let mut reg = MemRegistry::new();
+                let d = discover(&*probe, &mut reg, &*enumerator, &file, &dopts, cancel);
+                (d, None)
+            }
+        };
         // Discovery reports cancellation as a lazy decision.
         cancel.check()?;
         let parent = file.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -232,33 +350,82 @@ impl Workspace {
                 .ok()
                 .map(|rel| (r.to_path_buf(), slash(rel)))
         });
-        let (root, files, opened, freshness, single) = match (d.mode, in_root) {
+        let (root, listing, opened, freshness, single) = match (d.mode, in_root) {
             (RootMode::Lazy, Some((root, rel))) => {
-                let files = working_set(&*fs, &root, &parent, &name, &rel);
-                (root, files, rel, Freshness::Lazy, false)
+                let l = Listing::WorkingSet {
+                    dir: parent,
+                    name: name.clone(),
+                };
+                (root, l, rel, Freshness::Lazy, false)
             }
             (RootMode::Lazy | RootMode::SingleFile, _) | (_, None) => {
-                (parent, vec![name.clone()], name, Freshness::Lazy, true)
+                (parent, Listing::Single, name, Freshness::Lazy, true)
             }
-            (_, Some((root, rel))) => {
-                let mut files = d.md.clone();
-                files.push(rel.clone());
-                (root, files, rel, Freshness::Fresh, false)
+            (mode, Some((root, rel))) => (root, Listing::Root(mode), rel, Freshness::Fresh, false),
+        };
+        let index = match (&cache, root_id) {
+            (Some(c), Some(id)) if !single => Some(c.open_index(&id)?),
+            _ => None,
+        };
+        let (index, store) = match index {
+            Some(mut ix) => {
+                let io = indexing::Io {
+                    fs: &*fs,
+                    probe: &*probe,
+                    enumerator: &*enumerator,
+                    root: &root,
+                };
+                let found =
+                    indexing::sync(&io, &mut ix, &listing, &opened, Some(d.md), &[], cancel)?;
+                let store = MemStore::from_contents(fs.clone(), root, found, cancel)?;
+                (Some(ix), store)
+            }
+            None => {
+                let files = match &listing {
+                    Listing::WorkingSet { dir, name } => {
+                        working_set(&*fs, &root, dir, name, &opened)
+                    }
+                    Listing::Single => vec![opened.clone()],
+                    _ => {
+                        let mut files = d.md;
+                        files.push(opened.clone());
+                        files
+                    }
+                };
+                let store = MemStore::open_files(
+                    fs.clone(),
+                    root,
+                    files,
+                    std::slice::from_ref(&opened),
+                    cancel,
+                )?;
+                (None, store)
             }
         };
-        let store = MemStore::open_files(fs.clone(), root, files, &[opened], cancel)?;
         let info = RootInfo {
             path: store.root().to_path_buf(),
             mode: d.mode,
             reason: d.reason,
             nested_roots: d.nested_roots,
         };
-        Ok(Workspace::new(fs, info, freshness, single, store))
+        Ok(Workspace::new(Parts {
+            fs,
+            probe,
+            enumerator,
+            root: info,
+            freshness,
+            single,
+            listing,
+            opened,
+            index,
+            store,
+        }))
     }
 
-    /// Index the directory `root` as a root, without discovery.
+    /// Index the directory `root` as a root, without discovery. Always in
+    /// memory (M4 caches discovered roots only).
     pub fn open_at(root: &Path, opts: Options) -> Result<Workspace, Error> {
-        let (fs, _) = opts.io()?;
+        let (fs, probe) = opts.io()?;
         let root = fs.canonicalize(root)?;
         let store = MemStore::open(fs.clone(), root, &opts.cancel)?;
         let path = store.root().to_path_buf();
@@ -268,25 +435,97 @@ impl Workspace {
             mode: RootMode::Marker,
             nested_roots: Vec::new(),
         };
-        Ok(Workspace::new(fs, info, Freshness::Fresh, false, store))
+        Ok(Workspace::new(Parts {
+            fs,
+            probe,
+            enumerator: opts.enumerator_or_default(),
+            root: info,
+            freshness: Freshness::Fresh,
+            single: false,
+            listing: Listing::Walk,
+            opened: String::new(),
+            index: None,
+            store,
+        }))
     }
 
-    fn new(
-        fs: Arc<dyn FileSystem>,
-        root: RootInfo,
-        freshness: Freshness,
-        single: bool,
-        s: MemStore,
-    ) -> Self {
+    fn new(p: Parts) -> Self {
         Workspace {
             inner: Arc::new(Inner {
-                fs,
-                root,
-                freshness,
-                single,
-                store: RwLock::new(s),
+                fs: p.fs,
+                probe: p.probe,
+                enumerator: p.enumerator,
+                root: p.root,
+                freshness: p.freshness,
+                single: p.single,
+                listing: p.listing,
+                opened: p.opened,
+                index: Mutex::new(p.index),
+                overlays: Mutex::default(),
+                store: RwLock::new(p.store),
             }),
         }
+    }
+
+    /// This process's role for the root's DB; `None` in memory mode.
+    pub fn role(&self) -> Option<mdroots_index::Role> {
+        self.index().as_ref().map(|ix| ix.locks.role())
+    }
+
+    /// The root's DB file; `None` in memory mode.
+    pub fn cache(&self) -> Option<PathBuf> {
+        self.index().as_ref().map(|ix| ix.db_path.clone())
+    }
+
+    /// Pick up changes on disk, synchronously. A peer first tries to become
+    /// the reconciler (the previous one may have exited). The reconciler
+    /// re-lists the root (or the lazy working set) and writes what changed
+    /// to the DB; a peer re-reads the DB and re-reads changed files without
+    /// writing. In memory mode the root is re-listed and re-read. Overlays
+    /// survive.
+    pub fn refresh(&self, cancel: &Cancel) -> Result<(), Error> {
+        cancel.check()?;
+        let i = &*self.inner;
+        let root = i.root.path.as_path();
+        let io = indexing::Io {
+            fs: &*i.fs,
+            probe: &*i.probe,
+            enumerator: &*i.enumerator,
+            root,
+        };
+        let mut store = {
+            let mut index = self.index();
+            match index.as_mut() {
+                Some(ix) => {
+                    ix.locks.try_promote()?;
+                    let current: Vec<String> = self.store().files().map(str::to_owned).collect();
+                    let found =
+                        indexing::sync(&io, ix, &i.listing, &i.opened, None, &current, cancel)?;
+                    MemStore::from_contents(i.fs.clone(), root.to_path_buf(), found, cancel)?
+                }
+                None => {
+                    let mut files = i
+                        .listing
+                        .list(&io, &i.opened, cancel)
+                        .unwrap_or_else(|| self.store().files().map(str::to_owned).collect());
+                    cancel.check()?;
+                    let force: Vec<String> = match i.opened.is_empty() {
+                        true => Vec::new(),
+                        false => {
+                            files.push(i.opened.clone());
+                            vec![i.opened.clone()]
+                        }
+                    };
+                    MemStore::open_files(i.fs.clone(), root.to_path_buf(), files, &force, cancel)?
+                }
+            }
+        };
+        let overlays = self.overlays();
+        for (rel, text) in overlays.iter() {
+            store.set_overlay(rel, text);
+        }
+        *self.store_mut() = store;
+        Ok(())
     }
 
     pub fn root(&self) -> RootInfo {
@@ -433,13 +672,17 @@ impl Workspace {
     /// if it is not indexed.
     pub fn set_overlay(&self, path: &Path, text: &str) -> Result<(), Error> {
         let rel = self.rel(path)?;
+        let mut overlays = self.overlays();
         self.store_mut().set_overlay(&rel, text);
+        overlays.insert(rel, text.to_owned());
         Ok(())
     }
 
     pub fn clear_overlay(&self, path: &Path) -> Result<(), Error> {
         let rel = self.rel(path)?;
+        let mut overlays = self.overlays();
         self.store_mut().clear_overlay(&rel);
+        overlays.remove(&rel);
         Ok(())
     }
 
@@ -476,6 +719,18 @@ impl Workspace {
         self.inner.store.write().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn index(&self) -> MutexGuard<'_, Option<IndexState>> {
+        self.inner.index.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Lock order: overlays, then the store.
+    fn overlays(&self) -> MutexGuard<'_, BTreeMap<String, String>> {
+        self.inner
+            .overlays
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     /// `p` canonicalized and made root-relative (`/`-separated).
     pub(crate) fn rel(&self, p: &Path) -> Result<String, Error> {
         let canon = self.inner.fs.canonicalize(p)?;
@@ -499,7 +754,7 @@ impl Workspace {
 /// (one level, no hidden, editor-temp or dataless entries, the first
 /// [`WORKING_SET_CAP`] by name, opened file included), root-relative. An unreadable directory
 /// leaves the opened file alone.
-fn working_set(
+pub(crate) fn working_set(
     fs: &dyn FileSystem,
     root: &Path,
     dir: &Path,
