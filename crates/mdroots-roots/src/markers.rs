@@ -4,6 +4,17 @@
 //! Only `stat`/`lstat`, `statfs`, `readlink` and small reads of
 //! `.mdrootsignore` files go through the [`Probe`]; this module never calls
 //! `read_dir`.
+//!
+//! Tools whose markers are recognised: [zk](https://github.com/zk-org/zk),
+//! [Obsidian](https://obsidian.md), [marksman](https://github.com/artempyanykh/marksman),
+//! [git](https://git-scm.com), [jj](https://jj-vcs.github.io/jj/),
+//! [Mercurial](https://www.mercurial-scm.org), [Sapling](https://sapling-scm.com/),
+//! [EdenFS](https://github.com/facebook/sapling) (the virtual filesystem from the
+//! Sapling project), [Buck2](https://buck2.build), [Bazel](https://bazel.build),
+//! [iwe](https://github.com/iwe-org/iwe), [Foam](https://foambubble.github.io/foam/),
+//! [MkDocs](https://www.mkdocs.org), [mdBook](https://rust-lang.github.io/mdBook/),
+//! [Docusaurus](https://docusaurus.io), [Jekyll](https://jekyllrb.com),
+//! [Hugo](https://gohugo.io) and [Sphinx](https://www.sphinx-doc.org).
 
 use std::path::{Path, PathBuf};
 

@@ -1,3 +1,10 @@
+//! Tests for the marker probe and climb. Tools named here: [git](https://git-scm.com),
+//! [zk](https://github.com/zk-org/zk), [Obsidian](https://obsidian.md),
+//! [marksman](https://github.com/artempyanykh/marksman), [jj](https://jj-vcs.github.io/jj/),
+//! [Mercurial](https://www.mercurial-scm.org), [Sapling](https://sapling-scm.com/),
+//! [EdenFS](https://github.com/facebook/sapling), [Buck2](https://buck2.build),
+//! [Bazel](https://bazel.build). All trees are in-memory (FakeProbe).
+
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -79,6 +86,14 @@ fn run(p: &Probed, start: &str, folders: &[&str]) -> Climb {
     assert_eq!(p.inner.read_dir_total(), 0, "read_dir called");
     assert!(p.inner.violations().is_empty());
     c
+}
+
+/// `markers_at` with the same zero-`read_dir` checks as [`run`].
+fn at(p: &Probed, dir: &str) -> Vec<FoundMarker> {
+    let m = markers_at(p, Path::new(dir));
+    assert_eq!(p.inner.read_dir_total(), 0, "read_dir called");
+    assert!(p.inner.violations().is_empty());
+    m
 }
 
 fn mi(fs_type: &str, local: bool, dev: u64) -> MountInfo {
@@ -164,7 +179,7 @@ fn explicit_mdroots() {
 #[test]
 fn conf_py_needs_index_md() {
     let p = probed(home().file("/home/alice/proj/conf.py", ""));
-    assert!(markers_at(&p, Path::new("/home/alice/proj")).is_empty());
+    assert!(at(&p, "/home/alice/proj").is_empty());
     let c = run(&p, "/home/alice/proj", &[]);
     assert_eq!(c.root, None);
     assert_eq!(c.stop, StopReason::Home);
@@ -175,7 +190,7 @@ fn conf_py_needs_index_md() {
             .file("/home/alice/proj/index.md", "# hi\n"),
     );
     assert_eq!(
-        markers_at(&p, Path::new("/home/alice/proj")),
+        at(&p, "/home/alice/proj"),
         vec![marker("/home/alice/proj", "conf.py", MarkerClass::DocsTool).unwrap()]
     );
 }
@@ -183,7 +198,7 @@ fn conf_py_needs_index_md() {
 #[test]
 fn index_md_is_not_statted_without_conf_py() {
     let p = probed(home().dir("/home/alice/proj"));
-    markers_at(&p, Path::new("/home/alice/proj"));
+    at(&p, "/home/alice/proj");
     assert!(!p.stats().iter().any(|s| s.ends_with("index.md")));
     assert!(p.stats().len() <= 26);
 }
@@ -229,7 +244,7 @@ fn workspace_dir_is_not_a_monorepo_marker() {
             .dir("/home/alice/proj/workspace")
             .dir("/home/alice/proj/WORKSPACE"),
     );
-    assert!(markers_at(&p, Path::new("/home/alice/proj")).is_empty());
+    assert!(at(&p, "/home/alice/proj").is_empty());
 }
 
 #[test]
@@ -385,7 +400,7 @@ fn class_priority_within_one_dir() {
             .dir("/home/alice/p/.obsidian")
             .file("/home/alice/p/.mdroots", "")
     };
-    let classes: Vec<MarkerClass> = markers_at(&probed(base()), Path::new("/home/alice/p"))
+    let classes: Vec<MarkerClass> = at(&probed(base()), "/home/alice/p")
         .into_iter()
         .map(|m| m.class)
         .collect();
@@ -430,7 +445,7 @@ fn mdrootsignore_patterns() {
     assert!(c.ignore_here);
     // Not a marker.
     assert!(
-        !markers_at(&probed(fake()), Path::new("/home/alice/notes"))
+        !at(&probed(fake()), "/home/alice/notes")
             .iter()
             .any(|m| m.name == ".mdrootsignore")
     );
