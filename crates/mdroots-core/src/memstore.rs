@@ -389,7 +389,7 @@ impl MemStore {
 
 /// The contexts that reference a note (backlinks, broken links); footnotes
 /// never do.
-fn counts(l: &Link) -> bool {
+pub(crate) fn counts(l: &Link) -> bool {
     l.kind != LinkKind::Footnote
         && matches!(
             l.context,
