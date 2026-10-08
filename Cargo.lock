@@ -342,6 +342,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdroots-cli"
+version = "0.0.0"
+dependencies = [
+ "insta",
+ "mdroots",
+ "tempfile",
+]
+
+[[package]]
 name = "mdroots-core"
 version = "0.0.0"
 dependencies = [

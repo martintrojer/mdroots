@@ -1,0 +1,6 @@
+---
+source: crates/mdroots-cli/tests/cli.rs
+expression: r.stdout
+---
+b.md:3: Note B
+tagged.md:6: Tagged

@@ -1,0 +1,14 @@
+---
+source: crates/mdroots-cli/tests/cli.rs
+expression: "v.run(&[]).stderr"
+---
+usage: mdroots <command> [args]
+
+commands:
+  check [--quiet] [PATH...]   report diagnostics of notes under each PATH
+                              (a file or a directory; default .); exit 1 on
+                              any error or warning
+  roots PATH                  show the root chosen for PATH and why
+  resolve FROM LINK           resolve LINK as written in the note FROM
+  backlinks NOTE              list the notes linking to NOTE
+  lsp                         the language server (not implemented yet)

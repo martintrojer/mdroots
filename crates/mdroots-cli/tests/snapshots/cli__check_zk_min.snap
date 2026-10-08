@@ -1,0 +1,7 @@
+---
+source: crates/mdroots-cli/tests/cli.rs
+expression: "format!(\"{}---\\n{}\", r.stdout, r.stderr)"
+---
+broken.md:3:16: warning: broken link: missing-note
+---
+6 files, 0 errors, 1 warnings, 0 info, 0 hints

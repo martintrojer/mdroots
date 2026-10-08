@@ -1,0 +1,6 @@
+---
+source: crates/mdroots-cli/tests/cli.rs
+expression: r.stdout
+---
+step: none
+status: broken

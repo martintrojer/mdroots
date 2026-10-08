@@ -1,0 +1,26 @@
+[package]
+name = "mdroots-cli"
+version = "0.0.0"
+description = "The mdroots command line: check, roots, resolve and backlinks over a notes root."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The binary shares its name with the `mdroots` library, so `cargo doc`
+# warns about an output filename collision
+# (https://github.com/rust-lang/cargo/issues/6313). Harmless: the binary has
+# no docs worth building, and scripts/check.sh does not run `cargo doc`.
+[[bin]]
+name = "mdroots"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+mdroots = { path = "../mdroots", version = "0.0.0" }
+
+[dev-dependencies]
+insta = "1"
+tempfile = "3"
+
+[lints]
+workspace = true

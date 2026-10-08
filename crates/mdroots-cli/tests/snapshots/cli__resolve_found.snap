@@ -1,0 +1,7 @@
+---
+source: crates/mdroots-cli/tests/cli.rs
+expression: r.stdout
+---
+b.md
+step: file-relative
+status: resolved
