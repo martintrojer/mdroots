@@ -708,6 +708,27 @@ fn a_second_workspace_is_a_peer_that_hydrates_from_the_db() {
 }
 
 #[test]
+fn a_peer_on_an_empty_db_relists_the_root_on_a_registry_hit() {
+    let cache = tempfile::tempdir().unwrap();
+    let (fs, probe) = recorded_vault();
+    let first = open_cached(&fs, &probe, cache.path());
+    // The reconciler is alive (so the next open is a peer) but its DB is
+    // empty, as while it is still indexing.
+    let mut db = IndexDb::open(&first.cache().unwrap()).unwrap();
+    let gone: Vec<mdroots::index::Change> = db
+        .rows()
+        .unwrap()
+        .into_iter()
+        .map(|r| mdroots::index::Change::Remove(r.path))
+        .collect();
+    db.apply(&gone).unwrap();
+    let peer = open_cached(&fs, &probe, cache.path());
+    assert_eq!(peer.role(), Some(Role::Peer));
+    assert_eq!(peer.files(), first.files());
+    assert!(db.rows().unwrap().is_empty(), "a peer never writes");
+}
+
+#[test]
 fn the_registry_keeps_the_decision_across_workspaces() {
     let cache = tempfile::tempdir().unwrap();
     let (fs, probe) = recorded_vault();

@@ -190,9 +190,14 @@ pub(crate) fn sync(
             reconcile(db, &rows, io.fs, io.root, listed.as_deref(), &force, cancel)?
         }
         Role::Peer if rows.is_empty() => {
+            // Like the reconciler: a registry hit (empty decision list)
+            // re-lists the root; the current set is the last resort.
             let mut listed = match listing.is_lazy() {
                 true => listing.list(io, opened, cancel).unwrap_or_default(),
-                false => discovered.unwrap_or_else(|| current.to_vec()),
+                false => discovered
+                    .filter(|d| !d.is_empty())
+                    .or_else(|| listing.list(io, opened, cancel))
+                    .unwrap_or_else(|| current.to_vec()),
             };
             listed.push(opened.to_owned());
             reconcile(None, &[], io.fs, io.root, Some(&listed), &force, cancel)?
