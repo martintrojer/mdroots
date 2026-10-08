@@ -61,7 +61,7 @@ impl Options {
         self
     }
 
-    fn io(&self) -> Result<Io, Error> {
+    pub(crate) fn io(&self) -> Result<Io, Error> {
         match (&self.fs, &self.probe) {
             (Some(fs), Some(p)) => Ok((fs.clone(), p.clone())),
             (None, None) => default_io(),
@@ -80,7 +80,7 @@ impl Options {
 }
 
 /// The filesystem and probe a workspace reads through.
-type Io = (Arc<dyn FileSystem>, Arc<dyn Probe>);
+pub(crate) type Io = (Arc<dyn FileSystem>, Arc<dyn Probe>);
 
 #[cfg(unix)]
 fn default_io() -> Result<Io, Error> {
@@ -178,6 +178,9 @@ struct Inner {
     fs: Arc<dyn FileSystem>,
     root: RootInfo,
     freshness: Freshness,
+    /// A single-file or lazy-without-root workspace: only its opened file
+    /// belongs to it (see [`Workspaces`](crate::Workspaces)).
+    single: bool,
     store: RwLock<MemStore>,
 }
 
@@ -229,18 +232,18 @@ impl Workspace {
                 .ok()
                 .map(|rel| (r.to_path_buf(), slash(rel)))
         });
-        let (root, files, opened, freshness) = match (d.mode, in_root) {
+        let (root, files, opened, freshness, single) = match (d.mode, in_root) {
             (RootMode::Lazy, Some((root, rel))) => {
                 let files = working_set(&*fs, &root, &parent, &name, &rel);
-                (root, files, rel, Freshness::Lazy)
+                (root, files, rel, Freshness::Lazy, false)
             }
             (RootMode::Lazy | RootMode::SingleFile, _) | (_, None) => {
-                (parent, vec![name.clone()], name, Freshness::Lazy)
+                (parent, vec![name.clone()], name, Freshness::Lazy, true)
             }
             (_, Some((root, rel))) => {
                 let mut files = d.md.clone();
                 files.push(rel.clone());
-                (root, files, rel, Freshness::Fresh)
+                (root, files, rel, Freshness::Fresh, false)
             }
         };
         let store = MemStore::open_files(fs.clone(), root, files, &[opened], cancel)?;
@@ -250,7 +253,7 @@ impl Workspace {
             reason: d.reason,
             nested_roots: d.nested_roots,
         };
-        Ok(Workspace::new(fs, info, freshness, store))
+        Ok(Workspace::new(fs, info, freshness, single, store))
     }
 
     /// Index the directory `root` as a root, without discovery.
@@ -265,15 +268,22 @@ impl Workspace {
             mode: RootMode::Marker,
             nested_roots: Vec::new(),
         };
-        Ok(Workspace::new(fs, info, Freshness::Fresh, store))
+        Ok(Workspace::new(fs, info, Freshness::Fresh, false, store))
     }
 
-    fn new(fs: Arc<dyn FileSystem>, root: RootInfo, freshness: Freshness, s: MemStore) -> Self {
+    fn new(
+        fs: Arc<dyn FileSystem>,
+        root: RootInfo,
+        freshness: Freshness,
+        single: bool,
+        s: MemStore,
+    ) -> Self {
         Workspace {
             inner: Arc::new(Inner {
                 fs,
                 root,
                 freshness,
+                single,
                 store: RwLock::new(s),
             }),
         }
@@ -449,7 +459,16 @@ impl Workspace {
         Ok(doc.line_index().line_col(offset, enc))
     }
 
-    fn store(&self) -> RwLockReadGuard<'_, MemStore> {
+    /// Whether only the opened file belongs to this workspace.
+    pub(crate) fn is_single(&self) -> bool {
+        self.inner.single
+    }
+
+    pub(crate) fn fs(&self) -> &dyn FileSystem {
+        &*self.inner.fs
+    }
+
+    pub(crate) fn store(&self) -> RwLockReadGuard<'_, MemStore> {
         self.inner.store.read().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -458,7 +477,7 @@ impl Workspace {
     }
 
     /// `p` canonicalized and made root-relative (`/`-separated).
-    fn rel(&self, p: &Path) -> Result<String, Error> {
+    pub(crate) fn rel(&self, p: &Path) -> Result<String, Error> {
         let canon = self.inner.fs.canonicalize(p)?;
         let rel = canon
             .strip_prefix(&self.inner.root.path)
@@ -471,7 +490,7 @@ impl Workspace {
 
     /// A root-relative path (possibly `../`-relative) as a clean absolute
     /// path.
-    fn abs(&self, rel: &str) -> PathBuf {
+    pub(crate) fn abs(&self, rel: &str) -> PathBuf {
         clean(&self.inner.root.path.join(rel))
     }
 }
@@ -509,7 +528,7 @@ fn is_temp(name: &str) -> bool {
         || (name.len() > 1 && name.starts_with('#') && name.ends_with('#'))
 }
 
-fn is_note(name: &str) -> bool {
+pub(crate) fn is_note(name: &str) -> bool {
     name.rsplit_once('.').is_some_and(|(stem, ext)| {
         !stem.is_empty()
             && ["md", "markdown", "org"]
@@ -518,7 +537,7 @@ fn is_note(name: &str) -> bool {
     })
 }
 
-fn title(rel: &str, doc: &Document) -> String {
+pub(crate) fn title(rel: &str, doc: &Document) -> String {
     doc.frontmatter()
         .and_then(|f| f.title())
         .map(str::to_owned)
@@ -544,7 +563,7 @@ fn tag_names(doc: &Document) -> Vec<String> {
 }
 
 /// `p`'s components joined with `/`.
-fn slash(p: &Path) -> String {
+pub(crate) fn slash(p: &Path) -> String {
     p.components()
         .map(|c| c.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
