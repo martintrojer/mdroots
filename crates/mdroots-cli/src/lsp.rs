@@ -16,7 +16,7 @@ use crate::Outcome;
 pub fn run(log: Option<&str>) -> Result<Outcome, Error> {
     let (conn, io) = Connection::stdio();
     let served = match log {
-        None => mdroots_lsp::serve(conn),
+        None => mdroots_lsp::serve_with(conn, crate::options()),
         Some(path) => {
             let file = OpenOptions::new()
                 .create(true)
@@ -63,7 +63,7 @@ fn logged(
             }
         })
     };
-    let served = mdroots_lsp::serve(server);
+    let served = mdroots_lsp::serve_with(server, crate::options());
     // The server's end is dropped: outbound drains and drops the stdio
     // sender, which lets the writer thread finish.
     let _ = outbound.join();

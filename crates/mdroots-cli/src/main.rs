@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use mdroots::syntax::PositionEncoding;
 use mdroots::{Cancel, Diagnostic, Error, ErrorKind, Options, Role, Severity, Workspace, names};
@@ -26,6 +27,10 @@ commands:
   backlinks NOTE              list the notes linking to NOTE
   lsp [--log FILE]            the language server on stdin/stdout; --log
                               appends one line per message to FILE
+
+environment:
+  MDROOTS_CACHE_DIR           cache dir to use instead of the user's (for
+                              tests)
 ";
 
 /// How a command ended, before it becomes an exit code.
@@ -67,10 +72,44 @@ fn run(args: &[String]) -> Result<Outcome, Error> {
         ("roots", [path]) if !is_flag(path) => roots(path),
         ("resolve", [from, link]) if !is_flag(from) => resolve(&out, from, link),
         ("backlinks", [note]) if !is_flag(note) => backlinks(&out, note),
+        ("__open", [path, flag, ms]) if flag == "--hold-ms" && !is_flag(path) => match ms.parse() {
+            Ok(ms) => open_and_hold(path, ms),
+            Err(_) => Ok(Outcome::Usage),
+        },
         ("lsp", []) => lsp::run(None),
         ("lsp", [flag, file]) if flag == "--log" && !is_flag(file) => lsp::run(Some(file)),
         _ => Ok(Outcome::Usage),
     }
+}
+
+/// Options for every workspace the CLI opens: the cache dir comes from
+/// `MDROOTS_CACHE_DIR` when set (tests point it at a temp dir).
+pub(crate) fn options() -> Options {
+    match std::env::var_os("MDROOTS_CACHE_DIR") {
+        Some(d) if !d.is_empty() => Options::default().cache_dir(PathBuf::from(d)),
+        _ => Options::default(),
+    }
+}
+
+fn role_name(role: Option<Role>) -> &'static str {
+    match role {
+        Some(Role::Reconciler) => "reconciler",
+        Some(Role::Peer) => "peer",
+        None => "memory",
+    }
+}
+
+/// Hidden test command (`__open PATH --hold-ms N`): open the workspace of
+/// PATH, print its role and file count, then keep it (and its locks) open
+/// for N ms. The many-process tests run several at once.
+fn open_and_hold(path: &str, hold_ms: u64) -> Result<Outcome, Error> {
+    let ws = Workspace::open_for(Path::new(path), options())?;
+    println!("role: {}", role_name(ws.role()));
+    println!("files: {}", ws.files().len());
+    let _ = std::io::stdout().flush();
+    std::thread::sleep(Duration::from_millis(hold_ms));
+    drop(ws);
+    Ok(Outcome::Ok)
 }
 
 fn is_flag(a: &str) -> bool {
@@ -119,11 +158,11 @@ fn check(out: &Out, args: &[String]) -> Result<Outcome, Error> {
             .map_err(|e| Error::new(ErrorKind::Io, format!("{}: {e}", p.display())))?
             .is_dir();
         let (ws, notes) = if is_dir {
-            let ws = Workspace::open_at(&p, Options::default())?;
+            let ws = Workspace::open_at(&p, options())?;
             let notes = ws.files();
             (ws, notes)
         } else {
-            (Workspace::open_for(&p, Options::default())?, vec![p])
+            (Workspace::open_for(&p, options())?, vec![p])
         };
         for f in notes {
             if files.contains_key(&f) {
@@ -176,7 +215,7 @@ fn check(out: &Out, args: &[String]) -> Result<Outcome, Error> {
 }
 
 fn roots(path: &str) -> Result<Outcome, Error> {
-    let ws = Workspace::open_for(Path::new(path), Options::default())?;
+    let ws = Workspace::open_for(Path::new(path), options())?;
     let r = ws.root();
     // Absolute: the root is usually an ancestor of the cwd.
     println!("root: {}", r.path.display());
@@ -188,9 +227,8 @@ fn roots(path: &str) -> Result<Outcome, Error> {
         None => println!("cache: memory"),
     }
     let role = match ws.role() {
-        Some(Role::Reconciler) => "reconciler",
-        Some(Role::Peer) => "peer",
         None => "none",
+        r => role_name(r),
     };
     println!("role: {role}");
     for n in &r.nested_roots {
@@ -201,7 +239,7 @@ fn roots(path: &str) -> Result<Outcome, Error> {
 
 fn resolve(out: &Out, from: &str, link: &str) -> Result<Outcome, Error> {
     let from = Path::new(from);
-    let ws = Workspace::open_for(from, Options::default())?;
+    let ws = Workspace::open_for(from, options())?;
     let r = ws.resolve(from, link)?;
     for t in &r.targets {
         println!("{}", out.show(t));
@@ -217,7 +255,7 @@ fn resolve(out: &Out, from: &str, link: &str) -> Result<Outcome, Error> {
 
 fn backlinks(out: &Out, note: &str) -> Result<Outcome, Error> {
     let note = Path::new(note);
-    let ws = Workspace::open_for(note, Options::default())?;
+    let ws = Workspace::open_for(note, options())?;
     for b in ws.backlinks(note)? {
         println!("{}:{}: {}", out.show(&b.from), b.line + 1, b.from_title);
     }

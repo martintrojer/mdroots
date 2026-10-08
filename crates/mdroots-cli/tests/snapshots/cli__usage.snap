@@ -13,3 +13,7 @@ commands:
   backlinks NOTE              list the notes linking to NOTE
   lsp [--log FILE]            the language server on stdin/stdout; --log
                               appends one line per message to FILE
+
+environment:
+  MDROOTS_CACHE_DIR           cache dir to use instead of the user's (for
+                              tests)
