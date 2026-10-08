@@ -35,7 +35,6 @@ pub(crate) fn range(index: &LineIndex, r: Range<usize>, enc: PositionEncoding) -
 }
 
 /// Byte offset of `pos`; used by the request handlers that take a position.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn offset(index: &LineIndex, pos: Position, enc: PositionEncoding) -> usize {
     index.offset(pos.line, pos.character, enc)
 }

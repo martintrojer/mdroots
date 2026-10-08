@@ -9,16 +9,17 @@ use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestI
 use lsp_types::{
     CancelParams, CompletionOptions, DidChangeConfigurationParams, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-    ExecuteCommandOptions, NumberOrString, OneOf, PositionEncodingKind, PublishDiagnosticsParams,
-    RenameOptions, SaveOptions, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Uri,
-    WorkDoneProgressOptions,
+    ExecuteCommandOptions, ExecuteCommandParams, MessageType, NumberOrString, OneOf, Position,
+    PositionEncodingKind, PublishDiagnosticsParams, RenameOptions, SaveOptions, ServerCapabilities,
+    ShowMessageParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextDocumentSyncSaveOptions, Uri, WorkDoneProgressOptions,
 };
 use mdroots::syntax::{LineIndex, PositionEncoding};
-use mdroots::{Cancel, ErrorKind, Options, Workspace, Workspaces};
+use mdroots::{Cancel, ErrorKind, Options, Workspace, Workspaces, names};
 use serde_json::{Value, json};
 
 use crate::diagnostics::{self, Setting};
+use crate::features::{self, Ctx, Fail};
 use crate::{position, uri};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -58,6 +59,8 @@ pub(crate) struct Server {
     /// URI string -> when its debounced diagnostics are due.
     due: HashMap<String, Instant>,
     shutdown: bool,
+    /// Ids of the `workspace/applyEdit` requests sent to the client.
+    apply_seq: u64,
 }
 
 impl Server {
@@ -111,6 +114,7 @@ impl Server {
             current: None,
             due: HashMap::new(),
             shutdown: false,
+            apply_seq: 0,
         }
     }
 
@@ -243,10 +247,13 @@ impl Server {
         self.current = None;
         match result {
             Some(Ok(v)) => self.send(Response::new_ok(req.id, v).into()),
-            Some(Err(e)) if e.kind() == ErrorKind::Cancelled => {
+            Some(Err(Fail::Lib(e))) if e.kind() == ErrorKind::Cancelled => {
                 self.reply_err(req.id, ErrorCode::RequestCanceled, e.message())
             }
-            Some(Err(e)) => self.reply_err(req.id, ErrorCode::InternalError, e.message()),
+            Some(Err(Fail::Lib(e))) => {
+                self.reply_err(req.id, ErrorCode::InternalError, e.message())
+            }
+            Some(Err(Fail::Params(m))) => self.reply_err(req.id, ErrorCode::InvalidParams, &m),
             None => self.reply_err(
                 req.id,
                 ErrorCode::MethodNotFound,
@@ -255,13 +262,9 @@ impl Server {
         }
     }
 
-    /// `None` for an unknown method. The feature requests are wired here
-    /// and answered with no result until their handlers exist.
-    fn dispatch(
-        &mut self,
-        req: &Request,
-        cancel: &Cancel,
-    ) -> Option<Result<Value, mdroots::Error>> {
+    /// `None` for an unknown method.
+    fn dispatch(&mut self, req: &Request, cancel: &Cancel) -> Option<Result<Value, Fail>> {
+        let p = &req.params;
         Some(match req.method.as_str() {
             "shutdown" => {
                 self.shutdown = true;
@@ -269,17 +272,139 @@ impl Server {
                 self.due.clear();
                 Ok(Value::Null)
             }
-            "textDocument/definition"
-            | "textDocument/references"
-            | "textDocument/hover"
-            | "textDocument/documentSymbol"
-            | "textDocument/completion"
-            | "textDocument/prepareRename"
-            | "textDocument/rename"
-            | "workspace/symbol"
-            | "workspace/executeCommand" => cancel.check().map(|()| Value::Null),
+            "textDocument/definition" => self.at(p, cancel, |c, pos| {
+                features::definition(c, pos).map(|v| match v.is_empty() {
+                    true => Value::Null,
+                    false => json!(v),
+                })
+            }),
+            "textDocument/references" => self.at(p, cancel, |c, pos| {
+                features::references(c, pos).map(|v| json!(v))
+            }),
+            "textDocument/hover" => self.at(p, cancel, |c, pos| {
+                features::hover(c, pos).map(|v| json!(v))
+            }),
+            "textDocument/completion" => self.at(p, cancel, |c, pos| {
+                features::completion(c, pos).map(|v| json!(v))
+            }),
+            "textDocument/prepareRename" => self.at(p, cancel, |c, pos| {
+                features::prepare_rename(c, pos).map(|v| json!(v))
+            }),
+            "textDocument/rename" => {
+                let name = p.get("newName").and_then(Value::as_str).unwrap_or_default();
+                let name = name.to_owned();
+                self.at(p, cancel, |c, pos| {
+                    features::rename(c, pos, &name, cancel).map(|v| json!(v))
+                })
+            }
+            "textDocument/documentSymbol" => {
+                let uri = p.pointer("/textDocument/uri").and_then(Value::as_str);
+                self.with_doc(uri, cancel, |c| {
+                    features::document_symbols(c).map(|v| json!(v))
+                })
+            }
+            "workspace/symbol" => {
+                let q = p.get("query").and_then(Value::as_str).unwrap_or_default();
+                cancel
+                    .check()
+                    .map_err(Fail::Lib)
+                    .map(|()| json!(features::workspace_symbols(&self.workspaces.all(), q)))
+            }
+            "workspace/executeCommand" => self.command(p, cancel),
             _ => return None,
         })
+    }
+
+    /// Runs `f` on the document and position of a
+    /// `TextDocumentPositionParams` request.
+    fn at(
+        &self,
+        p: &Value,
+        cancel: &Cancel,
+        f: impl FnOnce(&Ctx, Position) -> Result<Value, Fail>,
+    ) -> Result<Value, Fail> {
+        let uri = p.pointer("/textDocument/uri").and_then(Value::as_str);
+        let pos = p
+            .get("position")
+            .cloned()
+            .map(serde_json::from_value::<Position>);
+        match pos {
+            Some(Ok(pos)) => self.with_doc(uri, cancel, |c| f(c, pos)),
+            _ => Ok(Value::Null),
+        }
+    }
+
+    /// Runs `f` on the note `uri` names: its workspace is the open
+    /// document's, else the one serving the file. `null` when the URI is
+    /// not a note mdroots indexes.
+    fn with_doc(
+        &self,
+        uri: Option<&str>,
+        cancel: &Cancel,
+        f: impl FnOnce(&Ctx) -> Result<Value, Fail>,
+    ) -> Result<Value, Fail> {
+        cancel.check()?;
+        let Some(uri) = uri else {
+            return Ok(Value::Null);
+        };
+        let Some((ws, path)) = self.workspace_of(uri) else {
+            return Ok(Value::Null);
+        };
+        match Ctx::new(&ws, path, self.enc) {
+            Some(c) => f(&c),
+            None => Ok(Value::Null),
+        }
+    }
+
+    fn workspace_of(&self, uri: &str) -> Option<(Workspace, PathBuf)> {
+        if let Some(d) = self.docs.get(uri) {
+            return Some((d.ws.clone()?, d.path.clone()));
+        }
+        let path = uri::to_path(&uri.parse().ok()?)?;
+        let ws = self.workspaces.for_path(&path).ok()?;
+        Some((ws, path))
+    }
+
+    /// `workspace/executeCommand`: the commands in [`COMMANDS`].
+    fn command(&mut self, p: &Value, cancel: &Cancel) -> Result<Value, Fail> {
+        let Ok(p) = serde_json::from_value::<ExecuteCommandParams>(p.clone()) else {
+            return Err(Fail::Params("bad executeCommand params".to_owned()));
+        };
+        let arg = |i: usize| p.arguments.get(i).and_then(Value::as_str);
+        match p.command.as_str() {
+            "mdroots.backlinks" => {
+                self.with_doc(arg(0), cancel, |c| features::backlinks(c).map(|v| json!(v)))
+            }
+            "mdroots.info" => {
+                let info = self.with_doc(arg(0), cancel, |c| Ok(json!(info(c.ws))))?;
+                if let Some(msg) = info.as_str() {
+                    let params = ShowMessageParams {
+                        typ: MessageType::INFO,
+                        message: msg.to_owned(),
+                    };
+                    self.send(Notification::new("window/showMessage".to_owned(), params).into());
+                }
+                Ok(info)
+            }
+            "mdroots.renameFile" => {
+                let to = arg(1)
+                    .and_then(|u| u.parse::<Uri>().ok())
+                    .and_then(|u| uri::to_path(&u))
+                    .ok_or_else(|| Fail::Params("mdroots.renameFile: bad target URI".to_owned()))?;
+                let enc = self.enc;
+                let edit = self.with_doc(arg(0), cancel, |c| {
+                    features::rename_file(c.ws, &c.path, &to, enc, cancel).map(|v| json!(v))
+                })?;
+                if !edit.is_null() {
+                    self.apply_seq += 1;
+                    let id: RequestId = format!("mdroots/applyEdit/{}", self.apply_seq).into();
+                    let params = json!({ "label": "Rename note", "edit": edit });
+                    self.send(Request::new(id, "workspace/applyEdit".to_owned(), params).into());
+                }
+                Ok(Value::Null)
+            }
+            c => Err(Fail::Params(format!("unknown command: {c}"))),
+        }
     }
 
     fn notification(&mut self, n: Notification) {
@@ -431,6 +556,18 @@ impl Server {
 /// The request's `textDocument.uri`, if it has one.
 fn doc_uri(r: &Request) -> Option<&str> {
     r.params.pointer("/textDocument/uri")?.as_str()
+}
+
+/// What `mdroots.info` reports.
+fn info(ws: &Workspace) -> String {
+    let r = ws.root();
+    format!(
+        "root: {}\nmode: {}\nwhy: {}\nfiles: {}",
+        r.path.display(),
+        names::mode(r.mode),
+        r.reason,
+        ws.files().len()
+    )
 }
 
 fn log_err(what: &str, r: Result<(), mdroots::Error>) {

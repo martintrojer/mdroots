@@ -388,3 +388,513 @@ fn after_shutdown_only_exit_counts() {
     c.notify("exit", Value::Null);
     c.server.take().unwrap().join().unwrap().unwrap();
 }
+
+// ---- feature requests ----
+
+const UTF8: &str = r#"{ "general": { "positionEncodings": ["utf-8"] } }"#;
+
+/// The note the editor smoke test writes: headings and in-document links.
+const LOOSE: &str = "# Loose note\n\nSee [the setup](#setup) and [[#Usage]].\n\n## Setup\n\nText.\n\n## Usage\n\nBack to [setup](#setup).\n";
+
+impl Vault {
+    fn write(&self, rel: &str, text: &str) {
+        fs::write(self.dir.join(rel), text).unwrap();
+    }
+}
+
+/// A started, initialized client on `vault` with `rel` open.
+fn session(v: &Vault, caps: &str, open: &[&str]) -> Client {
+    let mut c = Client::start();
+    c.initialize(serde_json::from_str(caps).unwrap());
+    for rel in open {
+        c.open(&v.uri(rel), &v.read(rel));
+    }
+    c
+}
+
+fn at(uri: &str, line: u32, character: u32) -> Value {
+    json!({ "textDocument": { "uri": uri }, "position": { "line": line, "character": character } })
+}
+
+fn ok(r: Response) -> Value {
+    assert!(r.error.is_none(), "{:?}", r.error);
+    r.result.unwrap_or(Value::Null)
+}
+
+/// (file name, start line, start character) of each location.
+fn spots(v: &Value) -> Vec<(String, u64, u64)> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            let name = l["uri"].as_str().unwrap().rsplit('/').next().unwrap();
+            let s = &l["range"]["start"];
+            (
+                name.to_owned(),
+                s["line"].as_u64().unwrap(),
+                s["character"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+fn spot(name: &str, line: u64, character: u64) -> (String, u64, u64) {
+    (name.to_owned(), line, character)
+}
+
+fn labels(v: &Value) -> Vec<String> {
+    v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["label"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+fn range(l0: u64, c0: u64, l1: u64, c1: u64) -> Value {
+    json!({ "start": { "line": l0, "character": c0 }, "end": { "line": l1, "character": c1 } })
+}
+
+#[test]
+fn definition_follows_links_and_anchors() {
+    let v = Vault::corpus("notesvault");
+    let mut c = session(&v, UTF8, &["notes/project-scope.md"]);
+    let uri = v.uri("notes/project-scope.md");
+    // [[note-a]] -> line 0 of the note.
+    let r = ok(c.request("textDocument/definition", at(&uri, 10, 25)));
+    assert_eq!(spots(&r), [spot("note-a.md", 0, 0)]);
+    // [[note-b#Details]] -> the heading line.
+    let r = ok(c.request("textDocument/definition", at(&uri, 10, 39)));
+    assert_eq!(spots(&r), [spot("note-b.md", 13, 0)]);
+    assert_eq!(r[0]["range"], range(13, 0, 13, 10));
+    // Not on a link: null.
+    let r = ok(c.request("textDocument/definition", at(&uri, 10, 2)));
+    assert_eq!(r, Value::Null);
+    // Goto works in code: README's fenced [[project-scope]].
+    let readme = v.uri("README.md");
+    c.open(&readme, &v.read("README.md"));
+    let r = ok(c.request("textDocument/definition", at(&readme, 7, 16)));
+    assert_eq!(spots(&r), [spot("project-scope.md", 0, 0)]);
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn definition_of_in_document_anchors() {
+    let v = Vault::corpus("zk-min");
+    v.write("loose-note.md", LOOSE);
+    let mut c = session(&v, UTF8, &["loose-note.md"]);
+    let uri = v.uri("loose-note.md");
+    let r = ok(c.request("textDocument/definition", at(&uri, 2, 8)));
+    assert_eq!(spots(&r), [spot("loose-note.md", 4, 0)]);
+    let r = ok(c.request("textDocument/definition", at(&uri, 2, 32)));
+    assert_eq!(spots(&r), [spot("loose-note.md", 8, 0)]);
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn positions_follow_the_negotiated_encoding() {
+    // emoji.md line 2: "😀 日本 [Note B](b)": the link starts at byte 12,
+    // UTF-16 unit 6.
+    for (caps, col) in [(UTF8, 12), ("{}", 6)] {
+        let v = Vault::corpus("zk-min");
+        let mut c = session(&v, caps, &["emoji.md", "b.md"]);
+        let r = ok(c.request(
+            "textDocument/definition",
+            at(&v.uri("emoji.md"), 2, col + 1),
+        ));
+        assert_eq!(spots(&r), [spot("b.md", 0, 0)], "{caps}");
+        // One unit before the link: nothing.
+        let r = ok(c.request(
+            "textDocument/definition",
+            at(&v.uri("emoji.md"), 2, col - 1),
+        ));
+        assert_eq!(r, Value::Null, "{caps}");
+        let r = ok(c.request("textDocument/references", at(&v.uri("b.md"), 0, 0)));
+        assert_eq!(
+            spots(&r),
+            [spot("a.md", 2, 4), spot("emoji.md", 2, col.into())],
+            "{caps}"
+        );
+        c.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn references_on_a_link_and_elsewhere() {
+    let v = Vault::corpus("zk-min");
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let uri = v.uri("a.md");
+    // On [Note B](b): links to b.md.
+    let r = ok(c.request("textDocument/references", at(&uri, 2, 6)));
+    assert_eq!(spots(&r), [spot("a.md", 2, 4), spot("emoji.md", 2, 12)]);
+    // Elsewhere: links to a.md.
+    let r = ok(c.request("textDocument/references", at(&uri, 0, 0)));
+    assert_eq!(spots(&r), [spot("b.md", 2, 8), spot("tagged.md", 5, 9)]);
+    // On a broken link: none.
+    c.open(&v.uri("broken.md"), &v.read("broken.md"));
+    let r = ok(c.request("textDocument/references", at(&v.uri("broken.md"), 2, 18)));
+    assert_eq!(r, json!([]));
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn hover_previews_the_target_or_says_broken() {
+    let v = Vault::corpus("zk-min");
+    let mut c = session(&v, UTF8, &["a.md", "broken.md"]);
+    let r = ok(c.request("textDocument/hover", at(&v.uri("a.md"), 2, 6)));
+    assert_eq!(r["contents"]["kind"], "markdown");
+    assert_eq!(
+        r["contents"]["value"],
+        "**Note B**\n\n# Note B\n\nBack to [Note A](a)."
+    );
+    assert_eq!(r["range"], range(2, 4, 2, 15));
+    let r = ok(c.request("textDocument/hover", at(&v.uri("broken.md"), 2, 18)));
+    assert_eq!(r["contents"]["value"], "broken link");
+    let r = ok(c.request("textDocument/hover", at(&v.uri("a.md"), 0, 0)));
+    assert_eq!(r, Value::Null);
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn document_symbols_nest_by_level() {
+    let v = Vault::corpus("zk-min");
+    v.write("loose-note.md", LOOSE);
+    let mut c = session(&v, UTF8, &["loose-note.md"]);
+    let r = ok(c.request(
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": v.uri("loose-note.md") } }),
+    ));
+    let top = r.as_array().unwrap();
+    assert_eq!(top.len(), 1);
+    assert_eq!(top[0]["name"], "Loose note");
+    assert_eq!(top[0]["kind"], 15); // SymbolKind::STRING
+    assert_eq!(top[0]["range"], range(0, 0, 11, 0));
+    assert_eq!(top[0]["selectionRange"], range(0, 0, 0, 12));
+    let kids = top[0]["children"].as_array().unwrap();
+    let names: Vec<&str> = kids.iter().map(|k| k["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Setup", "Usage"]);
+    assert_eq!(kids[0]["range"], range(4, 0, 8, 0));
+    assert_eq!(kids[1]["range"], range(8, 0, 11, 0));
+    assert!(kids[0].get("children").is_none_or(Value::is_null));
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn workspace_symbols_search_notes() {
+    let v = Vault::corpus("zk-min");
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let r = ok(c.request("workspace/symbol", json!({ "query": "note" })));
+    let got: Vec<(&str, &str, i64)> = r
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["name"].as_str().unwrap(),
+                s["location"]["uri"]
+                    .as_str()
+                    .unwrap()
+                    .rsplit('/')
+                    .next()
+                    .unwrap(),
+                s["kind"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("Note A", "a.md", 1),
+            ("Note B", "b.md", 1),
+            ("zk-min: a minimal zk notebook fixture", "README.md", 1),
+        ]
+    );
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn completion_of_notes_headings_paths_and_tags() {
+    let v = Vault::corpus("zk-min");
+    v.write("loose-note.md", LOOSE);
+    let mut c = session(&v, UTF8, &["loose-note.md"]);
+    let uri = v.uri("loose-note.md");
+    let complete = |c: &mut Client, text: &str| -> Value {
+        c.change(&uri, 2, &format!("{LOOSE}{text}"));
+        ok(c.request("textDocument/completion", at(&uri, 11, text.len() as u32)))
+    };
+    // [[: notes by stem, best match first (title prefix, then substring;
+    // ties by path), title as detail.
+    let r = complete(&mut c, "see [[no");
+    assert_eq!(r["isIncomplete"], false);
+    assert_eq!(labels(&r), ["a", "b", "README", "loose-note"]);
+    assert_eq!(r["items"][0]["detail"], "Note A");
+    assert_eq!(r["items"][0]["textEdit"]["newText"], "a");
+    assert_eq!(r["items"][0]["textEdit"]["range"], range(11, 6, 11, 8));
+    // [[#: this note's headings without its title.
+    assert_eq!(labels(&complete(&mut c, "[[#")), ["Setup", "Usage"]);
+    // [[note#: that note's headings; b.md has only its title.
+    assert!(labels(&complete(&mut c, "[[b#")).is_empty());
+    // A tag after a blank, not at line start.
+    assert_eq!(labels(&complete(&mut c, "text #pr")), ["project"]);
+    let r = complete(&mut c, "#");
+    assert!(labels(&r).is_empty(), "{r}");
+    assert!(labels(&complete(&mut c, "  #pro")).is_empty());
+    // ](: paths relative to this note, extension kept.
+    assert_eq!(
+        labels(&complete(&mut c, "[x](")),
+        [
+            "README.md",
+            "a.md",
+            "b.md",
+            "broken.md",
+            "emoji.md",
+            "tagged.md"
+        ]
+    );
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn completion_of_paths_from_a_subdirectory_and_headings_of_another_note() {
+    let v = Vault::corpus("notesvault");
+    let mut c = session(&v, UTF8, &["notes/note-a.md"]);
+    let uri = v.uri("notes/note-a.md");
+    let base = v.read("notes/note-a.md");
+    let line = base.lines().count() as u32;
+    let mut complete = |text: &str| -> Value {
+        c.change(&uri, 2, &format!("{base}{text}"));
+        ok(c.request("textDocument/completion", at(&uri, line, text.len() as u32)))
+    };
+    assert_eq!(
+        labels(&complete("[p](")),
+        [
+            "../AGENTS.md",
+            "../README.md",
+            "../concepts/b.md",
+            "../concepts/c.md",
+            "note-b.md",
+            "project-scope.md",
+            "../references/paper-1.md",
+            "../references/paper-2.md",
+        ]
+    );
+    assert_eq!(
+        labels(&complete("[p](../con")),
+        ["../concepts/b.md", "../concepts/c.md"]
+    );
+    assert_eq!(labels(&complete("[[note-b#")), ["Details"]);
+    c.shutdown().unwrap();
+}
+
+/// Every file of the vault and its text.
+fn snapshot(v: &Vault) -> Vec<(PathBuf, String)> {
+    let mut out: Vec<_> = fs::read_dir(&v.dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.is_file())
+        .map(|p| {
+            let t = fs::read_to_string(&p).unwrap();
+            (p, t)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// (file name, [(start line, start char, new text)]) of each text edit,
+/// then the rename op's (old, new) file names.
+type Edits = (
+    Vec<(String, Vec<(u64, u64, String)>)>,
+    Option<(String, String)>,
+);
+
+fn edits(we: &Value) -> Edits {
+    let name = |u: &Value| u.as_str().unwrap().rsplit('/').next().unwrap().to_owned();
+    let mut files = Vec::new();
+    let mut rename = None;
+    for op in we["documentChanges"].as_array().unwrap() {
+        if op["kind"] == "rename" {
+            rename = Some((name(&op["oldUri"]), name(&op["newUri"])));
+            continue;
+        }
+        assert_eq!(op["textDocument"]["version"], Value::Null);
+        let es = op["edits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                let s = &e["range"]["start"];
+                (
+                    s["line"].as_u64().unwrap(),
+                    s["character"].as_u64().unwrap(),
+                    e["newText"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        files.push((name(&op["textDocument"]["uri"]), es));
+    }
+    (files, rename)
+}
+
+#[test]
+fn rename_returns_edits_and_a_file_rename_without_writing() {
+    let v = Vault::corpus("zk-min");
+    let before = snapshot(&v);
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let uri = v.uri("a.md");
+    // On a link: the link range, the target's stem as placeholder.
+    let r = ok(c.request("textDocument/prepareRename", at(&uri, 2, 6)));
+    assert_eq!(
+        r,
+        json!({ "range": range(2, 4, 2, 15), "placeholder": "b" })
+    );
+    // On the H1: this note.
+    let r = ok(c.request("textDocument/prepareRename", at(&uri, 0, 3)));
+    assert_eq!(r, json!({ "range": range(0, 0, 0, 8), "placeholder": "a" }));
+    // In prose: nothing to rename.
+    let r = ok(c.request("textDocument/prepareRename", at(&uri, 2, 1)));
+    assert_eq!(r, Value::Null);
+
+    let mut p = at(&uri, 2, 6);
+    p["newName"] = json!("bee");
+    let r = ok(c.request("textDocument/rename", p));
+    assert_eq!(
+        edits(&r),
+        (
+            vec![
+                ("a.md".to_owned(), vec![(2, 13, "bee".to_owned())]),
+                ("emoji.md".to_owned(), vec![(2, 21, "bee".to_owned())]),
+            ],
+            Some(("b.md".to_owned(), "bee.md".to_owned())),
+        )
+    );
+    // On the H1: the file only; heading text untouched.
+    let mut p = at(&uri, 0, 3);
+    p["newName"] = json!("alpha");
+    let (files, rename) = edits(&ok(c.request("textDocument/rename", p)));
+    assert_eq!(rename, Some(("a.md".to_owned(), "alpha.md".to_owned())));
+    assert!(
+        files
+            .iter()
+            .all(|(_, es)| es.iter().all(|e| e.2 == "alpha"))
+    );
+    assert_eq!(files.len(), 2, "{files:?}");
+
+    for bad in ["sub/bee", "bee.md"] {
+        let mut p = at(&uri, 2, 6);
+        p["newName"] = json!(bad);
+        let r = c.request("textDocument/rename", p);
+        assert_eq!(r.error.expect("an error").code, -32602, "{bad}");
+    }
+    assert_eq!(snapshot(&v), before, "rename wrote files");
+    c.shutdown().unwrap();
+}
+
+impl Client {
+    /// Sends a request; returns its response and the messages that came
+    /// before it.
+    fn request_seeing(&mut self, method: &str, params: Value) -> (Response, Vec<Message>) {
+        let id = self.send_request(method, params);
+        let mut seen = Vec::new();
+        loop {
+            match self.recv() {
+                Message::Response(r) if r.id == id => return (r, seen),
+                m => seen.push(m),
+            }
+        }
+    }
+}
+
+fn command(name: &str, args: Value) -> Value {
+    json!({ "command": name, "arguments": args })
+}
+
+#[test]
+fn backlinks_command_skips_the_note_itself() {
+    let v = Vault::corpus("zk-min");
+    let mut loose = LOOSE.to_owned();
+    loose.push_str("\nSee [b](b) and [b again](b).\n");
+    v.write("loose-note.md", &loose);
+    v.write("c.md", "Twice: [x](b) [y](b).\n");
+    let mut c = session(&v, UTF8, &["b.md", "loose-note.md"]);
+    let pos = json!({ "line": 0, "character": 0 });
+    let r = ok(c.request(
+        "workspace/executeCommand",
+        command("mdroots.backlinks", json!([v.uri("b.md"), pos])),
+    ));
+    // a.md, c.md (one per line), emoji.md, loose-note.md (one per line).
+    assert_eq!(
+        spots(&r),
+        [
+            spot("a.md", 2, 4),
+            spot("c.md", 0, 7),
+            spot("emoji.md", 2, 12),
+            spot("loose-note.md", 12, 4),
+        ]
+    );
+    // The loose note links only to itself: no backlinks.
+    let r = ok(c.request(
+        "workspace/executeCommand",
+        command("mdroots.backlinks", json!([v.uri("loose-note.md"), pos])),
+    ));
+    assert_eq!(r, json!([]));
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn info_command_shows_and_returns_the_root() {
+    let v = Vault::corpus("zk-min");
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let (r, seen) = c.request_seeing(
+        "workspace/executeCommand",
+        command("mdroots.info", json!([v.uri("a.md")])),
+    );
+    let text = ok(r);
+    let text = text.as_str().unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 4, "{text}");
+    assert_eq!(lines[0], format!("root: {}", v.dir.display()));
+    assert_eq!(lines[1], "mode: marker");
+    assert!(
+        lines[2].starts_with("why: ") && lines[2].len() > 5,
+        "{text}"
+    );
+    assert_eq!(lines[3], "files: 6");
+    let shown = seen.iter().any(|m| {
+        matches!(m, Message::Notification(n)
+            if n.method == "window/showMessage" && n.params["type"] == 3 && n.params["message"] == text)
+    });
+    assert!(shown, "{seen:?}");
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn rename_file_command_sends_apply_edit() {
+    let v = Vault::corpus("zk-min");
+    let before = snapshot(&v);
+    let mut c = session(&v, UTF8, &["b.md"]);
+    let (r, seen) = c.request_seeing(
+        "workspace/executeCommand",
+        command(
+            "mdroots.renameFile",
+            json!([v.uri("b.md"), v.uri("bee.md")]),
+        ),
+    );
+    assert_eq!(ok(r), Value::Null);
+    let apply = seen
+        .iter()
+        .find_map(|m| match m {
+            Message::Request(r) if r.method == "workspace/applyEdit" => Some(r.clone()),
+            _ => None,
+        })
+        .expect("an applyEdit request");
+    let (files, rename) = edits(&apply.params["edit"]);
+    assert_eq!(rename, Some(("b.md".to_owned(), "bee.md".to_owned())));
+    let names: Vec<&str> = files.iter().map(|f| f.0.as_str()).collect();
+    assert_eq!(names, ["a.md", "emoji.md"]);
+    // The client's answer is accepted and ignored.
+    let resp = Response::new_ok(apply.id, json!({ "applied": false }));
+    c.conn.sender.send(resp.into()).unwrap();
+    assert_eq!(snapshot(&v), before);
+    c.shutdown().unwrap();
+}

@@ -13,6 +13,7 @@
 #![forbid(unsafe_code)]
 
 mod diagnostics;
+mod features;
 mod position;
 mod server;
 mod uri;
