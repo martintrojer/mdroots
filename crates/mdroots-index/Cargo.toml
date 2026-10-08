@@ -1,0 +1,23 @@
+[package]
+name = "mdroots-index"
+version = "0.0.0"
+description = "Persistent per-root index cache for mdroots: cache dir choice, reconciler locks and a SQLite DB."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mdroots-core = { path = "../mdroots-core", version = "0.0.0" }
+mdroots-roots = { path = "../mdroots-roots", version = "0.0.0" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }
+
+[dev-dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+rustix = { version = "1", features = ["process"] }
+tempfile = "3"
+
+[lints]
+workspace = true

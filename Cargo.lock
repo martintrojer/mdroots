@@ -360,6 +360,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdroots-index"
+version = "0.0.0"
+dependencies = [
+ "mdroots-core",
+ "mdroots-roots",
+ "rusqlite",
+ "rustix",
+ "tempfile",
+]
+
+[[package]]
 name = "mdroots-resolve"
 version = "0.0.0"
 dependencies = [
