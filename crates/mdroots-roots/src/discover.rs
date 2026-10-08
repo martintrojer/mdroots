@@ -438,7 +438,9 @@ fn enumerate(enumerator: &dyn Enumerator, root: &Path) -> Option<Vec<String>> {
 /// - `Marker`, `Vcs`: a budgeted walk ([`Budget::marker`]); `Loose`: a
 ///   budgeted walk with [`Budget::loose`].
 /// - `IndexDriven`, `TrackedOnly`: the git index's md paths that exist as
-///   files (no `read_dir`).
+///   files (no `read_dir`); never a partial list, so `None` for a split
+///   index or one over its entry cap (unlike discover's tracked-only path,
+///   which lists what it can).
 /// - `VcsEnumerated`: `enumerator`, within its 500 ms budget.
 /// - `Lazy`, `SingleFile` (and any later mode): `None`, with no filesystem
 ///   access.
@@ -461,7 +463,8 @@ pub fn list_root(
         RootMode::IndexDriven | RootMode::TrackedOnly => {
             let index = git_index_path(probe, root)?;
             let s = scan(probe, &index, &keep_md, INDEX_CAP).ok()?;
-            if mode == RootMode::IndexDriven && (s.split || s.truncated) {
+            // A partial list would make the caller drop files that exist.
+            if s.split || s.truncated {
                 return None;
             }
             let md = existing(probe, root, s.paths);

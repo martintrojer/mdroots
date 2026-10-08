@@ -1087,3 +1087,69 @@ fn list_root_aborts_are_none() {
     );
     assert_eq!(probe.read_dir_total(), 0);
 }
+
+#[test]
+fn list_root_drops_a_removed_md_file() {
+    let cancel = Cancel::new();
+
+    // Walk mode: the file is gone from disk.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonicalize");
+    std::fs::create_dir(root.join(".git")).expect("mkdir .git");
+    std::fs::write(root.join("a.md"), "a\n").expect("write");
+    std::fs::write(root.join("b.md"), "b\n").expect("write");
+    let first = list_root(&StdProbe, &root, RootMode::Vcs, &NoEnumerator, &cancel);
+    assert_eq!(first, Some(strs(&["a.md", "b.md"])));
+    std::fs::remove_file(root.join("b.md")).expect("rm");
+    let second = list_root(&StdProbe, &root, RootMode::Vcs, &NoEnumerator, &cancel);
+    assert_eq!(second, Some(strs(&["a.md"])));
+
+    // Git index modes: deleted from disk (still in the index), then
+    // dropped from the index.
+    for mode in [RootMode::IndexDriven, RootMode::TrackedOnly] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize");
+        std::fs::create_dir(root.join(".git")).expect("mkdir .git");
+        let all = strs(&["a.md", "b.md", "c.md"]);
+        std::fs::write(root.join(".git/index"), index(&all, &[])).expect("write");
+        for f in &all {
+            std::fs::write(root.join(f), "x\n").expect("write");
+        }
+        let first = list_root(&StdProbe, &root, mode, &NoEnumerator, &cancel);
+        assert_eq!(first, Some(all.clone()), "{mode:?}");
+        std::fs::remove_file(root.join("b.md")).expect("rm");
+        let second = list_root(&StdProbe, &root, mode, &NoEnumerator, &cancel);
+        assert_eq!(second, Some(strs(&["a.md", "c.md"])), "{mode:?}");
+        let kept = strs(&["a.md"]);
+        std::fs::write(root.join(".git/index"), index(&kept, &[])).expect("write");
+        let third = list_root(&StdProbe, &root, mode, &NoEnumerator, &cancel);
+        assert_eq!(third, Some(kept), "{mode:?}");
+    }
+}
+
+#[test]
+fn review_tracked_only_over_index_cap_returns_none() {
+    // A partial listing would make the reconciler drop valid rows, so a
+    // truncated or split index lists nothing in either git index mode.
+    let mut paths: Vec<String> = (0..200_000).map(|i| format!("f{i:06}")).collect();
+    paths.push("z.md".into());
+    let probe = Counting::new(
+        FakeProbe::new()
+            .home("/h")
+            .file("/h/.git/index", index(&paths, &[]))
+            .file("/h/z.md", "")
+            .file("/h/sp/.git/index", index(&strs(&["a.md"]), &[b"link"]))
+            .file("/h/sp/a.md", ""),
+    );
+    let c = Cancel::new();
+    for mode in [RootMode::TrackedOnly, RootMode::IndexDriven] {
+        for root in ["/h", "/h/sp"] {
+            assert_eq!(
+                list_root(&probe, Path::new(root), mode, &NoEnumerator, &c),
+                None,
+                "{mode:?} {root}"
+            );
+        }
+    }
+    assert_eq!(probe.read_dir_total(), 0);
+}
