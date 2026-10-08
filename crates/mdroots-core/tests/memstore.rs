@@ -489,3 +489,74 @@ fn cancelled_open_files_fails() {
     assert_eq!(err.kind(), ErrorKind::Cancelled);
     assert!(fs.read_paths().is_empty());
 }
+
+fn contents(v: &[(&str, &[u8])]) -> Vec<(String, Arc<[u8]>)> {
+    v.iter()
+        .map(|(p, b)| (p.to_string(), Arc::from(*b)))
+        .collect()
+}
+
+#[test]
+fn from_contents_parses_given_bytes_without_reading_notes() {
+    let fs = Recording::new(
+        MemFs::new()
+            .with_file(
+                ".zk/config.toml",
+                "[lsp.diagnostics]\ndead-link = \"error\"\n",
+            )
+            .with_file("a.md", "stale disk text")
+            .with_file("sub/b.md", "# Disk B"),
+    );
+    let s = MemStore::from_contents(
+        fs.clone(),
+        PathBuf::from("/"),
+        contents(&[
+            ("sub/b.md", b"# Cached B"),
+            ("a.md", b"[[b]]"),
+            ("a.md", b"duplicate"),
+            ("bin.md", b"x\0y"),
+            ("../out.md", b""),
+        ]),
+        &Cancel::new(),
+    )
+    .unwrap();
+    assert_eq!(s.files().collect::<Vec<_>>(), ["a.md", "sub/b.md"]);
+    assert_eq!(s.document("a.md").unwrap().source(), "[[b]]");
+    assert_eq!(s.document("sub/b.md").unwrap().source(), "# Cached B");
+    assert_eq!(link(&s, "a.md", "b").1.targets, ["sub/b.md"]);
+    assert_eq!(
+        skipped(&s),
+        [
+            (
+                "../out.md",
+                ErrorKind::Unsupported,
+                "../out.md: invalid path"
+            ),
+            ("bin.md", ErrorKind::Unsupported, "bin.md: binary file"),
+        ]
+    );
+    // Only the tool config was read, for convention detection.
+    assert_eq!(fs.read_paths(), [PathBuf::from("/.zk/config.toml")]);
+    assert!(s.conventions().dead_link_severity.is_some());
+    assert_eq!(fs.read_dirs.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn cancelled_from_contents_fails() {
+    let c = Cancel::new();
+    c.cancel();
+    let fs = Recording::new(MemFs::new());
+    let err = MemStore::from_contents(fs, PathBuf::from("/"), contents(&[("a.md", b"")]), &c)
+        .err()
+        .unwrap();
+    assert_eq!(err.kind(), ErrorKind::Cancelled);
+}
+
+#[test]
+fn valid_rel_rejects_empty_absolute_and_dot_components() {
+    use mdroots_core::valid_rel;
+    assert!(valid_rel("a.md") && valid_rel("d/b.md"));
+    for bad in ["", "/a.md", "./a.md", "d/../a.md", "d//b.md", "d/b.md/"] {
+        assert!(!valid_rel(bad), "{bad}");
+    }
+}

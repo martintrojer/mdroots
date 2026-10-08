@@ -18,5 +18,5 @@ pub use fs::StdFs;
 pub use fs::{FileSystem, FsKind, MemFs, Meta};
 pub use mdroots_resolve::dialect::Severity;
 pub use mdroots_resolve::env::ResolveEnv;
-pub use memstore::{AnchorStatus, MemStore};
+pub use memstore::{AnchorStatus, MemStore, valid_rel};
 pub use walk::walk_md;

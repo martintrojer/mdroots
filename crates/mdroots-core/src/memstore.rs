@@ -134,21 +134,7 @@ impl MemStore {
         cancel: &Cancel,
     ) -> Result<MemStore, Error> {
         cancel.check()?;
-        let root = fs.canonicalize(&root).unwrap_or(root);
-        let env = FsEnv {
-            case_sensitive: fs.case_sensitive(&root),
-            home: std::env::var_os("HOME").map(PathBuf::from),
-            fs,
-            root,
-        };
-        let conventions = detect(&env);
-        let mut store = MemStore {
-            env,
-            conventions,
-            entries: BTreeMap::new(),
-            index: BTreeMap::new(),
-            skipped: Vec::new(),
-        };
+        let mut store = Self::empty(fs, root);
         files.sort();
         files.dedup();
         for rel in files {
@@ -160,6 +146,55 @@ impl MemStore {
             }
         }
         Ok(store)
+    }
+
+    /// Like [`open_files`](Self::open_files), but the files' bytes are given
+    /// (for example from a cache), so no note is read; the filesystem is
+    /// still used for convention detection (tool configs) and link targets.
+    /// Exact duplicate paths keep the first. Invalid paths and binary files
+    /// go to [`skipped`](Self::skipped) as in `open_files`.
+    pub fn from_contents(
+        fs: Arc<dyn FileSystem>,
+        root: PathBuf,
+        mut contents: Vec<(String, Arc<[u8]>)>,
+        cancel: &Cancel,
+    ) -> Result<MemStore, Error> {
+        cancel.check()?;
+        let mut store = Self::empty(fs, root);
+        contents.sort_by(|a, b| a.0.cmp(&b.0));
+        contents.dedup_by(|a, b| a.0 == b.0);
+        for (rel, bytes) in contents {
+            cancel.check()?;
+            let parsed = match valid_rel(&rel) {
+                true => store.parse_disk(&rel, &bytes),
+                false => Err(invalid_path(&rel)),
+            };
+            match parsed {
+                Ok(p) => store.replace(&rel, |e| e.disk = Some(p)),
+                Err(e) => store.skipped.push((rel, e)),
+            }
+        }
+        Ok(store)
+    }
+
+    /// A store with no notes: the root canonicalized and its conventions
+    /// detected.
+    fn empty(fs: Arc<dyn FileSystem>, root: PathBuf) -> MemStore {
+        let root = fs.canonicalize(&root).unwrap_or(root);
+        let env = FsEnv {
+            case_sensitive: fs.case_sensitive(&root),
+            home: std::env::var_os("HOME").map(PathBuf::from),
+            fs,
+            root,
+        };
+        let conventions = detect(&env);
+        MemStore {
+            env,
+            conventions,
+            entries: BTreeMap::new(),
+            index: BTreeMap::new(),
+            skipped: Vec::new(),
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -331,10 +366,7 @@ impl MemStore {
     /// Validate, stat and (unless dataless and not forced) read a listed file.
     fn read_listed(&self, rel: &str, force: bool) -> Result<Parsed, Error> {
         if !valid_rel(rel) {
-            return Err(Error::new(
-                ErrorKind::Unsupported,
-                format!("{rel}: invalid path"),
-            ));
+            return Err(invalid_path(rel));
         }
         let meta = self
             .env
@@ -356,7 +388,12 @@ impl MemStore {
             .fs
             .read(&self.env.root.join(rel))
             .map_err(|e| Error::new(ErrorKind::Io, format!("{rel}: {e}")))?;
-        let doc = parse_bytes(&bytes, &self.options(rel))
+        self.parse_disk(rel, &bytes)
+    }
+
+    /// Parse a note's disk bytes; binary files are `Unsupported`.
+    fn parse_disk(&self, rel: &str, bytes: &[u8]) -> Result<Parsed, Error> {
+        let doc = parse_bytes(bytes, &self.options(rel))
             .ok_or_else(|| Error::new(ErrorKind::Unsupported, format!("{rel}: binary file")))?;
         Ok(self.parsed(rel, doc))
     }
@@ -449,8 +486,13 @@ impl KeyLookup for MemStore {
     }
 }
 
-/// Root-relative, `/`-separated, with no empty, `.` or `..` component.
-fn valid_rel(rel: &str) -> bool {
+fn invalid_path(rel: &str) -> Error {
+    Error::new(ErrorKind::Unsupported, format!("{rel}: invalid path"))
+}
+
+/// Whether `rel` is a usable root-relative path: `/`-separated, with no
+/// empty, `.` or `..` component (so not empty and not absolute).
+pub fn valid_rel(rel: &str) -> bool {
     rel.split('/')
         .all(|c| !c.is_empty() && c != "." && c != "..")
 }
