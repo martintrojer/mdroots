@@ -4,6 +4,7 @@ members = [
     "crates/mdroots-syntax",
     "crates/mdroots-resolve",
     "crates/mdroots-core",
+    "crates/mdroots-roots",
     "tools/zkdiff",
 ]
 

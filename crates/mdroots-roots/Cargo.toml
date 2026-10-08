@@ -1,0 +1,19 @@
+[package]
+name = "mdroots-roots"
+version = "0.0.0"
+description = "Safe, zero-config root discovery for mdroots: never lists a tree before it is known to be local and bounded."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mdroots-core = { path = "../mdroots-core", version = "0.0.0" }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
