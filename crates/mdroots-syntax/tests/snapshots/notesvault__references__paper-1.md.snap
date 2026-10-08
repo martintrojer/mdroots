@@ -1,0 +1,151 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Yaml,
+            error: None,
+            entries: [
+                (
+                    "id",
+                    Str(
+                        "ref-1",
+                    ),
+                ),
+                (
+                    "type",
+                    Str(
+                        "reference",
+                    ),
+                ),
+                (
+                    "title",
+                    Str(
+                        "Paper One",
+                    ),
+                ),
+                (
+                    "ref-num",
+                    Str(
+                        "1",
+                    ),
+                ),
+                (
+                    "source-url",
+                    Str(
+                        "https://example.org/p1",
+                    ),
+                ),
+                (
+                    "source-local",
+                    Str(
+                        "—",
+                    ),
+                ),
+                (
+                    "source-cache",
+                    Str(
+                        "cache/1.html, cache/missing.txt",
+                    ),
+                ),
+                (
+                    "source-pdf",
+                    Str(
+                        "n/a",
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Paper One",
+            slug: "paper-one",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Url,
+            context: Frontmatter,
+            confidence: External,
+            raw: "https://example.org/p1",
+            path: "https://example.org/p1",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "https://example.org/p1",
+            text_range: "https://example.org/p1",
+            src_line: 6,
+        },
+        LinkSummary {
+            kind: BarePath,
+            context: Frontmatter,
+            confidence: Implicit,
+            raw: "cache/1.html",
+            path: "cache/1.html",
+            anchor: None,
+            label: None,
+            line: None,
+            group: Some(
+                0,
+            ),
+            range: "cache/1.html",
+            text_range: "cache/1.html",
+            src_line: 8,
+        },
+        LinkSummary {
+            kind: BarePath,
+            context: Frontmatter,
+            confidence: Implicit,
+            raw: "cache/missing.txt",
+            path: "cache/missing.txt",
+            anchor: None,
+            label: None,
+            line: None,
+            group: Some(
+                0,
+            ),
+            range: "cache/missing.txt",
+            text_range: "cache/missing.txt",
+            src_line: 8,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "note-a",
+            path: "note-a",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[note-a]]",
+            text_range: "note-a",
+            src_line: 13,
+        },
+        LinkSummary {
+            kind: Markdown,
+            context: Prose,
+            confidence: Explicit,
+            raw: "C",
+            path: "C",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[p](C)",
+            text_range: "p",
+            src_line: 15,
+        },
+    ],
+    tags: [],
+    link_defs: [],
+}

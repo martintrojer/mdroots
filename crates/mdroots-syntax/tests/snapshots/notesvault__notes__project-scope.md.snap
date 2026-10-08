@@ -1,0 +1,97 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Yaml,
+            error: None,
+            entries: [
+                (
+                    "id",
+                    Str(
+                        "20260103c",
+                    ),
+                ),
+                (
+                    "type",
+                    Str(
+                        "note",
+                    ),
+                ),
+                (
+                    "stage",
+                    Str(
+                        "idea",
+                    ),
+                ),
+                (
+                    "title",
+                    Str(
+                        "Project scope",
+                    ),
+                ),
+                (
+                    "date",
+                    Str(
+                        "2026-01-03",
+                    ),
+                ),
+                (
+                    "tags",
+                    List(
+                        [],
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Project scope",
+            slug: "project-scope",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "note-a",
+            path: "note-a",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[note-a]]",
+            text_range: "note-a",
+            src_line: 11,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "note-b#Details",
+            path: "note-b",
+            anchor: Some(
+                Heading(
+                    "Details",
+                ),
+            ),
+            label: None,
+            line: None,
+            group: None,
+            range: "[[note-b#Details]]",
+            text_range: "note-b#Details",
+            src_line: 11,
+        },
+    ],
+    tags: [],
+    link_defs: [],
+}

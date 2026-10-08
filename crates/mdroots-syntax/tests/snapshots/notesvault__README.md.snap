@@ -1,0 +1,78 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: None,
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Example notebook",
+            slug: "example-notebook",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "note-a",
+            path: "note-a",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[note-a]]",
+            text_range: "note-a",
+            src_line: 3,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: CodeBlock,
+            confidence: Explicit,
+            raw: "project-scope",
+            path: "project-scope",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[project-scope]]",
+            text_range: "project-scope",
+            src_line: 8,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: CodeBlock,
+            confidence: Explicit,
+            raw: "{{filename-stem}}",
+            path: "{{filename-stem}}",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[{{filename-stem}}]]",
+            text_range: "{{filename-stem}}",
+            src_line: 9,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: InlineCode,
+            confidence: Explicit,
+            raw: "refs",
+            path: "refs",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[refs]]",
+            text_range: "refs",
+            src_line: 12,
+        },
+    ],
+    tags: [],
+    link_defs: [],
+}

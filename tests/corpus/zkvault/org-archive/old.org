@@ -1,0 +1,15 @@
+#+TITLE: Old archive
+#+FILETAGS: :archive:
+#+LINK: T https://t/%s
+#+LINK: D https://d/
+
+* Intro :history:
+Task [[T:1][x]] and diff [[D:42]].
+See [[file:../reference/gardening.md::*Intro]] and [[https://example.com][example]].
+
+* Code
+#+begin_src sh
+echo [[T:99][not a link]]
+#+end_src
+
+: fixed [[T:100]]

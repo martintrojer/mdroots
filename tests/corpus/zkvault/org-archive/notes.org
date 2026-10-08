@@ -1,0 +1,7 @@
+#+TITLE: Archived notes
+
+* Images
+[[./img/diagram.png]]
+
+* Links
+[[file:old.org::*Intro][back to intro]]

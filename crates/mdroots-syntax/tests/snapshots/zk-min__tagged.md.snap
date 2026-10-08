@@ -1,0 +1,57 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Yaml,
+            error: None,
+            entries: [
+                (
+                    "tags",
+                    List(
+                        [
+                            "project",
+                        ],
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Tagged",
+            slug: "tagged",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Markdown,
+            context: Prose,
+            confidence: Explicit,
+            raw: "a",
+            path: "a",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[Note A](a)",
+            text_range: "Note A",
+            src_line: 6,
+        },
+    ],
+    tags: [
+        TagSummary {
+            name: "project",
+            syntax: Frontmatter,
+            range: "project",
+        },
+    ],
+    link_defs: [],
+}

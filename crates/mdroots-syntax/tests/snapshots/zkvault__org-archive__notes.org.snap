@@ -1,0 +1,76 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: OrgKeywords,
+            error: None,
+            entries: [
+                (
+                    "title",
+                    Str(
+                        "Archived notes",
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Images",
+            slug: "images",
+            id: None,
+            custom_id: None,
+        },
+        HeadingSummary {
+            level: 1,
+            text: "Links",
+            slug: "links",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Org,
+            context: Prose,
+            confidence: Explicit,
+            raw: "./img/diagram.png",
+            path: "./img/diagram.png",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[./img/diagram.png]]",
+            text_range: "./img/diagram.png",
+            src_line: 4,
+        },
+        LinkSummary {
+            kind: Org,
+            context: Prose,
+            confidence: Explicit,
+            raw: "file:old.org::*Intro",
+            path: "old.org",
+            anchor: Some(
+                Heading(
+                    "Intro",
+                ),
+            ),
+            label: Some(
+                "back to intro",
+            ),
+            line: None,
+            group: None,
+            range: "[[file:old.org::*Intro][back to intro]]",
+            text_range: "back to intro",
+            src_line: 7,
+        },
+    ],
+    tags: [],
+    link_defs: [],
+}

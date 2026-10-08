@@ -1,0 +1,63 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: None,
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "CRLF file",
+            slug: "crlf-file",
+            id: None,
+            custom_id: None,
+        },
+        HeadingSummary {
+            level: 2,
+            text: "Second",
+            slug: "second",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "target",
+            path: "target",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[target]]",
+            text_range: "target",
+            src_line: 3,
+        },
+        LinkSummary {
+            kind: Markdown,
+            context: Prose,
+            confidence: Explicit,
+            raw: "other.md",
+            path: "other.md",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[md](other.md)",
+            text_range: "md",
+            src_line: 3,
+        },
+    ],
+    tags: [
+        TagSummary {
+            name: "crlf",
+            syntax: Hash,
+            range: "#crlf",
+        },
+    ],
+    link_defs: [],
+}

@@ -1,0 +1,5 @@
+# Minimal zk notebook config for tests/lsp_zk_e2e.rs. zk's defaults apply:
+# dead links are reported as error diagnostics.
+[note]
+filename = "{{id}}"
+extension = "md"

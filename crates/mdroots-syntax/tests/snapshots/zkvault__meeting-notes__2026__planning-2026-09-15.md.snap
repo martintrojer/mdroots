@@ -1,0 +1,97 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Yaml,
+            error: None,
+            entries: [
+                (
+                    "title",
+                    Str(
+                        "Planning 2026-09-15",
+                    ),
+                ),
+                (
+                    "date",
+                    Str(
+                        "2026-09-15",
+                    ),
+                ),
+                (
+                    "tags",
+                    List(
+                        [
+                            "meeting",
+                        ],
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Planning 2026-09-15",
+            slug: "planning-2026-09-15",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "meeting-notes/2026/checkin-2026-10-01",
+            path: "meeting-notes/2026/checkin-2026-10-01",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[meeting-notes/2026/checkin-2026-10-01]]",
+            text_range: "meeting-notes/2026/checkin-2026-10-01",
+            src_line: 8,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "reference/composting",
+            path: "reference/composting",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[reference/composting]]",
+            text_range: "reference/composting",
+            src_line: 8,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "reference/gardening",
+            path: "reference/gardening",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[reference/gardening]]",
+            text_range: "reference/gardening",
+            src_line: 12,
+        },
+    ],
+    tags: [
+        TagSummary {
+            name: "meeting",
+            syntax: Frontmatter,
+            range: "meeting",
+        },
+    ],
+    link_defs: [],
+}

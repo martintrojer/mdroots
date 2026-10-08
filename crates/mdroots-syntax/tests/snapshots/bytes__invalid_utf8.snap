@@ -1,0 +1,50 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: true,
+    frontmatter: None,
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Bad �� bytes",
+            slug: "bad--bytes",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "note-a",
+            path: "note-a",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[note-a]]",
+            text_range: "note-a",
+            src_line: 3,
+        },
+        LinkSummary {
+            kind: Markdown,
+            context: Prose,
+            confidence: Explicit,
+            raw: "b.md",
+            path: "b.md",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[md](b.md)",
+            text_range: "md",
+            src_line: 3,
+        },
+    ],
+    tags: [],
+    link_defs: [],
+}

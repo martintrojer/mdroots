@@ -1,0 +1,20 @@
+[package]
+name = "mdroots-syntax"
+version = "0.0.0"
+description = "Parse one markdown or org document into structure and liberal link candidates."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pulldown-cmark = { version = "0.13.4", default-features = false }
+saphyr = "0.1"
+toml = { version = "1", default-features = false, features = ["parse", "serde", "preserve_order"] }
+unicode-general-category = "1.1"
+
+[dev-dependencies]
+proptest = "1"
+insta = "1"

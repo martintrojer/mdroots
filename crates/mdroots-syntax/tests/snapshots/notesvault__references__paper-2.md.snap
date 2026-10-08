@@ -1,0 +1,101 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Yaml,
+            error: None,
+            entries: [
+                (
+                    "id",
+                    Str(
+                        "ref-2",
+                    ),
+                ),
+                (
+                    "type",
+                    Str(
+                        "reference",
+                    ),
+                ),
+                (
+                    "title",
+                    Str(
+                        "Paper Two",
+                    ),
+                ),
+                (
+                    "ref-num",
+                    Str(
+                        "2",
+                    ),
+                ),
+                (
+                    "source-url",
+                    Str(
+                        "https://example.org/p2",
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Paper Two",
+            slug: "paper-two",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Url,
+            context: Frontmatter,
+            confidence: External,
+            raw: "https://example.org/p2",
+            path: "https://example.org/p2",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "https://example.org/p2",
+            text_range: "https://example.org/p2",
+            src_line: 6,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "paper-1",
+            path: "paper-1",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[paper-1]]",
+            text_range: "paper-1",
+            src_line: 10,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "missing-paper",
+            path: "missing-paper",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[missing-paper]]",
+            text_range: "missing-paper",
+            src_line: 10,
+        },
+    ],
+    tags: [],
+    link_defs: [],
+}

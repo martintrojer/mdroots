@@ -1,0 +1,167 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: OrgKeywords,
+            error: None,
+            entries: [
+                (
+                    "title",
+                    Str(
+                        "Old archive",
+                    ),
+                ),
+                (
+                    "filetags",
+                    List(
+                        [
+                            "archive",
+                        ],
+                    ),
+                ),
+                (
+                    "link",
+                    Str(
+                        "T https://t/%s",
+                    ),
+                ),
+                (
+                    "link",
+                    Str(
+                        "D https://d/",
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Intro",
+            slug: "intro",
+            id: None,
+            custom_id: None,
+        },
+        HeadingSummary {
+            level: 1,
+            text: "Code",
+            slug: "code",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Org,
+            context: Prose,
+            confidence: External,
+            raw: "https://t/1",
+            path: "https://t/1",
+            anchor: None,
+            label: Some(
+                "x",
+            ),
+            line: None,
+            group: None,
+            range: "[[T:1][x]]",
+            text_range: "x",
+            src_line: 7,
+        },
+        LinkSummary {
+            kind: Org,
+            context: Prose,
+            confidence: External,
+            raw: "https://d/42",
+            path: "https://d/42",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[D:42]]",
+            text_range: "D:42",
+            src_line: 7,
+        },
+        LinkSummary {
+            kind: Org,
+            context: Prose,
+            confidence: Explicit,
+            raw: "file:../reference/gardening.md::*Intro",
+            path: "../reference/gardening.md",
+            anchor: Some(
+                Heading(
+                    "Intro",
+                ),
+            ),
+            label: None,
+            line: None,
+            group: None,
+            range: "[[file:../reference/gardening.md::*Intro]]",
+            text_range: "file:../reference/gardening.md::*Intro",
+            src_line: 8,
+        },
+        LinkSummary {
+            kind: Org,
+            context: Prose,
+            confidence: External,
+            raw: "https://example.com",
+            path: "https://example.com",
+            anchor: None,
+            label: Some(
+                "example",
+            ),
+            line: None,
+            group: None,
+            range: "[[https://example.com][example]]",
+            text_range: "example",
+            src_line: 8,
+        },
+        LinkSummary {
+            kind: Org,
+            context: CodeBlock,
+            confidence: External,
+            raw: "https://t/99",
+            path: "https://t/99",
+            anchor: None,
+            label: Some(
+                "not a link",
+            ),
+            line: None,
+            group: None,
+            range: "[[T:99][not a link]]",
+            text_range: "not a link",
+            src_line: 12,
+        },
+        LinkSummary {
+            kind: Org,
+            context: CodeBlock,
+            confidence: External,
+            raw: "https://t/100",
+            path: "https://t/100",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[T:100]]",
+            text_range: "T:100",
+            src_line: 15,
+        },
+    ],
+    tags: [
+        TagSummary {
+            name: "archive",
+            syntax: Frontmatter,
+            range: "archive",
+        },
+        TagSummary {
+            name: "history",
+            syntax: OrgHeading,
+            range: "history",
+        },
+    ],
+    link_defs: [],
+}

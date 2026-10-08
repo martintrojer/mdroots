@@ -1,0 +1,83 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Logseq,
+            error: None,
+            entries: [
+                (
+                    "title",
+                    Str(
+                        "X",
+                    ),
+                ),
+                (
+                    "tags",
+                    Str(
+                        "logseq, pages",
+                    ),
+                ),
+                (
+                    "alias",
+                    Str(
+                        "Ex",
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [],
+    links: [
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "Other Page",
+            path: "Other Page",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[Other Page]]",
+            text_range: "Other Page",
+            src_line: 5,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "page with spaces",
+            path: "page with spaces",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[page with spaces]]",
+            text_range: "page with spaces",
+            src_line: 6,
+        },
+    ],
+    tags: [
+        TagSummary {
+            name: "logseq",
+            syntax: Frontmatter,
+            range: "logseq",
+        },
+        TagSummary {
+            name: "pages",
+            syntax: Frontmatter,
+            range: "pages",
+        },
+        TagSummary {
+            name: "logseq",
+            syntax: Hash,
+            range: "#logseq",
+        },
+    ],
+    link_defs: [],
+}

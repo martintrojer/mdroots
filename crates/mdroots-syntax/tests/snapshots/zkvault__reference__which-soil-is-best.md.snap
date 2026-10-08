@@ -1,0 +1,55 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Yaml,
+            error: None,
+            entries: [
+                (
+                    "title",
+                    Str(
+                        "Which soil is best?",
+                    ),
+                ),
+                (
+                    "date",
+                    Str(
+                        "2025-11-30",
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Which soil is best?",
+            slug: "which-soil-is-best",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "journal/2025/W40",
+            path: "journal/2025/W40",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[journal/2025/W40]]",
+            text_range: "journal/2025/W40",
+            src_line: 7,
+        },
+    ],
+    tags: [],
+    link_defs: [],
+}

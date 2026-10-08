@@ -1,0 +1,122 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Yaml,
+            error: None,
+            entries: [
+                (
+                    "title",
+                    Str(
+                        "Check-in 2026-10-01",
+                    ),
+                ),
+                (
+                    "date",
+                    Str(
+                        "2026-10-01 09:30",
+                    ),
+                ),
+                (
+                    "tags",
+                    List(
+                        [
+                            "meeting",
+                            "checkin",
+                        ],
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Check-in 2026-10-01",
+            slug: "check-in-2026-10-01",
+            id: None,
+            custom_id: None,
+        },
+        HeadingSummary {
+            level: 2,
+            text: "Attendees",
+            slug: "attendees",
+            id: None,
+            custom_id: None,
+        },
+        HeadingSummary {
+            level: 2,
+            text: "Notes",
+            slug: "notes",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "reference/gardening",
+            path: "reference/gardening",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[reference/gardening]]",
+            text_range: "reference/gardening",
+            src_line: 14,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "which_soil_is_best?",
+            path: "which_soil_is_best?",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[which_soil_is_best?]]",
+            text_range: "which_soil_is_best?",
+            src_line: 15,
+        },
+        LinkSummary {
+            kind: Markdown,
+            context: Prose,
+            confidence: External,
+            raw: "https://example.com/t/42",
+            path: "https://example.com/t/42",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[tracker](https://example.com/t/42)",
+            text_range: "tracker",
+            src_line: 16,
+        },
+    ],
+    tags: [
+        TagSummary {
+            name: "meeting",
+            syntax: Frontmatter,
+            range: "meeting",
+        },
+        TagSummary {
+            name: "checkin",
+            syntax: Frontmatter,
+            range: "checkin",
+        },
+        TagSummary {
+            name: "followup",
+            syntax: Hash,
+            range: "#followup",
+        },
+    ],
+    link_defs: [],
+}

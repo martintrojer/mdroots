@@ -1,0 +1,17 @@
+[package]
+name = "mdroots-core"
+version = "0.0.0"
+description = "Core traits, MemStore and reconcile logic for mdroots."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mdroots-syntax = { path = "../mdroots-syntax", version = "0.0.0" }
+mdroots-resolve = { path = "../mdroots-resolve", version = "0.0.0" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

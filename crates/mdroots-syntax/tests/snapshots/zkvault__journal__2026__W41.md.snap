@@ -1,0 +1,81 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Yaml,
+            error: None,
+            entries: [
+                (
+                    "title",
+                    Str(
+                        "2026 week 41",
+                    ),
+                ),
+                (
+                    "date",
+                    Str(
+                        "2026-10-05",
+                    ),
+                ),
+                (
+                    "week",
+                    Str(
+                        "41",
+                    ),
+                ),
+                (
+                    "year",
+                    Str(
+                        "2026",
+                    ),
+                ),
+                (
+                    "tags",
+                    List(
+                        [
+                            "journal",
+                        ],
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "2026 week 41",
+            slug: "2026-week-41",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "journal/2026/W42",
+            path: "journal/2026/W42",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[journal/2026/W42]]",
+            text_range: "journal/2026/W42",
+            src_line: 10,
+        },
+    ],
+    tags: [
+        TagSummary {
+            name: "journal",
+            syntax: Frontmatter,
+            range: "journal",
+        },
+    ],
+    link_defs: [],
+}

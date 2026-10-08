@@ -1,0 +1,77 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Yaml,
+            error: None,
+            entries: [
+                (
+                    "id",
+                    Str(
+                        "concept-c",
+                    ),
+                ),
+                (
+                    "type",
+                    Str(
+                        "concept",
+                    ),
+                ),
+                (
+                    "title",
+                    Str(
+                        "Concept C",
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Concept C",
+            slug: "concept-c",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "b",
+            path: "b",
+            anchor: None,
+            label: Some(
+                "Concept B",
+            ),
+            line: None,
+            group: None,
+            range: "[[b|Concept B]]",
+            text_range: "Concept B",
+            src_line: 8,
+        },
+        LinkSummary {
+            kind: Markdown,
+            context: Prose,
+            confidence: Explicit,
+            raw: "../README.md",
+            path: "../README.md",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[README](../README.md)",
+            text_range: "README",
+            src_line: 8,
+        },
+    ],
+    tags: [],
+    link_defs: [],
+}

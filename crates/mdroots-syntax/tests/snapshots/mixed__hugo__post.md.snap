@@ -1,0 +1,133 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Toml,
+            error: None,
+            entries: [
+                (
+                    "title",
+                    Str(
+                        "Hugo post",
+                    ),
+                ),
+                (
+                    "date",
+                    Str(
+                        "2026-05-01",
+                    ),
+                ),
+                (
+                    "tags",
+                    List(
+                        [
+                            "hugo",
+                            "web",
+                        ],
+                    ),
+                ),
+                (
+                    "slug",
+                    Str(
+                        "hugo-post",
+                    ),
+                ),
+                (
+                    "params.author",
+                    Str(
+                        "me",
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Hugo post",
+            slug: "hugo-post",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Templating,
+            context: Prose,
+            confidence: Explicit,
+            raw: "a.md",
+            path: "a.md",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "{{< ref \"a.md\" >}}",
+            text_range: "{{< ref \"a.md\" >}}",
+            src_line: 11,
+        },
+        LinkSummary {
+            kind: Templating,
+            context: Prose,
+            confidence: Explicit,
+            raw: "posts/b.md#sec",
+            path: "posts/b.md",
+            anchor: Some(
+                Heading(
+                    "sec",
+                ),
+            ),
+            label: None,
+            line: None,
+            group: None,
+            range: "{{< relref \"posts/b.md#sec\" >}}",
+            text_range: "{{< relref \"posts/b.md#sec\" >}}",
+            src_line: 11,
+        },
+        LinkSummary {
+            kind: Templating,
+            context: Prose,
+            confidence: Explicit,
+            raw: "_posts/c.md",
+            path: "_posts/c.md",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "{% link _posts/c.md %}",
+            text_range: "{% link _posts/c.md %}",
+            src_line: 12,
+        },
+        LinkSummary {
+            kind: Markdown,
+            context: Prose,
+            confidence: Explicit,
+            raw: "/about/",
+            path: "/about/",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[about](/about/)",
+            text_range: "about",
+            src_line: 13,
+        },
+    ],
+    tags: [
+        TagSummary {
+            name: "hugo",
+            syntax: Frontmatter,
+            range: "hugo",
+        },
+        TagSummary {
+            name: "web",
+            syntax: Frontmatter,
+            range: "web",
+        },
+    ],
+    link_defs: [],
+}

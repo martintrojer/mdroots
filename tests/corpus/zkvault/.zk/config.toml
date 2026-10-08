@@ -1,0 +1,11 @@
+# Synthetic zk notebook config (shape of a real one).
+[note]
+filename = "{{slug title}}"
+extension = "md"
+
+# MARKDOWN SETTINGS
+[format.markdown]
+link-format = "wiki"
+hashtags = true
+colon-tags = false
+multiword-tags = false

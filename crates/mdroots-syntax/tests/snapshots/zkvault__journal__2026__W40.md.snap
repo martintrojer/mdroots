@@ -1,0 +1,114 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Yaml,
+            error: None,
+            entries: [
+                (
+                    "title",
+                    Str(
+                        "2026 week 40",
+                    ),
+                ),
+                (
+                    "date",
+                    Str(
+                        "2026-09-28",
+                    ),
+                ),
+                (
+                    "week",
+                    Str(
+                        "40",
+                    ),
+                ),
+                (
+                    "year",
+                    Str(
+                        "2026",
+                    ),
+                ),
+                (
+                    "tags",
+                    List(
+                        [
+                            "journal",
+                        ],
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "2026 week 40",
+            slug: "2026-week-40",
+            id: None,
+            custom_id: None,
+        },
+        HeadingSummary {
+            level: 2,
+            text: "Monday",
+            slug: "monday",
+            id: None,
+            custom_id: None,
+        },
+        HeadingSummary {
+            level: 2,
+            text: "Friday",
+            slug: "friday",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "reference/gardening",
+            path: "reference/gardening",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[reference/gardening]]",
+            text_range: "reference/gardening",
+            src_line: 12,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "journal/2025/W40",
+            path: "journal/2025/W40",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[journal/2025/W40]]",
+            text_range: "journal/2025/W40",
+            src_line: 16,
+        },
+    ],
+    tags: [
+        TagSummary {
+            name: "journal",
+            syntax: Frontmatter,
+            range: "journal",
+        },
+        TagSummary {
+            name: "journal",
+            syntax: Hash,
+            range: "#journal",
+        },
+    ],
+    link_defs: [],
+}

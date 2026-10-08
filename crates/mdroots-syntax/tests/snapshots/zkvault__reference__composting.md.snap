@@ -1,0 +1,103 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Yaml,
+            error: None,
+            entries: [
+                (
+                    "title",
+                    Str(
+                        "Composting",
+                    ),
+                ),
+                (
+                    "date",
+                    Str(
+                        "2026-02-10",
+                    ),
+                ),
+                (
+                    "tags",
+                    Str(
+                        "hobby",
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Composting",
+            slug: "composting",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "reference/gardening#Usage",
+            path: "reference/gardening",
+            anchor: Some(
+                Heading(
+                    "Usage",
+                ),
+            ),
+            label: None,
+            line: None,
+            group: None,
+            range: "[[reference/gardening#Usage]]",
+            text_range: "reference/gardening#Usage",
+            src_line: 8,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "reference/does-not-exist",
+            path: "reference/does-not-exist",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[reference/does-not-exist]]",
+            text_range: "reference/does-not-exist",
+            src_line: 10,
+        },
+        LinkSummary {
+            kind: Markdown,
+            context: Prose,
+            confidence: Explicit,
+            raw: "setup.md#install",
+            path: "setup.md",
+            anchor: Some(
+                Heading(
+                    "install",
+                ),
+            ),
+            label: None,
+            line: None,
+            group: None,
+            range: "[setup](setup.md#install)",
+            text_range: "setup",
+            src_line: 12,
+        },
+    ],
+    tags: [
+        TagSummary {
+            name: "hobby",
+            syntax: Frontmatter,
+            range: "hobby",
+        },
+    ],
+    link_defs: [],
+}

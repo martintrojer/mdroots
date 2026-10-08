@@ -1,0 +1,140 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: "%%comment%% stays prose for now (spec 3.1 lists it as comment context for Obsidian roots; that needs the root vote), so [[hidden-link]] is Prose"
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Yaml,
+            error: None,
+            entries: [
+                (
+                    "aliases",
+                    List(
+                        [
+                            "Canvas",
+                            "The canvas",
+                        ],
+                    ),
+                ),
+                (
+                    "tags",
+                    List(
+                        [
+                            "obsidian",
+                        ],
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Canvas",
+            slug: "canvas",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: WikiEmbed,
+            context: Prose,
+            confidence: Explicit,
+            raw: "diagram.png",
+            path: "diagram.png",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "![[diagram.png]]",
+            text_range: "diagram.png",
+            src_line: 7,
+        },
+        LinkSummary {
+            kind: WikiEmbed,
+            context: Prose,
+            confidence: Explicit,
+            raw: "embed",
+            path: "embed",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "![[embed]]",
+            text_range: "embed",
+            src_line: 8,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "a#^blk",
+            path: "a",
+            anchor: Some(
+                Block(
+                    "blk",
+                ),
+            ),
+            label: None,
+            line: None,
+            group: None,
+            range: "[[a#^blk]]",
+            text_range: "a#^blk",
+            src_line: 9,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "a#Section One",
+            path: "a",
+            anchor: Some(
+                Heading(
+                    "Section One",
+                ),
+            ),
+            label: None,
+            line: None,
+            group: None,
+            range: "[[a#Section One]]",
+            text_range: "a#Section One",
+            src_line: 9,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "hidden-link",
+            path: "hidden-link",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[hidden-link]]",
+            text_range: "hidden-link",
+            src_line: 11,
+        },
+    ],
+    tags: [
+        TagSummary {
+            name: "obsidian",
+            syntax: Frontmatter,
+            range: "obsidian",
+        },
+        TagSummary {
+            name: "obsidian/tag",
+            syntax: Hash,
+            range: "#obsidian/tag",
+        },
+        TagSummary {
+            name: "multi",
+            syntax: Hash,
+            range: "#multi",
+        },
+    ],
+    link_defs: [],
+}

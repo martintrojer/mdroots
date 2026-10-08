@@ -1,0 +1,89 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Yaml,
+            error: None,
+            entries: [
+                (
+                    "id",
+                    Str(
+                        "concept-b",
+                    ),
+                ),
+                (
+                    "type",
+                    Str(
+                        "concept",
+                    ),
+                ),
+                (
+                    "title",
+                    Str(
+                        "Concept B",
+                    ),
+                ),
+                (
+                    "tags",
+                    List(
+                        [
+                            "concepts",
+                        ],
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Concept B",
+            slug: "concept-b",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "../notes/note-a",
+            path: "../notes/note-a",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[../notes/note-a]]",
+            text_range: "../notes/note-a",
+            src_line: 9,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "c",
+            path: "c",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[c]]",
+            text_range: "c",
+            src_line: 9,
+        },
+    ],
+    tags: [
+        TagSummary {
+            name: "concepts",
+            syntax: Frontmatter,
+            range: "concepts",
+        },
+    ],
+    link_defs: [],
+}

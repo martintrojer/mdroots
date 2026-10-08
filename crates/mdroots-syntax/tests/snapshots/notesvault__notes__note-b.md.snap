@@ -1,0 +1,142 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Yaml,
+            error: None,
+            entries: [
+                (
+                    "id",
+                    Str(
+                        "20260102b",
+                    ),
+                ),
+                (
+                    "type",
+                    Str(
+                        "note",
+                    ),
+                ),
+                (
+                    "stage",
+                    Str(
+                        "draft",
+                    ),
+                ),
+                (
+                    "title",
+                    Str(
+                        "Note B",
+                    ),
+                ),
+                (
+                    "date",
+                    Str(
+                        "2026-01-02",
+                    ),
+                ),
+                (
+                    "tags",
+                    Str(
+                        "reading",
+                    ),
+                ),
+                (
+                    "source-url",
+                    Str(
+                        "https://example.org/paper",
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Note B",
+            slug: "note-b",
+            id: None,
+            custom_id: None,
+        },
+        HeadingSummary {
+            level: 2,
+            text: "Details",
+            slug: "details",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Url,
+            context: Frontmatter,
+            confidence: External,
+            raw: "https://example.org/paper",
+            path: "https://example.org/paper",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "https://example.org/paper",
+            text_range: "https://example.org/paper",
+            src_line: 8,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "note-a",
+            path: "note-a",
+            anchor: None,
+            label: Some(
+                "A",
+            ),
+            line: None,
+            group: None,
+            range: "[[note-a|A]]",
+            text_range: "A",
+            src_line: 12,
+        },
+        LinkSummary {
+            kind: Markdown,
+            context: Prose,
+            confidence: Explicit,
+            raw: "../cache/1.html",
+            path: "../cache/1.html",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[cached paper](../cache/1.html)",
+            text_range: "cached paper",
+            src_line: 12,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: InlineCode,
+            confidence: Explicit,
+            raw: "note-a",
+            path: "note-a",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[note-a]]",
+            text_range: "note-a",
+            src_line: 16,
+        },
+    ],
+    tags: [
+        TagSummary {
+            name: "reading",
+            syntax: Frontmatter,
+            range: "reading",
+        },
+    ],
+    link_defs: [],
+}

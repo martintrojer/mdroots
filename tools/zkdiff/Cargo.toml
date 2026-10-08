@@ -1,0 +1,19 @@
+[package]
+name = "zkdiff"
+version = "0.0.0"
+description = "Offline differential of mdroots against zk on testbed vaults."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+mdroots-core = { path = "../../crates/mdroots-core", version = "0.0.0" }
+mdroots-resolve = { path = "../../crates/mdroots-resolve", version = "0.0.0" }
+mdroots-syntax = { path = "../../crates/mdroots-syntax", version = "0.0.0" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = "1"
+unicode-normalization = "0.1"
+
+[lints]
+workspace = true

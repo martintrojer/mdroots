@@ -1,0 +1,64 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: None,
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Agents",
+            slug: "agents",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Wiki,
+            context: InlineCode,
+            confidence: Explicit,
+            raw: "refs",
+            path: "refs",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[refs]]",
+            text_range: "refs",
+            src_line: 3,
+        },
+        LinkSummary {
+            kind: CodeMention,
+            context: InlineCode,
+            confidence: Implicit,
+            raw: "cache/",
+            path: "cache/",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "cache/",
+            text_range: "cache/",
+            src_line: 3,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: InlineCode,
+            confidence: Explicit,
+            raw: "{{filename-stem}}",
+            path: "{{filename-stem}}",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[{{filename-stem}}]]",
+            text_range: "{{filename-stem}}",
+            src_line: 5,
+        },
+    ],
+    tags: [],
+    link_defs: [],
+}

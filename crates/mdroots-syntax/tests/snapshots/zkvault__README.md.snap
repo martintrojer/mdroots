@@ -1,0 +1,141 @@
+---
+source: crates/mdroots-syntax/tests/corpus.rs
+description: ""
+expression: value
+---
+Summary {
+    lossy: false,
+    frontmatter: Some(
+        FmSummary {
+            format: Yaml,
+            error: None,
+            entries: [
+                (
+                    "title",
+                    Str(
+                        "Example vault",
+                    ),
+                ),
+                (
+                    "date",
+                    Str(
+                        "2026-01-02",
+                    ),
+                ),
+                (
+                    "tags",
+                    List(
+                        [
+                            "index",
+                        ],
+                    ),
+                ),
+            ],
+        },
+    ),
+    headings: [
+        HeadingSummary {
+            level: 1,
+            text: "Example vault",
+            slug: "example-vault",
+            id: None,
+            custom_id: None,
+        },
+    ],
+    links: [
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "reference/gardening",
+            path: "reference/gardening",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[reference/gardening]]",
+            text_range: "reference/gardening",
+            src_line: 8,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "reference/composting",
+            path: "reference/composting",
+            anchor: None,
+            label: Some(
+                "composting notes",
+            ),
+            line: None,
+            group: None,
+            range: "[[reference/composting|composting notes]]",
+            text_range: "composting notes",
+            src_line: 8,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "journal/2026/W40",
+            path: "journal/2026/W40",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[journal/2026/W40]]",
+            text_range: "journal/2026/W40",
+            src_line: 9,
+        },
+        LinkSummary {
+            kind: Wiki,
+            context: Prose,
+            confidence: Explicit,
+            raw: "meeting-notes/2026/checkin-2026-10-01",
+            path: "meeting-notes/2026/checkin-2026-10-01",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[[meeting-notes/2026/checkin-2026-10-01]]",
+            text_range: "meeting-notes/2026/checkin-2026-10-01",
+            src_line: 9,
+        },
+        LinkSummary {
+            kind: Markdown,
+            context: Prose,
+            confidence: Explicit,
+            raw: "cache/x.html",
+            path: "cache/x.html",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[cached](cache/x.html)",
+            text_range: "cached",
+            src_line: 11,
+        },
+        LinkSummary {
+            kind: Markdown,
+            context: Prose,
+            confidence: Explicit,
+            raw: "org-archive/old.org",
+            path: "org-archive/old.org",
+            anchor: None,
+            label: None,
+            line: None,
+            group: None,
+            range: "[old archive](org-archive/old.org)",
+            text_range: "old archive",
+            src_line: 11,
+        },
+    ],
+    tags: [
+        TagSummary {
+            name: "index",
+            syntax: Frontmatter,
+            range: "index",
+        },
+    ],
+    link_defs: [],
+}
