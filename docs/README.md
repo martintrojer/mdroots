@@ -4,7 +4,7 @@
 
 | File | What |
 |---|---|
-| [../README.md](../README.md) | what mdroots is, status, crates, build |
+| [../README.md](../README.md) | what mdroots is, status, CLI example, crates, build |
 | [DECISIONS.md](DECISIONS.md) | current decisions D1–D8: the rule, why, what was rejected |
 | [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md) | questions not yet settled |
 | [specs/roots.md](specs/roots.md) | root discovery, filesystem classification, walk budgets, lazy mode, nested roots, many processes per root; what `mdroots-roots` implements |

@@ -307,6 +307,27 @@ Several markers (vault A: `.zk`, `.obsidian`) are merged, not ranked; the ladder
 Never diagnosed: code, comments, implicit links, external links (incl.
 `#+LINK`), targets outside the root, targets on disk but not indexed.
 
+**Policy as implemented** (`DiagnosticPolicy` in `mdroots-core`, used by
+every front end):
+
+- **Share.** Counted over the root's explicit links in referencing contexts
+  (not code or comments), external links excluded. Resolved, ambiguous and
+  on-disk-but-unindexed targets count as resolving. The thresholds are
+  strict: > 98% is error, < 80% hint. A root with no such links gets warning.
+  zk `dead-link` wins over the share; `dead-link = "none"` turns broken links
+  and anchors off.
+- **Codes.** `BrokenLink` and `BrokenAnchor` (a link to one note in which the
+  heading, custom id or block anchor is missing) at the broken severity;
+  `AmbiguousLink` at info, with every candidate in `related`;
+  `InvalidFrontmatter` at info, the rest of the note still indexed. Partial
+  matches (hints) are never diagnosed.
+- **Lazy.** The share counts only `stat`-checkable links: path link forms
+  (markdown, reference, image, HTML, org) or any target containing `/`. An
+  unresolved link that is not `stat`-checkable (a bare `[[stem]]`) is a
+  `NotInWorkingSet` hint, never broken.
+- Diagnostics come sorted by start offset, then `InvalidFrontmatter`,
+  `BrokenLink`, `BrokenAnchor`, `AmbiguousLink`, `NotInWorkingSet`.
+
 **Point-fresh publishing.** Waiting for whole-index freshness never ends for a
 peer or a lazy root. A process publishes a document's diagnostics once the
 document is parsed (buffer or disk) and each link target has been looked up in

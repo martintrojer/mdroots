@@ -34,6 +34,7 @@ mdroots/
     mdroots-roots/    root discovery, FS classification, walk budgets (std::fs + statfs via rustix; no SQLite)
     mdroots-index/    SqliteStore + flock roles (rusqlite)
     mdroots/          facade: Workspace API, re-exports, feature flags   ← what embedders depend on
+    mdroots-cli/      the `mdroots` binary: check, roots, resolve, backlinks (§6)
     mdroots-lsp/      LSP server binary + mdroots_lsp::serve() for embedding the server
   editors/nvim/       Neovim 0.12+ example config
   bench/              lspbench.py, mdsurvey.py, mdresolve.py, nvim_smoke.lua; criterion benches
@@ -56,6 +57,7 @@ syntax ← resolve ← core ← index ← mdroots ← mdroots-lsp
 | `mdroots-roots` | `mdroots-core`, `ignore` (gitignore matcher only), [`rustix`](https://github.com/bytecodealliance/rustix) (`statfs`; unix only) | ✓, all through its `Probe` trait | — | safe root finding is useful alone, e.g. to a search tool |
 | `mdroots-index` | `mdroots-core`, `rusqlite` (bundled); flock via `std::fs::File::try_lock` (no `fs4`) | ✓ | — | heavy deps behind one crate; adds only `SqliteStore` and flock roles |
 | `mdroots` | all of the above, behind features | — | partial | stable public surface |
+| `mdroots-cli` | `mdroots` | — (through the facade) | — | the command line; formatting only |
 | `mdroots-lsp` | `mdroots`, `lsp-server`, `lsp-types` | — | — | protocol only; the only crate naming `lsp-types` |
 
 MSRV is Rust 1.89 (for `File::try_lock`/`lock_shared`). Lock files (`<id>.lock`, `<id>.open`, `discover.lock`) are in [roots](roots.md).
@@ -63,6 +65,8 @@ MSRV is Rust 1.89 (for `File::try_lock`/`lock_shared`). Lock files (`<id>.lock`,
 **Publishing:** crates are versioned independently with `cargo-semver-checks` per crate; unstable sub-crates ship as internal `0.x` pinned `=x.y.z` by the facade (D6).
 
 ### Feature flags on `mdroots`
+
+The facade has no features yet: it always depends on `mdroots-roots` and has no `mdroots-index`. The table is the target from M4 on.
 
 | Feature | Default | Pulls in | C code | Threads | wasm32 |
 |---|---|---|---|---|---|
@@ -109,37 +113,54 @@ fm.map(|f| f.get("stage"));            // raw access for any key
 
 ### 3.2 A workspace (`mdroots`)
 
+The facade crate over `MemStore` and `mdroots-roots`. Public paths are absolute and canonical (through the workspace's `FileSystem`); a path outside the root is an `Unsupported` error.
+
 ```rust
 use mdroots::{Workspace, Options, Freshness, Cancel};
+use mdroots::syntax::PositionEncoding;
 
-let ws = Workspace::open_for(path, Options::default())?;      // classifies before any walk (roots spec)
-println!("{} ({:?}, {})", ws.root().path.display(), ws.root().mode, ws.root().reason);
-let ws = Workspace::open_for_nonblocking(path, opts);         // infallible; Lazy until discovery; Observer gets RootDecided
+let ws = Workspace::open_for(path, Options::default())?;      // discovery first (roots spec), then index
+let ws = Workspace::open_at(&root_dir, Options::default())?;  // a directory as the root; no discovery
+let r = ws.root();                                             // RootInfo { path, mode, reason, nested_roots }
+println!("{} ({:?}, {})", r.path.display(), r.mode, r.reason);
 
-let notes  = ws.search_notes("verif", 20)?;                    // fuzzy title/stem/alias
-let target = ws.resolve(&from_path, "[[some-note]]")?;         // Resolution { targets, step, ambiguous }
-let back   = ws.backlinks(&note_path)?;                        // Vec<LinkRef { from, range, context }>
-let tags   = ws.tags()?;                                       // Vec<(Tag, count)>
-let broken = ws.diagnostics(&note_path, &cancel)?;             // point-fresh; same policy as the LSP
-let hits   = ws.full_text("incorrectness logic", 10, &cancel)?;
+let files  = ws.files();                                       // Vec<PathBuf>, absolute, sorted
+let notes  = ws.notes();                                       // Vec<NoteSummary>
+let tags   = ws.tags();                                        // Vec<(String, usize)>, sorted by name
+let target = ws.resolve(&from_path, "[[some-note]]")?;         // Resolution { targets, step, status, hint }
+let links  = ws.document_links(&note_path)?;                   // Vec<DocLink>, source order
+let back   = ws.backlinks(&note_path)?;                        // Vec<Backlink>, sorted by source path
+let diags  = ws.diagnostics(&note_path, &cancel)?;             // Vec<Diagnostic>, same policy for every front end
+let (line, col) = ws.line_col(&note_path, offset, PositionEncoding::Utf32)?; // 0-based, overlay text wins
 
-match ws.freshness() {                                         // explicit; #[non_exhaustive]
-    Freshness::Fresh => {}
-    Freshness::Stale { pending } => {}
-    Freshness::Lazy => {}
+match ws.freshness() {                                         // #[non_exhaustive]
+    Freshness::Fresh => {}                                     // every note of the root is indexed
+    Freshness::Lazy => {}                                      // a working set only (lazy, single-file)
     _ => {}
 }
-ws.reconcile(Budget::time(Duration::from_millis(50)), &cancel)?; // a slice of work, when the embedder chooses
-ws.wait_fresh(Duration::from_secs(2), &cancel)?;                // CLIs wanting complete answers
 
-ws.set_overlay(&path, text);                                   // unsaved text; never written to the DB
-ws.clear_overlay(&path);
-let edits: WorkspaceEdit = ws.rename_note(&old, &new, &cancel)?; // link edits + RenameFile op
+ws.set_overlay(&path, text)?;                                  // unsaved text; adds the note if not indexed
+ws.clear_overlay(&path)?;
 ```
+
+- **`Options`** is a builder with `Default`: `workspace_folders` (bound the marker climb), `enumerator` (lists the markdown of a virtual checkout; default `SlFiles`, `NoEnumerator` turns vcs-enumerated mode off), `cancel` (checked during discovery and indexing), and `fs` + `probe`, set together or not at all (default `StdFs` and `StdProbe`; unix only, elsewhere the embedder supplies both).
+- **What `open_for` indexes.** The file must exist. Every mode but lazy and single-file: the notes discovery listed, plus the opened file (`Fresh`). Lazy roots: a working set, the opened file plus the notes of its directory, one level, no hidden, editor-temp or dataless entries, at most 2,000 files by name with the opened file counted (`Lazy`). Single-file decisions, and a file outside the decided root, index the file alone with its directory as root (`Lazy`). The opened file is always read, even if dataless.
+- **`open_at`** walks the directory with the M1 markdown walk (no budget, no filesystem classification) and reports `RootMode::Marker` with reason `opened at <dir>`. It is for a directory the caller already knows is a bounded root.
+- **`resolve`** parses `link_text` with the dialect of `from`, takes its first link and resolves it with goto semantics (the Partial step allowed; `hint` is true for a Partial hit). Text without a link is an `Unsupported` error. `targets` may lie outside the root.
+- **`document_links`, `backlinks`, `diagnostics`** return empty for a path inside the root that is not indexed. `Backlink.line` is 0-based; `from_title` is the frontmatter title, else the first level-1 heading, else the file stem.
+- **Diagnostics** are computed per call under `DiagnosticPolicy::for_store` (the policy is in [index](index.md) §3.3), with `lazy` set when freshness is `Lazy`.
+- The working set never grows after open, and nothing is written anywhere: no cache dir, no registry on disk.
+- Re-exports: `Cancel`, `Error`, `ErrorKind`, `FileSystem`, `StdFs`, `Diagnostic`, `DiagCode`, `Severity`, `RootMode`, `Probe`, `StdProbe`, `Enumerator`, `NoEnumerator`, `ResolveStep`, `LinkStatus`, and `mdroots_syntax` as `mdroots::syntax`.
+
+Later, with the SQLite index (M4): `open_for_nonblocking` (Lazy until discovery, `RootDecided` to the `Observer`), `search_notes`, `full_text`, `Freshness::Stale { pending }`, `reconcile(budget, &cancel)`, `wait_fresh`, `rename_note` (returns a `WorkspaceEdit`), feature flags, and working-set growth as files are opened.
 
 ### 3.3 Embedder additions (`Workspaces`)
 
-Driven by ramble's needs ([ramble](../research/ramble.md)). Synchronous, byte offsets and paths, `&Cancel` on slow calls.
+Driven by ramble's needs ([ramble](../research/ramble.md)). Synchronous, byte offsets and paths, `&Cancel` on slow calls. `Workspaces` maps paths to `Workspace`s and comes with M4.
+
+- **Exists now** on `Workspace` (one root, no `&Cancel`): `document_links`, `backlinks`, `notes`, with the `DocLink`, `Backlink` and `NoteSummary` below (`NoteSummary` without `modified`).
+- **M4:** `Workspaces`, `preview`, `notes_with_tag`, `full_text`, `touched`, `NoteSummary.modified`, `Options::write_cache`.
+- **M5:** `subscribe` events, fed by the LSP layer's change tracking.
 
 ```rust
 impl Workspaces {
@@ -158,10 +179,12 @@ impl Workspaces {
 
 #[non_exhaustive] pub struct DocLink {
     pub range: Range<usize>, pub text_range: Range<usize>,
-    pub kind: LinkKind,            // Md | Wiki | Org | RefLink | BarePath | Url | CodeMention
-    pub context: Context,          // Prose | Heading | Frontmatter | Html | Code | Comment
-    pub target: Option<PathBuf>, pub anchor: Option<String>, pub line: Option<u32>,
-    pub status: LinkStatus,        // Resolved | Broken | Ambiguous(Vec<PathBuf>) | Unchecked | External
+    pub kind: LinkKind,            // Markdown | Reference | Autolink | Image | Wiki | WikiEmbed | Org | BarePath | Url | CodeMention | Html | Templating | Footnote
+    pub context: Context,          // Prose | Heading | Frontmatter | Html | CodeBlock | InlineCode | Comment
+    pub target: Option<PathBuf>,   // best target when Resolved, Ambiguous or Unindexed
+    pub anchor: Option<String>,    // text after the first `#` as written (`^b` for a block); None if empty
+    pub line: Option<u32>,         // `path:LINE` of a code mention
+    pub status: LinkStatus,        // Resolved | Ambiguous | Unindexed | Broken | External | Unchecked
 }
 #[non_exhaustive] pub struct Backlink { pub from: PathBuf, pub from_title: String,
     pub range: Range<usize>, pub line: u32, pub in_code: bool }
@@ -172,6 +195,7 @@ impl Workspaces {
 #[non_exhaustive] pub struct Hit { pub path: PathBuf, pub line: u32, pub snippet: String }
 ```
 
+- `LinkStatus::Ambiguous` carries no candidates; `Resolution.targets` and the diagnostic's `related` list them, best first.
 - Code mentions (`` `src/main.rs:12` ``): `:LINE[:COL]` is stripped into `DocLink.line`. Extra search dirs come through `Options` (ramble passes page dir, VCS root, tree root).
 - `Options::write_cache(false)`: never touch the cache dir; in-memory index for the session (browsing someone else's tree).
 
@@ -187,7 +211,7 @@ impl Workspaces {
 - **Never writes user files.** Mutations are returned as `WorkspaceEdit`. Only the cache dir (D5) is written; `Options::index(IndexMode::Memory)` (Neovim setting `index = 'memory'`) turns that off too.
 - **`Send + Sync`, cheap to clone** (`Arc` inside); many threads query while one reconciles. `rusqlite::Connection` is `!Sync`, so `SqliteStore` holds a writer connection only while reconciler (mutex; every write `BEGIN IMMEDIATE`) and a capped read pool (default 2, bounded page cache each). Target: < 35 MB `phys_footprint` per process with 10 concurrent instances; private memory, not RSS, because macOS counts mmap'd DB pages in every process that touched them.
 - **Multiple roots.** `Workspace` is one root; `Workspaces` maps paths to roots, handles nesting and caches handles. The LSP uses `Workspaces`.
-- **Errors.** One `mdroots::Error` (thiserror) with `#[non_exhaustive] ErrorKind` (`Io`, `Cancelled`, `Unsupported`, `Corrupt`, …). Missing files and broken links are data, not errors. SQLite `BUSY` during WAL recovery is retried internally.
+- **Errors.** One `mdroots::Error` (kind + message) with `#[non_exhaustive] ErrorKind` (`Io`, `Cancelled`, `Unsupported`, `Corrupt`, …). Missing files and broken links are data, not errors. SQLite `BUSY` during WAL recovery is retried internally.
 - **Semver hygiene.** Public structs `#[non_exhaustive]`, builder for `Options`, no `pub` fields on types expected to grow.
 
 `#[non_exhaustive]` enums (callers need a `_` arm): `Element`, `LinkKind`, `Context`, `Dialect`, `Freshness`, `RootMode`, `ResolveStep`, `IndexMode`, `ChangeEvent`, `ErrorKind`. Exhaustive because the set is part of the model: `Confidence` (explicit / implicit / external, see [index](index.md)), `Role` (reconciler / peer), `PositionEncoding` (UTF-8 / 16 / 32).
@@ -263,7 +287,21 @@ The daemon question (D3) is reopened only with numbers: total `phys_footprint` w
 
 ## 6. CLI
 
-`mdroots check [path]` (broken links, CI exit code), `mdroots roots` (what was chosen and why), `mdroots resolve <from> <link>`, `mdroots backlinks <note>`, `mdroots search <q>`, `mdroots lsp`. The server starts only via `lsp`; a bare `mdroots` with non-TTY stdin prints usage and exits, because an implicit server would hang under CI or cron. Each subcommand is ~20 lines over §3.2; as the first embedder, the CLI keeps the API honest. Single-file mode is `Workspace` over `MemStore` with one overlay, not a special path.
+The `mdroots` binary (crate `mdroots-cli`) depends on the `mdroots` facade only; each command is formatting over §3.2 and holds no logic of its own. As the first embedder, it keeps the API honest. Arguments are parsed by hand.
+
+| Command | Does | Exit |
+|---|---|---|
+| `check [--quiet] [PATH...]` | diagnostics of the notes under each PATH (default `.`): a directory is opened with `open_at` and all its notes checked, a file with `open_for` and only that file. A file covered by several PATHs is reported once, under the first. Files are printed sorted by canonical path, each file's diagnostics by position, as `path:line:col: severity: message` (1-based; columns in characters). A summary `N files, E errors, W warnings, I info, H hints` goes to stderr unless `--quiet` | 1 on any error or warning, else 0 |
+| `roots PATH` | the root chosen for PATH: `root:` (absolute), `mode:`, `why:` (discovery's one-line reason), `files:` (indexed count), one `nested:` line per nested root | 0 |
+| `resolve FROM LINK` | each target, then `step:` and `status:` | 1 without a target |
+| `backlinks NOTE` | `path:line: title` per linking note | 0 |
+| `lsp` | reports "not implemented yet" (M5) | 2 |
+
+Paths under the current directory print relative to it, others absolute. Usage errors, unknown arguments, `--help` and a bare `mdroots` print usage to stderr and exit 2, so a server never starts implicitly (it would hang under CI or cron); errors print `mdroots: <message>` and exit 2. `search` comes with `search_notes` in M4.
+
+On the corpus: `check tests/corpus/zkvault` reports 5 hints and exits 0 (78% of its explicit links resolve, under the 80% hint threshold); `check tests/corpus/zk-min` reports 1 warning and exits 1. `roots` on a file in a large EdenFS checkout decides lazy on the monorepo marker `.buckconfig` in about 0.6 s cold, without enumerating the tree.
+
+`cargo doc` warns that the binary and the library share the name `mdroots`; harmless, the binary has `doc = false`.
 
 ## 7. Work order
 
@@ -271,7 +309,7 @@ The daemon question (D3) is reopened only with numbers: total `phys_footprint` w
 |---|---|
 | M1 (done) | `mdroots-syntax` with `LineIndex`, fuzzing, insta snapshot tests on the shapes of a ~730-note zk vault and a ~210-note research vault; `mdroots-core` + `mdroots-resolve` with the offline differential against zk's `notebook.db` and marksman ([M1 differential](../research/m1-differential.md)) |
 | M2 (done) | `mdroots-roots`: stages 1–4 of [roots](roots.md) §1, loose roots, nested-root registry rules, the registry trait with an in-memory `MemRegistry` and `discover.lock`; safety tests on a counting probe with NFS and EdenFS fakes; discovery fixtures 1–11 |
-| M3 | facade over `MemStore` + CLI (`check`, `resolve`, `roots`) |
+| M3 (done) | the `mdroots` facade (`Workspace` over `MemStore` and discovery, §3.2) and the `mdroots` CLI (`check`, `roots`, `resolve`, `backlinks`, §6); the diagnostics policy of [index](index.md) §3.3 in `mdroots-core` |
 | M4 | `mdroots-index` (SQLite, the SQLite root registry, reconcile, change log, flock roles) + churn tests and many-process fixtures 12–19 of [roots](roots.md) §7 |
 | M5 | `mdroots-lsp`; the Neovim smoke test switches from the marksman stand-in to the real binary |
 

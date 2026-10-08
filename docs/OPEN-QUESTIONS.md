@@ -11,11 +11,12 @@ Each one ends as a spec change or a decision in [DECISIONS.md](DECISIONS.md).
    Full list: [specs/index.md §5.2](specs/index.md).
 2. **Small repos on a virtual filesystem.** A small notes repo on
    [EdenFS](https://github.com/facebook/sapling) (the virtual filesystem from
-   the Sapling project) stays lazy, so `[[stem]]` never resolves. Enumerate
-   through the EdenFS glob API or `sl files` ([Sapling](https://sapling-scm.com/))
-   under a time budget? Open: size cutoff, budget (500 ms?), refreshing the
-   list without a watcher, and whether `git ls-files` should do the same for
-   other lazy roots ([specs/roots.md](specs/roots.md)).
+   the Sapling project) is enumerated with `sl files`
+   ([Sapling](https://sapling-scm.com/)) within 500 ms or stays lazy
+   ([specs/roots.md](specs/roots.md) §3). Open: is 500 ms the right budget,
+   the EdenFS glob API instead of a child process, refreshing the list
+   without a watcher, and whether `git ls-files` should do the same for
+   other lazy roots.
 3. **FSEvents replay cost.** After a day offline, replay from `sinceWhen` may
    report directories only (`MustScanSubDirs`, dropped events,
    `EventIdsWrapped`) and fall back to the `dir_state` diff. How long does it

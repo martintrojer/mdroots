@@ -15,8 +15,21 @@ M1 is done: `mdroots-syntax` (parsing, link scan, frontmatter),
 M2 is done: `mdroots-roots` finds the root of a file without listing
 trees that are virtual, remote or too big: registry lookup, marker climb,
 filesystem classification, [git](https://git-scm.com) index reading and budgeted walks, with an
-in-memory registry ([spec](docs/specs/roots.md)). Next is M3: the
-`mdroots` facade and CLI.
+in-memory registry ([spec](docs/specs/roots.md)).
+
+M3 is done: the `mdroots` facade (`Workspace`: discover a root, index it
+in memory, answer links, backlinks, tags and diagnostics) and the
+`mdroots` CLI. Next is M4: the SQLite index in `mdroots-index`.
+
+```sh
+cargo run -p mdroots-cli -- check tests/corpus/zkvault    # path:line:col: severity: message
+cargo run -p mdroots-cli -- roots tests/corpus/zk-min/broken.md
+cargo run -p mdroots-cli -- resolve tests/corpus/zk-min/a.md '[[b]]'
+cargo run -p mdroots-cli -- backlinks tests/corpus/zk-min/a.md
+```
+
+`check` exits 1 on any error or warning, so it works in CI. Commands and
+output: [docs/specs/library.md §6](docs/specs/library.md#6-cli).
 
 ## Goals
 
@@ -30,15 +43,16 @@ in-memory registry ([spec](docs/specs/roots.md)). Next is M3: the
 ## Crates
 
 ```
-mdroots-syntax ← mdroots-resolve ← mdroots-core ← mdroots-index ← mdroots ← mdroots-lsp
-                                         ↑
-                                   mdroots-roots  (behind a feature)
+mdroots-syntax ← mdroots-resolve ← mdroots-core ← mdroots-index ← mdroots ← mdroots-lsp, mdroots-cli
+                                         ↑                           ↑
+                                   mdroots-roots ────────────────────┘
 ```
 
 `mdroots-core` holds the `Store` and `FileSystem` traits, `MemStore` and
 reconcile; `mdroots-index` adds the SQLite store and the per-root writer
-lock. Embedders depend on `mdroots`. `mdroots-index`, `mdroots` and
-`mdroots-lsp` are not written yet. See [docs/specs/library.md](docs/specs/library.md).
+lock. Embedders depend on `mdroots`; `mdroots-cli` is the `mdroots`
+binary. `mdroots-index` and `mdroots-lsp` are not written yet, so the
+facade runs over `MemStore` and always includes `mdroots-roots`. See [docs/specs/library.md](docs/specs/library.md).
 
 ## Layout
 
