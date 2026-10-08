@@ -57,7 +57,7 @@ pub struct DiagnosticPolicy {
 
 impl DiagnosticPolicy {
     /// Decide the broken-link severity for the store's root: the root's
-    /// config wins (zk `dead-link`), else the share of resolving links. In
+    /// config wins ([zk](https://github.com/zk-org/zk) `dead-link`), else the share of resolving links. In
     /// lazy mode the share counts only `stat`-checkable links.
     pub fn for_store(store: &MemStore, lazy: bool) -> DiagnosticPolicy {
         let (mut total, mut resolved) = (0u32, 0u32);
