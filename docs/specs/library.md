@@ -4,11 +4,11 @@ Related: [roots](roots.md), [index, links, frontmatter](index.md), [decisions](.
 
 Two requirements:
 1. Everything mdroots knows is usable from other Rust programs without speaking LSP.
-2. It ships a working Neovim 0.12+ config ([`editors/nvim/`](../../editors/nvim/), smoke-tested).
+2. It ships a working [Neovim](https://neovim.io) 0.12+ config ([`editors/nvim/`](../../editors/nvim/), smoke-tested).
 
 ## 1. Principle: the LSP server is a thin client of the library
 
-marksman (F#) and zk (Go `internal/` packages) put their core inside the server or CLI, so it can't be reused. In mdroots all behaviour lives in library crates that a TUI, CLI, static-site generator, MCP server or another language server can embed (e.g. a flashcard scanner, a semantic-search tool reusing the chunker and link graph, or ramble, a separate TUI markdown reader by the same author). See D2.
+[marksman](https://github.com/artempyanykh/marksman) (F#) and [zk](https://github.com/zk-org/zk) (Go `internal/` packages) put their core inside the server or CLI, so it can't be reused. In mdroots all behaviour lives in library crates that a TUI, CLI, static-site generator, MCP server or another language server can embed (e.g. a flashcard scanner, a semantic-search tool reusing the chunker and link graph, or ramble, a separate TUI markdown reader by the same author). See D2.
 
 **`mdroots-lsp` target: ≤ 3k lines of protocol glue.** An estimate: zk is ≈ 14k non-test lines, and its LSP layer alone is 2.2–2.5k lines for fewer features.
 
@@ -71,7 +71,7 @@ MSRV is Rust 1.89 (for `File::try_lock`/`lock_shared`). Lock files (`<id>.lock`,
 | `fts` | ✓ | SQLite FTS5 (needs `index`) | SQLite | — | — |
 | `watch` | ✓ | macOS: `fsevent-sys` FFI (replay needs `sinceWhen`, which `notify` can't set); Linux: inotify via `notify` | — | one watcher thread, reconciler only | — |
 | `parallel` | ✓ | `rayon` for the cold parse | — | a pool | — |
-| `org` | ✓ | org-mode parsing in `mdroots-syntax` | — | — | ✓ |
+| `org` | ✓ | [org-mode](https://orgmode.org) parsing in `mdroots-syntax` | — | — | ✓ |
 | `serde` | — | `serde` derives on public types | — | — | ✓ |
 
 - `Options::background(true)` adds one background thread; needs `std::thread`, so not on `wasm32-unknown-unknown`.

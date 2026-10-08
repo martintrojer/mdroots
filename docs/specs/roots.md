@@ -4,7 +4,7 @@ Related: [index spec](index.md), [library spec](library.md), D3, D4, D5 in [DECI
 
 Hard rule: **mdroots never calls `readdir` on a tree before it has established that the tree is local and bounded.** A monorepo on a virtual filesystem such as [EdenFS](https://github.com/facebook/sapling) (the virtual filesystem from the [Sapling](https://sapling-scm.com/) project) can hold millions of files fetched on demand; a recursive walk there takes hours. Every rule below exists to make that walk impossible.
 
-Implementation: the `mdroots-roots` crate implements §1–§4, the §6 data model and fixtures 1–11 of §7. Every filesystem call goes through its `Probe` trait (`StdProbe` over `std::fs` and `statfs`, `FakeProbe` in memory, `Counting` to count and forbid `read_dir`), so tests can prove the hard rule. `discover()` takes a canonical absolute file path; canonicalising (including `F_GETPATH` on macOS) is the caller's job. The registry is a trait with an in-memory `MemRegistry`; the SQLite registry, §5 and the rest of §6 come with `mdroots-index` (M4).
+Implementation: the `mdroots-roots` crate implements §1–§4, the §6 data model and fixtures 1–11 of §7. Every discovery filesystem call goes through its `Probe` trait (`StdProbe` over `std::fs` and `statfs`, `FakeProbe` in memory, `Counting` to count and forbid `read_dir`), so tests can prove the hard rule. Two things sit outside `Probe`: `DiscoverLock` opens `discover.lock` with `std::fs`, and the `SlFiles` enumerator runs `sl files` in a child process. `discover()` takes a canonical absolute file path; canonicalising (including `F_GETPATH` on macOS) is the caller's job. The registry is a trait with an in-memory `MemRegistry`; the SQLite registry, §5 and the rest of §6 come with `mdroots-index` (M4).
 
 ## 0. Measurements (M-series Mac, APFS)
 
@@ -65,7 +65,7 @@ Also a miss: a rate verdict with fewer than two agreeing measurements (stage 4),
 | monorepo | `.eden/`, `.buckconfig` ([Buck2](https://buck2.build)), `WORKSPACE`/`MODULE.bazel` ([Bazel](https://bazel.build)) | tree is **huge** |
 | editor | LSP `workspaceFolders` containing the file, when sent | strong |
 
-Each marker costs one `lstat` and is typed (file or dir), so a `workspace/` dir does not match `WORKSPACE` on a case-insensitive volume. The nearest directory with any marker is the root; within one directory the reported marker is the highest of explicit > notes tool > docs tool > editor > VCS > monorepo, and any monorepo marker there makes the tree huge. A `.mdrootsignore` stops the climb with no root. The nearest strong marker beats a farther VCS root (a `.zk/` notebook inside a git repo). A `.git` file (submodule, worktree) is a root of its own. Discovery must work from markers alone, because Neovim with `root_dir = nil` sends `workspaceFolders = null` and reused clients never get `didChangeWorkspaceFolders` (see [library spec](library.md)).
+Each marker costs one `lstat` and is typed (file or dir), so a `workspace/` dir does not match `WORKSPACE` on a case-insensitive volume. The nearest directory with any marker is the root; within one directory the reported marker is the highest of explicit > notes tool > docs tool > editor > VCS > monorepo, and any monorepo marker there makes the tree huge. A `.mdrootsignore` stops the climb with no root. The nearest strong marker beats a farther VCS root (a `.zk/` notebook inside a [git](https://git-scm.com) repo). A `.git` file (submodule, worktree) is a root of its own. Discovery must work from markers alone, because [Neovim](https://neovim.io) with `root_dir = nil` sends `workspaceFolders = null` and reused clients never get `didChangeWorkspaceFolders` (see [library spec](library.md)).
 
 ### Stage 3: classify without walking
 
@@ -120,7 +120,7 @@ A count going above its budget aborts; depth counts from the walk root (its chil
 
 ## 2. Loose roots (no VCS or marker)
 
-1. **Denylist**, compared lexically (no symlink resolution). Exact matches only: `/`, `$HOME`, `/tmp`, `/private`, `/private/tmp`, `/var`, `/private/var`, a `/Volumes/<name>` volume root, `~/Downloads`, `~/Desktop`; so `/var/folders/...` temp dirs are allowed. By prefix: `~/Library` and everything under it, except inside an Obsidian vault under `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/<vault>`. Also denied: any virtual/remote FS, a local mount inside a virtual repo, and a directory whose mount cannot be read. Denied → **single-file mode**: the current buffer plus its relative links resolved by `stat`.
+1. **Denylist**, compared lexically (no symlink resolution). Exact matches only: `/`, `$HOME`, `/tmp`, `/private`, `/private/tmp`, `/var`, `/private/var`, a `/Volumes/<name>` volume root, `~/Downloads`, `~/Desktop`; so `/var/folders/...` temp dirs are allowed. By prefix: `~/Library` and everything under it, except inside an [Obsidian](https://obsidian.md) vault under `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/<vault>`. Also denied: any virtual/remote FS, a local mount inside a virtual repo, and a directory whose mount cannot be read. Denied → **single-file mode**: the current buffer plus its relative links resolved by `stat`.
 2. **Lower bound from the buffer's links**: every existing relative link target directory must be inside the root. The file path and link dirs are cleaned lexically first (`.` dropped, `..` applied), so the denylist sees the real target.
 3. **Grow upward.** Start at the deepest common ancestor of `dir(file)` and the existing link target dirs, always accepted unless denied, and walk it with the loose budget. If that walk aborts, the start dir becomes a **lazy** root (verdict `budget`; a rate abort follows the two-measurement rule of §1 stage 4) and nothing grows. A start dir outside `$HOME`, or with no `$HOME`, never grows. Otherwise climb toward `$HOME` (never reaching it), walking each parent with the child's subtree skipped and the child's counts reused, within what is left of the loose budget (wall time counted from the start of the search). Accept the parent only if it is not denied, its walk does not abort, the child's deepest directory stays within the loose depth budget below it, and either:
    - **(a)** its subtree has ≥ 20 md files and md density (`md_files / files`) ≥ 30%, or
@@ -223,12 +223,12 @@ Unlinking or renaming an open SQLite file is a documented corruption path.
 ### Versions, memory, scheduling
 
 - **Upgrades**: schema version in the DB filename and locks, so v2 and v3 processes never fight over migrations. A v2 file is GC-ed after 7 days once `<id>.v2.open` can be taken exclusively. The registry carries its own `k` for the same reason.
-- **Memory**: < 35 MB `phys_footprint` per process with N=10 concurrent instances (buffers, overlays, hot cache, page caches of the capped read pool, plus the writer connection in the reconciler). SQLite is `mmap`ed, so N processes share one page-cache copy; on macOS those pages show in every process's RSS, so measure with `footprint` or `proc_pid_rusage` (`ri_phys_footprint`), not RSS. For comparison, 10 marksman instances are 10 full workspaces at 134–145 MB RSS each.
+- **Memory**: < 35 MB `phys_footprint` per process with N=10 concurrent instances (buffers, overlays, hot cache, page caches of the capped read pool, plus the writer connection in the reconciler). SQLite is `mmap`ed, so N processes share one page-cache copy; on macOS those pages show in every process's RSS, so measure with `footprint` or `proc_pid_rusage` (`ri_phys_footprint`), not RSS. For comparison, 10 [marksman](https://github.com/artempyanykh/marksman) instances are 10 full workspaces at 134–145 MB RSS each.
 - **Scheduling**: background work (walks, sweeps, FTS, inference, vcs-enumerated parsing) at `QOS_CLASS_BACKGROUND` (E-cores only). `QOS_CLASS_UTILITY` only for the small link-target queue of open buffers (it prefers P-cores). Requests at default QoS. Linux: `nice 10` + `IOPRIO_CLASS_IDLE` for background, best-effort for the link-target queue.
 
 ## 6. Housekeeping
 
-Registry columns (`RootRecord` in the implementation, which keeps the walk counts as one `stats` value and has no `db_file`, `generation` or `schema` until M4): `root_id, path, kind (marker|vcs|tracked|loose|single|lazy|vcs-enumerated), marker, marker_ino, volume_uuid, st_dev, fs_type, db_file, generation, entries, md_files, dirs, walk_ms, ms_per_dir, verdict_source (fs|eden|budget|rate|user), rate_confirmations, decided_at, decision_reason, last_seen, schema`.
+Registry columns (`RootRecord` in the implementation, which keeps the walk counts as one `stats` value and has no `db_file`, `generation` or `schema` until M4): `root_id, path, kind (marker|vcs|tracked|loose|lazy|vcs-enumerated; single-file decisions are never registered), marker, marker_ino, volume_uuid, st_dev, fs_type, db_file, generation, entries, md_files, dirs, walk_ms, ms_per_dir, verdict_source (fs|eden|budget|rate|user), rate_confirmations, decided_at, decision_reason, last_seen, schema`.
 
 - **GC**: at most daily, claimed by the process that updates `meta.gc_at` in a `BEGIN IMMEDIATE` registry transaction. Candidates: roots not seen for 30 days or whose path is gone (after the move check of §1), old-schema DBs older than 7 days, stale generations. Each needs `LOCK_EX|LOCK_NB` on `<db>.open`, else skipped until the next run.
 - **OS cache purge** (macOS clears `~/Library/Caches` under disk pressure; cleaners) is treated as deletion: peers see the inode/generation change and reopen, the next reconciler rebuilds; without a registry, discovery reruns under `discover.lock`.
@@ -237,20 +237,20 @@ Registry columns (`RootRecord` in the implementation, which keeps the walk count
 
 ## 7. Fixtures
 
-Each uses a temporary `XDG_CACHE_HOME`. "Zero readdir" is checked with an instrumented walker or `fs_usage -f filesys`. Timings logged.
+Many-process fixtures use a temporary `XDG_CACHE_HOME`. "Zero readdir" is checked with an instrumented walker or `fs_usage -f filesys`. Timings logged.
 
 Discovery fixtures 1–11 live in `crates/mdroots-roots/tests/fixtures.rs`. Fixtures 1–4 and 9–11 build synthetic trees in a temp dir and run over `StdProbe`, wrapped in a probe that pins `home()` to the temp dir (setting `$HOME` would need unsafe code), so growth rules apply and no climb leaves the temp dir; `Counting` checks every `readdir`. Fixtures 5–8 need a virtual FS or a cloud folder and run on `FakeProbe`. No test touches a real home directory, network mount or virtual FS. Each asserts its `discover()` call stays under one second. Many-process fixtures 12–19 come with `mdroots-index` (M4).
 
 **Discovery**
 
 1. A file in a no-VCS `scratch/` dir inside a projects folder of ~40 repos: loose root `scratch/`, climb rejected by (a) and (b); also on a synthetic copy without the tarball tree (16 files, 3 md). A file inside any of the repos gets that repo.
-2. A mid-size git checkout (3.8k files, 13 md, the shape of a neovim checkout): budgeted walk.
+2. A mid-size git checkout (3.8k files, 13 md, the shape of a [Neovim](https://neovim.io) checkout): budgeted walk.
 3. Synthetic notes folder, no VCS, 4,000 md among 6,000 files: loose root accepted by (a). A larger one (6,000 md) exceeds the loose md budget: lazy, verdict `budget`.
 4. A `.zk` notebook inside a git repo.
 5. A file in a large EdenFS monorepo: lazy from `statfs` before any marker stat, root from `readlink(.eden/root)`, zero readdir outside the file's dir.
 6. A file in a build-output mount inside that checkout: lazy or single-file, zero readdir outside the file's dir, no registry row at the mount.
-7. A small notes repo on EdenFS: `vcs-enumerated` within 500 ms, `[[stem]]` resolves, zero readdir outside opened dirs.
-8. A dataless cloud file (iCloud after `brctl evict`, or Drive online-only), opened and linked: link existence works, not read during the walk, still `SF_DATALESS` afterwards.
+7. A small notes repo on EdenFS: `vcs-enumerated` within 500 ms, zero readdir outside opened dirs (that `[[stem]]` then resolves is checked with the index, M3).
+8. A dataless cloud file (iCloud after `brctl evict`, or Drive online-only), in a loose root: recorded as dataless and not read during discovery, still `SF_DATALESS` afterwards; link existence by `stat` (opening it is M3).
 9. A dotfiles repo at a temp `HOME` with a large untracked tree: `tracked-only`, zero walk.
 10. `git clone` into an existing lazy root, open a file in it: stage 1 probe registers a nested root.
 11. `mv notes notes2` between sessions: row re-keyed by marker inode + volume UUID, no cold rebuild.

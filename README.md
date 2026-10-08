@@ -2,7 +2,7 @@
 
 A zero-config markdown (and org) language server and Rust library. It finds
 your notes, indexes them in the background, and understands the link styles
-of zk, Obsidian, marksman, Foam, Dendron, Logseq, org-mode and plain
+of [zk](https://github.com/zk-org/zk), [Obsidian](https://obsidian.md), [marksman](https://github.com/artempyanykh/marksman), [Foam](https://foambubble.github.io/foam/), [Dendron](https://www.dendron.so), [Logseq](https://logseq.com), [org-mode](https://orgmode.org) and plain
 relative paths.
 
 ## Status
@@ -14,7 +14,7 @@ M1 is done: `mdroots-syntax` (parsing, link scan, frontmatter),
 
 M2 is done: `mdroots-roots` finds the root of a file without listing
 trees that are virtual, remote or too big: registry lookup, marker climb,
-filesystem classification, git index reading and budgeted walks, with an
+filesystem classification, [git](https://git-scm.com) index reading and budgeted walks, with an
 in-memory registry ([spec](docs/specs/roots.md)). Next is M3: the
 `mdroots` facade and CLI.
 
@@ -60,7 +60,7 @@ bash scripts/check.sh   # fmt, clippy -D warnings, tests
 
 ## Neovim
 
-Copy `editors/nvim/lsp/mdroots.lua` (and optionally `editors/nvim/plugin/mdroots.lua`)
+For [Neovim](https://neovim.io) 0.12+, copy `editors/nvim/lsp/mdroots.lua` (and optionally `editors/nvim/plugin/mdroots.lua`)
 into `~/.config/nvim/`. Details: [docs/specs/library.md](docs/specs/library.md).
 
 ## License

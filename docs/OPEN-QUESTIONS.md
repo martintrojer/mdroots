@@ -3,7 +3,7 @@
 Each one ends as a spec change or a decision in [DECISIONS.md](DECISIONS.md).
 
 1. **Unvalidated thresholds.** Diagnostic severity at 98% / 80% resolved links
-   (a ~730-note zk vault resolves ~94.7%, so without reading its zk config it
+   (a ~730-note [zk](https://github.com/zk-org/zk) vault resolves ~94.7%, so without reading its zk config it
    would get warnings); the 7-day hysteresis on lazy verdicts; the 95% sibling
    threshold for missing-frontmatter-key hints (7 hints in a ~210-note research
    vault, 3 in the zk vault; exclude generated folders such as a `cache/` of
