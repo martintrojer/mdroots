@@ -176,6 +176,35 @@ fn eden_enumeration_in_budget_is_vcs_enumerated() {
 }
 
 #[test]
+fn eden_monorepo_is_lazy_and_never_enumerated() {
+    for marker in [".buckconfig", "WORKSPACE", "MODULE.bazel"] {
+        let probe = Counting::new(
+            eden_repo(&["/eden/repo", "/eden/repo/docs"]).file(format!("/eden/repo/{marker}"), ""),
+        );
+        let en = FakeEnum(Some(strs(&["docs/a.md"])), AtomicUsize::new(0));
+        let d = run(
+            &probe,
+            &mut MemRegistry::new(),
+            &en,
+            "/eden/repo/docs/a.md",
+            &[],
+        );
+        assert_eq!(d.mode, RootMode::Lazy, "{marker}");
+        assert_eq!(
+            en.1.load(Ordering::Relaxed),
+            0,
+            "{marker}: enumerator called"
+        );
+        assert!(
+            explain(&d).contains(&format!("monorepo marker {marker}")),
+            "{}",
+            explain(&d)
+        );
+        assert_eq!(probe.read_dir_total(), 0);
+    }
+}
+
+#[test]
 fn eden_enumeration_over_budget_is_lazy_and_not_retried() {
     let probe = Counting::new(eden_repo(&["/eden/repo", "/eden/repo/docs"]));
     let en = FakeEnum(None, AtomicUsize::new(0));

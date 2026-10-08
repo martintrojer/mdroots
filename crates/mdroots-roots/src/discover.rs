@@ -38,6 +38,9 @@ const INDEX_CAP: usize = 200_000;
 /// vcs-enumerated budget (spec §3).
 const ENUM_BUDGET: Duration = Duration::from_millis(500);
 const ENUM_CAP: usize = 20_000;
+/// Monorepo marker files that keep an EdenFS checkout lazy, unenumerated.
+const MONOREPO_FILES: &[&str] = &[".buckconfig", "WORKSPACE", "MODULE.bazel"];
+
 /// A Rate or Budget verdict blocks re-enumeration for this long.
 const RETRY_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 /// Names stat'ed per level by the stage-1 probe on a non-local filesystem:
@@ -497,6 +500,20 @@ impl Ctx<'_> {
         });
         if let Some(rec) = recent {
             return Out::recorded(&rec);
+        }
+        // A monorepo is never enumerated (spec §1 stage 3: monorepo → lazy):
+        // three `lstat`s at the checkout root, cheap on EdenFS.
+        if let Some(name) = MONOREPO_FILES
+            .iter()
+            .find(|n| self.probe.lstat(&vroot.join(n)).is_ok_and(|s| s.is_file))
+        {
+            return Out::new(
+                Some(vroot),
+                RootMode::Lazy,
+                format!("lazy: {why}; monorepo marker {name}"),
+                VerdictSource::Eden,
+            )
+            .marker(marker);
         }
         match enumerator.md_paths(&vroot, ENUM_BUDGET, ENUM_CAP) {
             Some(mut md) => {

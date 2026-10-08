@@ -144,7 +144,7 @@ Lazy mode never enumerates the tree:
 
 **vcs-enumerated** (small Eden repos, where lazy would mean `[[stem]]` never resolves): ask Eden once, in the background, for `**/*.md` via its glob API, falling back to `sl files 'glob:**/*.md'`, killed after 500 ms or 20k paths. In budget → the path list feeds stem resolution and the reconcile queue as in index-driven mode, parsed at background priority, open and linked files first. Over budget → stays lazy, recorded (verdict `budget`), not retried for 7 days. No watcher either way.
 
-In the implementation the enumeration is an `Enumerator` trait: `SlFiles` runs `sl files 'glob:**/*.md'` (the glob API is not used yet) and `NoEnumerator` turns the mode off. `discover()` runs it synchronously within the 500 ms budget; moving it to the background is the index layer's job. Only a virtual FS whose `.eden/root` resolves is offered to the enumerator; a remote FS with `.eden` is lazy, and a virtual or remote FS without `.eden/root` is lazy with no root and is not registered.
+In the implementation the enumeration is an `Enumerator` trait: `SlFiles` runs `sl files 'glob:**/*.md'` (the glob API is not used yet) and `NoEnumerator` turns the mode off. `discover()` runs it synchronously within the 500 ms budget; moving it to the background is the index layer's job. Only a virtual FS whose `.eden/root` resolves, and whose checkout root has no monorepo marker file (`.buckconfig`, `WORKSPACE`, `MODULE.bazel`), is offered to the enumerator; a remote FS with `.eden` is lazy, and a virtual or remote FS without `.eden/root` is lazy with no root and is not registered.
 
 ## 4. Nested roots
 
