@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 mdroots-core = { path = "../mdroots-core", version = "0.0.0" }
+ignore = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["fs"] }
