@@ -5,6 +5,7 @@ members = [
     "crates/mdroots-resolve",
     "crates/mdroots-core",
     "crates/mdroots-roots",
+    "crates/mdroots",
     "tools/zkdiff",
 ]
 
