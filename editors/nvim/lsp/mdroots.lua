@@ -31,14 +31,12 @@ return {
 
   -- Everything is optional, and the defaults are meant to be right. Neovim
   -- sends `settings` in workspace/didChangeConfiguration right after
-  -- initialize and again whenever you change client.settings; mdroots also
-  -- answers workspace/configuration requests from it. Keys live under
-  -- `mdroots`.
+  -- initialize and again whenever you change client.settings. Keys live
+  -- under `mdroots`.
   settings = {
     mdroots = {
       -- diagnostics = 'auto',       -- 'auto' | 'off' | 'hint' | 'warn' | 'error'
-      -- code_mentions = 'goto',     -- links in ```code```: 'goto' | 'ignore'
-      -- index = 'auto',             -- 'auto' | 'memory' (never write the cache dir)
+      --                                (the severity of broken links and anchors)
     },
   },
 }

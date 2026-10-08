@@ -4,10 +4,10 @@
 -- with the built-in client; no plugins are needed. Delete what you don't want.
 --
 -- Built-in defaults you already get once mdroots attaches (nothing to map):
---   K      hover (note preview)        grn  rename heading / tag; on a link or
---   grr    references / backlinks           the H1 it renames the file too
---   gra    code actions (ToC, ...)     <C-]> goto via tagfunc (follows [[links]])
---   ]d [d  next/prev broken link       <C-x><C-o> completion via omnifunc
+--   K      hover (note preview)        grn  on a link or the H1: rename the note
+--   grr    references / backlinks           (file and links to it)
+--   ]d [d  next/prev broken link       <C-]> goto via tagfunc (follows [[links]])
+--                                      <C-x><C-o> completion via omnifunc
 -- gO is NOT among them for markdown: the markdown ftplugin maps it to a
 -- treesitter outline. The LspAttach handler below remaps it to LSP symbols.
 --
@@ -68,12 +68,14 @@ vim.api.nvim_create_autocmd('LspAttach', {
       vim.lsp.completion.enable(true, client.id, buf, { autotrigger = true })
     end
 
-    -- "N references" lenses above headings.
+    -- "N references" lenses above headings, once the server offers code
+    -- lenses (not yet).
     if client:supports_method('textDocument/codeLens') then
       vim.lsp.codelens.enable(true, { bufnr = buf })
     end
 
-    -- Fold by heading sections.
+    -- Fold by heading sections, once the server offers folding ranges (not
+    -- yet).
     if client:supports_method('textDocument/foldingRange') then
       local win = vim.api.nvim_get_current_win()
       vim.wo[win][0].foldmethod = 'expr'
@@ -81,7 +83,7 @@ vim.api.nvim_create_autocmd('LspAttach', {
       vim.wo[win][0].foldlevel = 99
     end
 
-    -- Workspace-wide note/heading search (fuzzy; falls back to full text).
+    -- Workspace-wide note search (fuzzy over titles, file names and aliases).
     map('<leader>ns', function()
       vim.lsp.buf.workspace_symbol(vim.fn.input('notes> '))
     end, 'search notes')
@@ -111,7 +113,8 @@ vim.api.nvim_create_autocmd('LspAttach', {
     end, 'rename this note')
 
     -- Create a note from the visual selection and replace it with a link,
-    -- using the root's inferred link style and filename scheme.
+    -- using the root's inferred link style and filename scheme. Needs the
+    -- server's extract-note code action, which is not built yet.
     map('<leader>nn', function()
       vim.lsp.buf.code_action({
         filter = function(a)
@@ -121,8 +124,8 @@ vim.api.nvim_create_autocmd('LspAttach', {
       })
     end, 'new note from selection', 'x')
 
-    -- Why did mdroots pick this root? Prints root, mode (walk/git-index/lazy),
-    -- counts and the decision reason (via window/showMessage).
+    -- Why did mdroots pick this root? Prints root, mode (marker, vcs, lazy, ...),
+    -- the decision reason and the file count (via window/showMessage).
     vim.api.nvim_buf_create_user_command(buf, 'MdrootsInfo', function()
       client:exec_cmd({ command = 'mdroots.info', arguments = { vim.uri_from_bufnr(buf) } }, { bufnr = buf })
     end, { desc = 'mdroots: show root and index status' })
