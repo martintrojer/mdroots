@@ -1,4 +1,4 @@
--- Headless smoke test for editors/nvim (Neovim 0.12+) against the real
+-- Headless smoke test for editors/nvim ([Neovim](https://neovim.io) 0.12+) against the real
 -- `mdroots lsp` server. Read-only on two vaults given by $MDROOTS_VAULT_A and
 -- $MDROOTS_VAULT_B (defaults: tests/corpus/zkvault and tests/corpus/notesvault):
 -- buffers there are only opened and queried. Edits (completion probe, broken
