@@ -8,7 +8,7 @@ within milliseconds and improve as the index catches up.
 
 ## 0. Testbed
 
-Two zk notebooks, both local APFS git repos: **vault A** (~730 notes, also has
+Two [zk](https://github.com/zk-org/zk) notebooks, both local APFS [git](https://git-scm.com) repos: **vault A** (~730 notes, also has
 `.obsidian/`) and **vault B** (~210-note research vault). mdroots only reads
 them; state lives in the cache dir (D5) and rename/edit tests run on a copy.
 Counts skip hidden and editor temp files.
@@ -26,7 +26,7 @@ Counts skip hidden and editor temp files.
 | bare path-like tokens / exist on disk | 2,423 / 2 | 471 / 192 (mostly frontmatter values) |
 | zk unresolved internal / share resolved | 57 / 94.7% | 138 / 93.5% |
 
-| Baseline (`initialize` → first result) | marksman | zk lsp (prebuilt `notebook.db`) |
+| Baseline (`initialize` → first result) | [marksman](https://github.com/artempyanykh/marksman) | zk lsp (prebuilt `notebook.db`) |
 |---|---|---|
 | vault A / vault B | 750–821 / 636–694 ms | 34–37 / 26–27 ms |
 | RSS | 139–143 MB | 33–34 MB |
@@ -219,7 +219,7 @@ Each process has a capped read-connection pool; only the reconciler holds a writ
 | frontmatter value | yes | in fm | yes | yes | no | `[[…]]` yes; plain values only if resolved |
 | html `href`/`src` | yes | no | yes | yes | warn only | yes |
 | code block / inline code | tagged `code` | no | if it resolves | separate "mentions in code" group | never | no (code action offers it) |
-| comment (`<!-- -->`, Obsidian `%%…%%`) | tagged | no | yes | hidden | never | no |
+| comment (`<!-- -->`, [Obsidian](https://obsidian.md) `%%…%%`) | tagged | no | yes | hidden | never | no |
 
 Goto works in code (a `[[note]]` in a README fence is worth jumping to);
 diagnostics never do (`[[{{filename-stem}}]]`, Lean `[[]]`). Fences follow CommonMark (``` or `~~~`, ≥ 3, close ≥ open,
