@@ -463,6 +463,22 @@ fn open_skips_dataless_without_reading() {
 }
 
 #[test]
+fn dataless_tool_config_is_not_read() {
+    let fs = Recording::new(
+        MemFs::new()
+            .with_file(
+                ".zk/config.toml",
+                "[lsp.diagnostics]\ndead-link = \"error\"\n",
+            )
+            .with_dataless(".zk/config.toml")
+            .with_file("a.md", ""),
+    );
+    let s = open_files(fs.clone(), &["a.md"], &[]);
+    assert_eq!(fs.read_paths(), [PathBuf::from("/a.md")]);
+    assert_eq!(s.conventions().dead_link_severity, None);
+}
+
+#[test]
 fn cancelled_open_files_fails() {
     let c = Cancel::new();
     c.cancel();

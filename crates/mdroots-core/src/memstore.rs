@@ -70,7 +70,9 @@ impl ResolveEnv for FsEnv {
 
     fn read_config(&self, root_rel: &str) -> Option<String> {
         let p = self.root.join(root_rel);
-        if self.fs.stat(&p).ok()?.size > MAX_CONFIG as u64 {
+        let meta = self.fs.stat(&p).ok()?;
+        // A cloud placeholder: reading it would start a download.
+        if meta.dataless || meta.size > MAX_CONFIG as u64 {
             return None;
         }
         let (bytes, _) = self.fs.read(&p).ok()?;
