@@ -4,11 +4,13 @@
 #![forbid(unsafe_code)]
 
 pub mod gitindex;
+pub mod loose;
 pub mod markers;
 pub mod probe;
 pub mod registry;
 pub mod walk;
 
+pub use loose::{LooseOutcome, find_loose_root, is_denied};
 pub use probe::{Counting, FakeProbe, FsClass, FsStat, MountInfo, Probe, StdProbe, classify};
 pub use registry::{
     DiscoverLock, MemRegistry, Overlap, Registry, RootMode, RootRecord, VerdictSource, detect_move,
