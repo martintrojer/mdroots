@@ -10,7 +10,13 @@ relative paths.
 M1 is done: `mdroots-syntax` (parsing, link scan, frontmatter),
 `mdroots-resolve` (resolution ladder), `mdroots-core` (`MemStore`) and
 `tools/zkdiff`, which checks resolution against zk on real vaults
-([results](docs/research/m1-differential.md)). Next is M2: root discovery.
+([results](docs/research/m1-differential.md)).
+
+M2 is done: `mdroots-roots` finds the root of a file without listing
+trees that are virtual, remote or too big: registry lookup, marker climb,
+filesystem classification, git index reading and budgeted walks, with an
+in-memory registry ([spec](docs/specs/roots.md)). Next is M3: the
+`mdroots` facade and CLI.
 
 ## Goals
 
@@ -31,8 +37,8 @@ mdroots-syntax ← mdroots-resolve ← mdroots-core ← mdroots-index ← mdroot
 
 `mdroots-core` holds the `Store` and `FileSystem` traits, `MemStore` and
 reconcile; `mdroots-index` adds the SQLite store and the per-root writer
-lock. Embedders depend on `mdroots`. Crates after `mdroots-core` are not
-written yet. See [docs/specs/library.md](docs/specs/library.md).
+lock. Embedders depend on `mdroots`. `mdroots-index`, `mdroots` and
+`mdroots-lsp` are not written yet. See [docs/specs/library.md](docs/specs/library.md).
 
 ## Layout
 

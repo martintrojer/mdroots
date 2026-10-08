@@ -7,7 +7,7 @@
 | [../README.md](../README.md) | what mdroots is, status, crates, build |
 | [DECISIONS.md](DECISIONS.md) | current decisions D1–D8: the rule, why, what was rejected |
 | [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md) | questions not yet settled |
-| [specs/roots.md](specs/roots.md) | root discovery, filesystem classification, walk budgets, lazy mode, nested roots, many processes per root |
+| [specs/roots.md](specs/roots.md) | root discovery, filesystem classification, walk budgets, lazy mode, nested roots, many processes per root; what `mdroots-roots` implements |
 | [specs/index.md](specs/index.md) | incremental index, link model, resolution ladder, dialects, frontmatter, differential testing |
 | [specs/library.md](specs/library.md) | crates and features, public API, scheduling, CLI, Neovim integration |
 | [research/gopls.md](research/gopls.md) | what makes gopls fast, what mdroots adopts, why no daemon |

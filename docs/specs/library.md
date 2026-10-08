@@ -31,7 +31,7 @@ mdroots/
     mdroots-syntax/   parse one document → structure + liberal link candidates; LineIndex (no I/O)
     mdroots-resolve/  resolution ladder, dialect detection, convention vote (I/O only via ResolveEnv)
     mdroots-core/     traits (Store, FileSystem, ResolveEnv, …), MemStore, reconcile logic, Cancel
-    mdroots-roots/    root discovery, FS classification, walk budgets (std::fs + statfs; no SQLite)
+    mdroots-roots/    root discovery, FS classification, walk budgets (std::fs + statfs via rustix; no SQLite)
     mdroots-index/    SqliteStore + flock roles (rusqlite)
     mdroots/          facade: Workspace API, re-exports, feature flags   ← what embedders depend on
     mdroots-lsp/      LSP server binary + mdroots_lsp::serve() for embedding the server
@@ -53,7 +53,7 @@ syntax ← resolve ← core ← index ← mdroots ← mdroots-lsp
 | `mdroots-syntax` | `pulldown-cmark` (≈ 1.1 GB/s on the testbeds), `memchr`, small YAML/TOML frontmatter parser | — | ✓ | most reusable piece (linters, formatters, SSGs, browser editors); owns `LineIndex` |
 | `mdroots-resolve` | `mdroots-syntax`, `unicode-normalization` | — (via `ResolveEnv`) | ✓ | other tools resolve links the same way over their own file list |
 | `mdroots-core` | `mdroots-resolve` | only through `FileSystem` | ✓ (`MemStore`, embedder's `FileSystem`) | the traits every store and FS plugs into; `MemStore` and the reconcile queue written once |
-| `mdroots-roots` | `mdroots-core`, `ignore`, `libc` | ✓ | — | safe root finding is useful alone, e.g. to a search tool |
+| `mdroots-roots` | `mdroots-core`, `ignore` (gitignore matcher only), [`rustix`](https://github.com/bytecodealliance/rustix) (`statfs`; unix only) | ✓, all through its `Probe` trait | — | safe root finding is useful alone, e.g. to a search tool |
 | `mdroots-index` | `mdroots-core`, `rusqlite` (bundled); flock via `std::fs::File::try_lock` (no `fs4`) | ✓ | — | heavy deps behind one crate; adds only `SqliteStore` and flock roles |
 | `mdroots` | all of the above, behind features | — | partial | stable public surface |
 | `mdroots-lsp` | `mdroots`, `lsp-server`, `lsp-types` | — | — | protocol only; the only crate naming `lsp-types` |
@@ -66,18 +66,18 @@ MSRV is Rust 1.89 (for `File::try_lock`/`lock_shared`). Lock files (`<id>.lock`,
 
 | Feature | Default | Pulls in | C code | Threads | wasm32 |
 |---|---|---|---|---|---|
-| `roots` | ✓ | `mdroots-roots`: `ignore`, `libc` (`statfs`) | — | walker threads only with `parallel` | — |
+| `roots` | ✓ | `mdroots-roots`: `ignore`, `rustix` (`statfs`) | — | none: the discovery walk is sequential | — |
 | `index` | ✓ | `mdroots-index`, rusqlite bundled | SQLite | none of its own | — |
 | `fts` | ✓ | SQLite FTS5 (needs `index`) | SQLite | — | — |
 | `watch` | ✓ | macOS: `fsevent-sys` FFI (replay needs `sinceWhen`, which `notify` can't set); Linux: inotify via `notify` | — | one watcher thread, reconciler only | — |
-| `parallel` | ✓ | `rayon` for the cold parse, `ignore::WalkParallel` | — | a pool | — |
+| `parallel` | ✓ | `rayon` for the cold parse | — | a pool | — |
 | `org` | ✓ | org-mode parsing in `mdroots-syntax` | — | — | ✓ |
 | `serde` | — | `serde` derives on public types | — | — | ✓ |
 
 - `Options::background(true)` adds one background thread; needs `std::thread`, so not on `wasm32-unknown-unknown`.
-- Without `parallel`: sequential `ignore::Walk`, serial parsing. Without `roots`: no `open_for(path)`; use `Workspace::open_at(root, opts)`.
+- Without `parallel`: serial parsing. The discovery walk is sequential either way: it times each `readdir` for the rate check and lists only through the `Probe` ([roots](roots.md) §1 stage 4). Without `roots`: no `open_for(path)`; use `Workspace::open_at(root, opts)`.
 - `full_text` without `fts` or on `MemStore` falls back to a naive case-insensitive scan through `FileSystem`, checking `&Cancel` between files; `ErrorKind::Unsupported` if the FS can't enumerate. For small vaults and tests only.
-- `default-features = false` = `syntax + resolve + core + MemStore`: pure Rust, no `libc`, threads or discovery. That set plus `org` and `serde` builds for wasm32; the embedder supplies `FileSystem`.
+- `default-features = false` = `syntax + resolve + core + MemStore`: pure Rust, no `statfs` bindings, threads or discovery. That set plus `org` and `serde` builds for wasm32; the embedder supplies `FileSystem`.
 - No `lsp-types` feature: `From` impls would tie `mdroots`'s major version to `lsp-types`'s. They live in `mdroots-lsp`; other servers convert from byte ranges and `LineIndex`.
 
 ## 3. Public API (sketch)
@@ -270,9 +270,9 @@ The daemon question (D3) is reopened only with numbers: total `phys_footprint` w
 | Milestone | Scope |
 |---|---|
 | M1 (done) | `mdroots-syntax` with `LineIndex`, fuzzing, insta snapshot tests on the shapes of a ~730-note zk vault and a ~210-note research vault; `mdroots-core` + `mdroots-resolve` with the offline differential against zk's `notebook.db` and marksman ([M1 differential](../research/m1-differential.md)) |
-| M2 | `mdroots-roots` safety tests (counting FS; NFS and EdenFS fakes) |
+| M2 (done) | `mdroots-roots`: stages 1–4 of [roots](roots.md) §1, loose roots, nested-root registry rules, the registry trait with an in-memory `MemRegistry` and `discover.lock`; safety tests on a counting probe with NFS and EdenFS fakes; discovery fixtures 1–11 |
 | M3 | facade over `MemStore` + CLI (`check`, `resolve`, `roots`) |
-| M4 | `mdroots-index` (SQLite, reconcile, change log, flock roles) + churn tests |
+| M4 | `mdroots-index` (SQLite, the SQLite root registry, reconcile, change log, flock roles) + churn tests and many-process fixtures 12–19 of [roots](roots.md) §7 |
 | M5 | `mdroots-lsp`; the Neovim smoke test switches from the marksman stand-in to the real binary |
 
 ## Neovim 0.12+ example

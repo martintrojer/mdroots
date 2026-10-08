@@ -4,6 +4,8 @@ Related: [index spec](index.md), [library spec](library.md), D3, D4, D5 in [DECI
 
 Hard rule: **mdroots never calls `readdir` on a tree before it has established that the tree is local and bounded.** A monorepo on a virtual filesystem such as [EdenFS](https://github.com/facebook/sapling) (the virtual filesystem from the [Sapling](https://sapling-scm.com/) project) can hold millions of files fetched on demand; a recursive walk there takes hours. Every rule below exists to make that walk impossible.
 
+Implementation: the `mdroots-roots` crate implements §1–§4, the §6 data model and fixtures 1–11 of §7. Every filesystem call goes through its `Probe` trait (`StdProbe` over `std::fs` and `statfs`, `FakeProbe` in memory, `Counting` to count and forbid `read_dir`), so tests can prove the hard rule. `discover()` takes a canonical absolute file path; canonicalising (including `F_GETPATH` on macOS) is the caller's job. The registry is a trait with an in-memory `MemRegistry`; the SQLite registry, §5 and the rest of §6 come with `mdroots-index` (M4).
+
 ## 0. Measurements (M-series Mac, APFS)
 
 | What | Result |
@@ -19,7 +21,11 @@ Hard rule: **mdroots never calls `readdir` on a tree before it has established t
 | `<eden checkout>/.eden/` | present at every depth; `readlink(<dir>/.eden/root)` gives the checkout root in one call |
 | 23 `stat`s of missing names | ~2–5 ms on Eden, ~0.06 ms on APFS |
 | `statfs` on a Google Drive folder | `apfs`, `MNT_LOCAL` set, same `st_dev` as `$HOME`: statfs cannot see cloud folders |
-| `readdir` per directory, warm cache | median 0.19–0.22 ms/dir. Rust walker on a cold cache: not yet measured |
+| `readdir` per directory, warm cache | median 0.19–0.22 ms/dir |
+| `mdroots-roots` budgeted walk of this repo (37 dirs, 163 entries; debug build, warm cache) | 11–40 ms, median ~0.16 ms/dir |
+| Loose decision for a 30-note temp folder (debug build) | ~2 ms |
+| One file in a large EdenFS checkout (debug build) | lazy after 6 `stat`/`statfs` calls, 0 `readdir`, 1.4 ms |
+| Rust walker on a cold cache, a cloud folder or EdenFS | not measured |
 
 Consequences: pruning makes walks ~12× cheaper, so it is required. Big or virtual trees are detectable with a few `stat`/`statfs` calls; the test is `MNT_LOCAL`, not the type name, and it must be repeated at mount boundaries inside a virtual tree. Cloud folders are caught by path, `SF_DATALESS` and walk speed.
 
@@ -33,11 +39,13 @@ Longest-prefix match of `realpath(file)` in the registry (`roots.v<k>.db`). On m
 
 1. the recorded marker still exists (one `stat`);
 2. the root's `st_dev` and `fs_type` match the recorded values (else re-decide from stage 2, lazy verdicts included);
-3. no new marker sits between `dir(file)` and the root. Probe each level with the stage 2 marker list, cached per directory per session; on a virtual FS probe only the explicit and notes-tool markers (8 names, ~0.1–0.2 ms each). This is how a `git clone` or new `.zk/` inside a loose or lazy root becomes its own root.
+3. no new marker sits between `dir(file)` and the root. Probe each level with the stage 2 marker list; on a virtual FS probe a short list instead (below, ~0.1–0.2 ms per name). Caching the probe per directory per session is left to the long-lived process (M4). This is how a `git clone` or new `.zk/` inside a loose or lazy root becomes its own root.
 
 Otherwise treat it as a miss. After the first session the hit path is a few stats.
 
-**Root moves.** Each row stores the marker's inode and the volume UUID (`ATTR_VOL_UUID` on macOS, `f_fsid` on Linux). On a miss where stage 2 finds a marker, a row with the same `(volume_uuid, marker_ino)` whose path no longer holds the marker is a move: update `path`, keep `root_id` and the DB file. Nothing is renamed on disk, and `files.path` is root-relative ([index spec](index.md)), so rows survive. A copy (both paths hold a marker) is a new root.
+Also a miss: a rate verdict with fewer than two agreeing measurements (stage 4), and a budget verdict decided 7 or more days ago. A `.mdrootsignore` that covers `dir(file)`, at any level from `dir(file)` up to the root, makes the file single-file on every filesystem. The implementation's virtual-FS probe checks 10 names per level: the explicit and notes-tool markers plus the VCS markers (`.git`, `.jj`, `.hg`, `.sl`), so a nested clone is found; a hit there registers the new directory as a lazy root. On a local FS a new marker of any class is a miss, and stages 2–4 decide.
+
+**Root moves.** Each row stores the marker's inode and a volume id. The implementation's volume id is `dev:<st_dev hex>`, because `ATTR_VOL_UUID` (macOS) and `f_fsid` (Linux) are not reachable without unsafe code; it is stable while the volume stays mounted, so move detection works within one boot or mount. On a miss where stage 2 finds a marker, a row with the same `(volume_uuid, marker_ino)` whose path no longer holds the marker is a move: update `path`, keep `root_id` and the DB file. Nothing is renamed on disk, and `files.path` is root-relative ([index spec](index.md)), so rows survive. A copy (both paths hold a marker) is a new root.
 
 ### Stage 2: `statfs`, then marker climb (no `readdir`)
 
@@ -52,43 +60,44 @@ Otherwise treat it as a miss. After the first session the hit path is a few stat
 |---|---|---|
 | explicit | `.mdroots` (empty file), `.mdrootsignore` | "root here" / "never index here" |
 | notes tool | `.zk/`, `.obsidian/`, `.marksman.toml`, `.iwe/`, `.foam/` | strong |
-| docs tool | `mkdocs.yml`, `book.toml`, `docusaurus.config.*`, `_config.yml`, `hugo.toml`, `conf.py` + `index.md` | strong |
+| docs tool | `mkdocs.yml`, `book.toml`, `docusaurus.config.{js,ts,mjs,cjs}`, `_config.yml`, `hugo.toml`, `conf.py` + `index.md` | strong |
 | VCS | `.git` (dir or file), `.jj`, `.hg`, `.sl` | medium |
 | monorepo | `.eden/`, `.buckconfig` ([Buck2](https://buck2.build)), `WORKSPACE`/`MODULE.bazel` ([Bazel](https://bazel.build)) | tree is **huge** |
 | editor | LSP `workspaceFolders` containing the file, when sent | strong |
 
-The nearest strong marker beats a farther VCS root (a `.zk/` notebook inside a git repo). A `.git` file (submodule, worktree) is a root of its own. Discovery must work from markers alone, because Neovim with `root_dir = nil` sends `workspaceFolders = null` and reused clients never get `didChangeWorkspaceFolders` (see [library spec](library.md)).
+Each marker costs one `lstat` and is typed (file or dir), so a `workspace/` dir does not match `WORKSPACE` on a case-insensitive volume. The nearest directory with any marker is the root; within one directory the reported marker is the highest of explicit > notes tool > docs tool > editor > VCS > monorepo, and any monorepo marker there makes the tree huge. A `.mdrootsignore` stops the climb with no root. The nearest strong marker beats a farther VCS root (a `.zk/` notebook inside a git repo). A `.git` file (submodule, worktree) is a root of its own. Discovery must work from markers alone, because Neovim with `root_dir = nil` sends `workspaceFolders = null` and reused clients never get `didChangeWorkspaceFolders` (see [library spec](library.md)).
 
 ### Stage 3: classify without walking
 
 1. **Local or not**, by `statfs` on the candidate root:
    - `MNT_LOCAL` unset → virtual/remote.
-   - Fallback by name prefix (so `edenfs:` matches): `edenfs`, `nfs`, `smbfs`, `afpfs`, `webdav`, `macfuse`, `osxfuse`, `fuse`, `9p`, `virtiofs`, `sshfs`; check `f_mntfromname` too.
-   - Linux: fstype from `/proc/self/mountinfo` (`fuse.*`, `nfs*`, `cifs`, `smb3`, `9p`, `virtiofs`).
+   - By name prefix, case-insensitive, on the type and on `f_mntfromname` (so `edenfs:` matches); a match wins even when `MNT_LOCAL` is set. Virtual: `edenfs`, `fuse`, `macfuse`, `osxfuse`, `virtiofs`, `9p`. Remote: `nfs`, `smbfs`, `afpfs`, `webdav`, `sshfs`, `cifs`, `smb3`. Any other non-local mount is remote.
+   - Linux has no `MNT_LOCAL`: the implementation parses `/proc/self/mountinfo`, takes the mount whose mount point is the longest component-wise prefix of the canonical path (the later line wins a tie, as an overmount does), and treats `nfs*`, `fuse`, `fuse.*`, `cifs`, `smb3`, `smbfs`, `9p`, `virtiofs`, `ceph` and `afs` as not local.
    - Cloud folders (`~/Library/CloudStorage/*`, `~/Library/Mobile Documents/*`) are marked `cloud`: walks allowed, `st_flags` checked per entry, rate check without relaxation.
 2. `.eden/` at the root → virtual, whatever statfs says.
-3. **Size estimate**, cheapest first: registry stats; the `.git/index` header count (unreliable if the index has a `sdir` sparse or `link` split extension: treat as unknown, use index-driven mode with the 200k cap applied while listing); colocated jj uses `.git/index`. Non-colocated jj, hg, sl without Eden: no cheap count, go to the budgeted walk.
+3. **Size estimate**, cheapest first: registry stats; the `.git/index` entry count (a `.git` file is followed to `<gitdir>/index`); colocated jj uses `.git/index`. A `sdir` sparse extension makes the count unreliable: index-driven, with the 200k cap applied while listing. A `link` split extension leaves most entries in another file, so the count is unknown: lazy. No index file, or an unreadable one: budgeted walk. Non-colocated jj, hg, sl without Eden: no cheap count, go to the budgeted walk.
 
 | Condition | Mode |
 |---|---|
 | virtual/remote FS, Eden, or monorepo marker | **lazy** (§3): no walk, no watcher |
 | Eden repo whose enumeration finishes in budget | **vcs-enumerated** (§3) |
 | local mount inside a virtual repo | **lazy** if a marker is below the mount, else **single-file** |
-| VCS root at `$HOME` or another denylisted dir (§2) | **tracked-only** |
+| git root at `$HOME` or another denylisted dir (§2) | **tracked-only** (other VCS there: **single-file**) |
 | git index > 200k entries or > 32 MB | **lazy** |
-| git index 20k–200k entries, or count unreliable | **index-driven** |
+| git index split (`link` extension) | **lazy** |
+| git index 20k–200k entries, or sparse (`sdir`) | **index-driven** |
 | git index < 20k entries | **budgeted walk** (also finds untracked md) |
 | no VCS | **loose root** search (§2), then budgeted walk |
 
-**Index-driven** and **tracked-only** list `*.md`/`*.markdown`/`*.org` paths from the git index in-process (`gix-index`), no `readdir`. The index's stat data is a snapshot, so each listed file is `stat`ed before it is trusted. Untracked md arrives via `didOpen` and the watcher; a small background walk adds it only if the tree later proves small, never in tracked-only. Tracked-only exists so a dotfiles `$HOME/.git` does not make the home directory one root; it applies to any VCS marker at a denylisted location (`/`, `/Volumes/*`, `~/Library`).
+**Index-driven** and **tracked-only** list `*.md`/`*.markdown`/`*.org` paths from the git index in-process, no `readdir`. The implementation uses a small hand parser of the [index format](https://git-scm.com/docs/index-format) instead of `gix-index`, to stay within its dependency budget: versions 2–4, SHA-1 only (a SHA-256 repo is unreadable and goes to the walk), at most 32 MiB read, every read bounds-checked so a corrupt index fails or yields a partial list, never a panic. The index's stat data is a snapshot, so each listed file is `stat`ed before it is trusted. Untracked md arrives via `didOpen` and the watcher; a small background walk adds it only if the tree later proves small, never in tracked-only. Tracked-only exists so a dotfiles `$HOME/.git` does not make the home directory one root; it applies to a git root at any denylisted location (§2). A non-git VCS root at a denylisted location has no index to read: single-file.
 
 ### Stage 4: budgeted walk
 
-Parallel breadth-first walk with the `ignore` crate (shallow files are the likeliest link targets, so a partial result covers them), at background priority (§5); budgets are calibrated under that priority.
+Sequential breadth-first walk (shallow files are the likeliest link targets, so a partial result covers them), at background priority (§5); budgets are calibrated under that priority. Sequential because the rate check times each `readdir`, and because every listing must go through the `Probe`; the `ignore` crate is used only for its gitignore matcher, since its walker would bypass the probe. Setting background priority is the caller's job. The wall budget and the cancel token are checked before every probe call, so an abort lands at most one call late.
 
 Prune:
 
-- ignore files: `.gitignore`, `.hgignore`, `.ignore`, `.mdrootsignore`;
+- ignore files, gitignore syntax, per directory in this order with later lines winning: `.gitignore`, `.ignore`, `.mdrootsignore`; plus the glob lines of `.hgignore` ([Mercurial](https://www.mercurial-scm.org)), read at the walk root only. The nearest directory's matcher with an opinion wins, as in git. A directory with an empty `.mdrootsignore` is never descended, even if it holds a marker;
 - dot dirs and `node_modules`, `target`, `.venv`/`venv`, `__pycache__`, `dist`, `build`, `buck-out`, `bazel-out`, `.direnv`, `.cache`, `Pods`, `DerivedData`, `.next`, `vendor`;
 - hidden and editor temp files (`.*`, `*~`, `#*#`, `*.swp`, `4913`), which otherwise get counted as notes;
 - directories with a different `st_dev` (Eden redirections are separate mounts);
@@ -103,21 +112,23 @@ Prune:
 | wall time | 1.5 s | 300 ms |
 | depth | 32 | 8 |
 
-**Rate check, per directory.** Entries/s depends on entries per directory (a local Documents folder measured 16–19k entries/s), so time each `readdir` instead: after the first 50 directories or 100 ms, whichever comes first, take the median ms/dir (a walk that finishes sooner is fast enough and is never rate-aborted). Above the threshold the FS is slow (network, FUSE, cold disk, cloud): abort and go lazy. The threshold is not yet calibrated (Rust walker, cold cache after `sudo purge`, on APFS, a cloud folder and EdenFS); until then it is 5 ms/dir and logged.
+A count going above its budget aborts; depth counts from the walk root (its children are depth 1). Entries counts every listed entry, pruned or not.
 
-**Recording.** Abort or success records `{entries_seen, md_seen, dirs_seen, ms, ms_per_dir, reason}` in the registry, so the next start goes straight to reconcile. A lazy verdict from the rate check **alone** is saved only after a second measurement (later or by another session) agrees, so one slow walk during a herd start or backup does not stick. Other lazy verdicts (virtual FS, Eden, budgets) are saved at once. Retry the full walk at most once per 7 days, or on `fs_type`/`st_dev` change, or on `mdroots.reindex`.
+**Rate check, per directory.** Entries/s depends on entries per directory (a local Documents folder measured 16–19k entries/s), so time each `readdir` instead: after the first 50 directories or 100 ms, whichever comes first, take the median ms/dir (a walk that finishes sooner is fast enough and is never rate-aborted). Above the threshold the FS is slow (network, FUSE, cold disk, cloud): abort and go lazy. The threshold is 5 ms/dir (`DiscoverOptions::rate_ms_per_dir` overrides it). Warm-cache walks measure ~0.16–0.22 ms/dir (§0), far below it; it is not calibrated on a cold cache (after `sudo purge`), a cloud folder or EdenFS.
+
+**Recording.** Abort or success records `{entries_seen, md_seen, dirs_seen, ms, ms_per_dir, reason}` in the registry, so the next start goes straight to reconcile. A lazy verdict from the rate check **alone** is saved only after a second measurement (later or by another session) agrees, so one slow walk during a herd start or backup does not stick. In the implementation the first rate abort registers a pending row (`lazy pending: rate 7.1 ms/dir, 1 of 2 measurements`, one confirmation) that stage 1 treats as a miss; the next walk either succeeds and replaces it or aborts on rate again and confirms it (2 of 2). Other lazy verdicts (virtual FS, Eden, budgets) are saved at once. A cancelled walk is never registered. Retry the full walk at most once per 7 days, or on `fs_type`/`st_dev` change, or on `mdroots.reindex`.
 
 ## 2. Loose roots (no VCS or marker)
 
-1. **Denylist**: `/`, `$HOME`, `/tmp`, `/private`, `/var`, `/Volumes/*` roots, `~/Downloads`, `~/Desktop`, `~/Library` (except an Obsidian vault under `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/<vault>`), local mounts inside a virtual repo, any virtual/remote FS. Denied → **single-file mode**: the current buffer plus its relative links resolved by `stat`.
-2. **Lower bound from the buffer's links**: every existing relative link target directory must be inside the root.
-3. **Grow upward.** Start at `max(dir(file), link lower bound)`, always accepted unless denied. Climb toward `$HOME`, extending the walk incrementally (child results reused). Accept the parent only if it is not denied, the cumulative walk stays within the loose budget, and either:
+1. **Denylist**, compared lexically (no symlink resolution). Exact matches only: `/`, `$HOME`, `/tmp`, `/private`, `/private/tmp`, `/var`, `/private/var`, a `/Volumes/<name>` volume root, `~/Downloads`, `~/Desktop`; so `/var/folders/...` temp dirs are allowed. By prefix: `~/Library` and everything under it, except inside an Obsidian vault under `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/<vault>`. Also denied: any virtual/remote FS, a local mount inside a virtual repo, and a directory whose mount cannot be read. Denied → **single-file mode**: the current buffer plus its relative links resolved by `stat`.
+2. **Lower bound from the buffer's links**: every existing relative link target directory must be inside the root. The file path and link dirs are cleaned lexically first (`.` dropped, `..` applied), so the denylist sees the real target.
+3. **Grow upward.** Start at the deepest common ancestor of `dir(file)` and the existing link target dirs, always accepted unless denied, and walk it with the loose budget. If that walk aborts, the start dir becomes a **lazy** root (verdict `budget`; a rate abort follows the two-measurement rule of §1 stage 4) and nothing grows. A start dir outside `$HOME`, or with no `$HOME`, never grows. Otherwise climb toward `$HOME` (never reaching it), walking each parent with the child's subtree skipped and the child's counts reused, within what is left of the loose budget (wall time counted from the start of the search). Accept the parent only if it is not denied, its walk does not abort, the child's deepest directory stays within the loose depth budget below it, and either:
    - **(a)** its subtree has ≥ 20 md files and md density (`md_files / files`) ≥ 30%, or
    - **(b)** it adds more md files outside the child's subtree than the child holds.
 
    Example: a `scratch/` dir (10 files, 2 md, 6 nested repos pruned) under a projects folder (506 files, 4 md) is not grown: (a) fails at 4 md, (b) fails because 2 added is not more than 2. Still rejected without the tarball tree (16 files, 3 md). Notes folders are usually > 50% md.
-4. The highest accepted ancestor is the loose root, registered with its reason.
-5. **Hysteresis**: re-run the climb only if the recorded stats are > 7 days old or the reconcile sees the file count change > 2×, so roots do not flip around a threshold and rebuild.
+4. The highest accepted ancestor is the loose root, registered with its reason (`loose root accepted at <dir>: <md> md / <files> files`, or the line of the first rejection). It is then walked once more with the loose budget for its md list; a folder over that budget (more than 5k md or 10k entries) is lazy. To index a larger notes folder fully, add an empty `.mdroots`, which makes it a marker root with the marker budget.
+5. **Hysteresis** (applied once reconcile exists, M4): re-run the climb only if the recorded stats are > 7 days old or the reconcile sees the file count change > 2×, so roots do not flip around a threshold and rebuild.
 
 The 20-file, 30%, 2× and 7-day numbers are validated only on the fixtures in §7 (see [OPEN-QUESTIONS.md](../OPEN-QUESTIONS.md)). Results are staged: single-file features at once, then results published after each accepted level.
 
@@ -131,7 +142,9 @@ Lazy mode never enumerates the tree:
 - **No native watcher.** A process re-checks working-set files when its own editor opens or saves them. The reconciler point-checks and writes files from its own editor's saves and from the client's `didChangeWatchedFiles`. Another peer's save reaches the DB only when that peer later becomes reconciler, or at the next working-set sweep.
 - **Diagnostics** per the [index spec](index.md): only `stat`-checkable links are diagnosed; an unresolved `[[stem]]` is a hint ("not in indexed set"), never an error.
 
-**vcs-enumerated** (small Eden repos, where lazy would mean `[[stem]]` never resolves): ask Eden once, in the background, for `**/*.md` via its glob API, falling back to `sl files 'glob:**/*.md'`, killed after 500 ms or 20k paths. In budget → the path list feeds stem resolution and the reconcile queue as in index-driven mode, parsed at background priority, open and linked files first. Over budget → stays lazy, recorded, not retried for 7 days. No watcher either way.
+**vcs-enumerated** (small Eden repos, where lazy would mean `[[stem]]` never resolves): ask Eden once, in the background, for `**/*.md` via its glob API, falling back to `sl files 'glob:**/*.md'`, killed after 500 ms or 20k paths. In budget → the path list feeds stem resolution and the reconcile queue as in index-driven mode, parsed at background priority, open and linked files first. Over budget → stays lazy, recorded (verdict `budget`), not retried for 7 days. No watcher either way.
+
+In the implementation the enumeration is an `Enumerator` trait: `SlFiles` runs `sl files 'glob:**/*.md'` (the glob API is not used yet) and `NoEnumerator` turns the mode off. `discover()` runs it synchronously within the 500 ms budget; moving it to the background is the index layer's job. Only a virtual FS whose `.eden/root` resolves is offered to the enumerator; a remote FS with `.eden` is lazy, and a virtual or remote FS without `.eden/root` is lazy with no root and is not registered.
 
 ## 4. Nested roots
 
@@ -144,7 +157,7 @@ nb/proj/docs/    —      → B
 ```
 
 - Walks prune at nested markers, so DBs are disjoint and one root's GC never touches another.
-- **The registry rejects overlapping inserts**, except a nested root at a marker (nearest wins). A loose root never contains a marker root, and loose roots never nest.
+- **The registry rejects overlapping inserts**, except a nested root at a marker (nearest wins). A loose root never contains a marker root, and loose roots never nest; a new marker root may appear inside a loose root. When an insert is rejected, discovery uses the nearest registered root containing the file, or returns its decision unregistered with `(not registered: overlaps <dir>)`.
 - **Cross-root links**: resolve in the current scope first; on a miss, find the root containing the target in the registry and `ATTACH` its DB read-only (LRU, SQLite's default limit is 10). Completion stays in the current root.
 - **New marker** (e.g. `git init` in a loose root): found by the next reconcile or the stage 1 probe; the subtree is re-parsed into the new root and its rows deleted from the parent.
 - **Marker removed**: merged back on the parent's next reconcile; the orphan DB is GC-ed (§6).
@@ -163,7 +176,7 @@ Base dir per D5: `$XDG_CACHE_HOME/mdroots`, else `~/Library/Caches/mdroots` (mac
 | Path | Purpose |
 |---|---|
 | `roots.v<k>.db` | registry (SQLite, WAL), versioned name |
-| `discover.lock` | global flock held during discovery stages 2–4 |
+| `discover.lock` | global flock held during discovery stages 2–4 (`DiscoverLock`, via `std::fs::File::lock`; `discover()` itself does not take it, callers do) |
 | `roots/<db>.db` | per-root index (SQLite, WAL) |
 | `roots/<db>-<gen8>.db` | new generation after a corruption rebuild |
 | `roots/<db>.lock` | reconciler flock; never unlinked |
@@ -215,22 +228,24 @@ Unlinking or renaming an open SQLite file is a documented corruption path.
 
 ## 6. Housekeeping
 
-Registry columns: `root_id, path, kind (marker|vcs|tracked|loose|single|lazy|vcs-enumerated), marker, marker_ino, volume_uuid, st_dev, fs_type, db_file, generation, entries, md_files, dirs, walk_ms, ms_per_dir, verdict_source (fs|eden|budget|rate|user), rate_confirmations, decided_at, decision_reason, last_seen, schema`.
+Registry columns (`RootRecord` in the implementation, which keeps the walk counts as one `stats` value and has no `db_file`, `generation` or `schema` until M4): `root_id, path, kind (marker|vcs|tracked|loose|single|lazy|vcs-enumerated), marker, marker_ino, volume_uuid, st_dev, fs_type, db_file, generation, entries, md_files, dirs, walk_ms, ms_per_dir, verdict_source (fs|eden|budget|rate|user), rate_confirmations, decided_at, decision_reason, last_seen, schema`.
 
 - **GC**: at most daily, claimed by the process that updates `meta.gc_at` in a `BEGIN IMMEDIATE` registry transaction. Candidates: roots not seen for 30 days or whose path is gone (after the move check of §1), old-schema DBs older than 7 days, stale generations. Each needs `LOCK_EX|LOCK_NB` on `<db>.open`, else skipped until the next run.
 - **OS cache purge** (macOS clears `~/Library/Caches` under disk pressure; cleaners) is treated as deletion: peers see the inode/generation change and reopen, the next reconciler rebuilds; without a registry, discovery reruns under `discover.lock`.
-- **`mdroots roots`** lists roots with mode, counts, walk time, base dir and why, e.g. "lazy: statfs edenfs:, MNT_LOCAL unset", "single-file: inside a local mount in an Eden repo", "loose root rejected at <dir>: 4 md (< 20), adds 2 md (≤ 2 in child)", "lazy pending: rate 7.1 ms/dir, 1 of 2 measurements". The same line goes to `window/logMessage` on first open; it is the main way to debug a wrong root.
-- **Escape hatches** (optional): empty `.mdroots` forces a root; `.mdrootsignore` excludes paths and stops loose climbing; `MDROOTS_LAZY=path1:path2` forces lazy.
+- **`mdroots roots`** lists roots with mode, counts, walk time, base dir and why, e.g. "lazy: statfs edenfs:, MNT_LOCAL unset", "single-file: inside a local mount in an Eden repo", "loose root rejected at <dir>: 4 md (< 20), adds 2 md (<= 2 in child)", "lazy pending: rate 7.1 ms/dir, 1 of 2 measurements". `explain()` returns this line; `cargo run -p mdroots-roots --example roots -- <file>` prints it with the `readdir` count. The same line goes to `window/logMessage` on first open; it is the main way to debug a wrong root.
+- **Escape hatches**: empty `.mdroots` forces a root; `.mdrootsignore` excludes paths and stops loose climbing (empty: never index here); `MDROOTS_LAZY=path1:path2` forces lazy (optional, not implemented yet).
 
 ## 7. Fixtures
 
 Each uses a temporary `XDG_CACHE_HOME`. "Zero readdir" is checked with an instrumented walker or `fs_usage -f filesys`. Timings logged.
 
+Discovery fixtures 1–11 live in `crates/mdroots-roots/tests/fixtures.rs`. Fixtures 1–4 and 9–11 build synthetic trees in a temp dir and run over `StdProbe`, wrapped in a probe that pins `home()` to the temp dir (setting `$HOME` would need unsafe code), so growth rules apply and no climb leaves the temp dir; `Counting` checks every `readdir`. Fixtures 5–8 need a virtual FS or a cloud folder and run on `FakeProbe`. No test touches a real home directory, network mount or virtual FS. Each asserts its `discover()` call stays under one second. Many-process fixtures 12–19 come with `mdroots-index` (M4).
+
 **Discovery**
 
 1. A file in a no-VCS `scratch/` dir inside a projects folder of ~40 repos: loose root `scratch/`, climb rejected by (a) and (b); also on a synthetic copy without the tarball tree (16 files, 3 md). A file inside any of the repos gets that repo.
-2. A neovim checkout (3.8k files, 13 md): budgeted walk.
-3. Synthetic 10k-md folder, no VCS: loose root accepted by (a).
+2. A mid-size git checkout (3.8k files, 13 md, the shape of a neovim checkout): budgeted walk.
+3. Synthetic notes folder, no VCS, 4,000 md among 6,000 files: loose root accepted by (a). A larger one (6,000 md) exceeds the loose md budget: lazy, verdict `budget`.
 4. A `.zk` notebook inside a git repo.
 5. A file in a large EdenFS monorepo: lazy from `statfs` before any marker stat, root from `readlink(.eden/root)`, zero readdir outside the file's dir.
 6. A file in a build-output mount inside that checkout: lazy or single-file, zero readdir outside the file's dir, no registry row at the mount.

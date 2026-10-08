@@ -30,3 +30,10 @@ Each one ends as a spec change or a decision in [DECISIONS.md](DECISIONS.md).
    (crates.io) are taken. Find a candidate and run the D1 namespace checks.
 7. **Name checks still missing for `mdroots`:** npm and trademark
    (USPTO/EUIPO, classes 9 and 42), before 0.1 (D1).
+8. **`.mdrootsignore` vs `.ignore` + a key in `.mdroots`.** The dedicated
+   file exists because `.gitignore` answers a VCS question, folders without
+   VCS lack one, and an empty file means never index here / stop loose
+   climbing. Folding it into `.ignore` (shared with
+   [ripgrep](https://github.com/BurntSushi/ripgrep) and
+   [fd](https://github.com/sharkdp/fd)) plus a `.mdroots` key would drop one
+   magic file name. Revisit when used ([specs/roots.md](specs/roots.md)).
