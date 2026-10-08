@@ -99,15 +99,9 @@ fn first_run_reads_all_second_reuses_all() {
     let (c, s) = f.run(&ABC, &[]);
     assert_eq!(paths(&c), ABC);
     assert_eq!(text(&c, "d/c.md"), "C");
-    assert_eq!(
-        s,
-        ReconcileStats {
-            read: 3,
-            reused: 0,
-            removed: 0,
-            batches: 1
-        }
-    );
+    // Batches also close after 50 ms, so a loaded machine may use two.
+    assert_eq!((s.read, s.reused, s.removed), (3, 0, 0));
+    assert!(s.batches >= 1, "{s:?}");
     assert_eq!(f.db.rows().unwrap().len(), 3);
 
     let (c2, s2) = f.run(&ABC, &[]);
@@ -146,7 +140,8 @@ fn touch_rereads_one_and_updates_stat_only() {
     drop(file);
 
     let (c, s) = f.run(&ABC, &[]);
-    assert_eq!((s.read, s.reused, s.batches), (1, 2, 1));
+    assert_eq!((s.read, s.reused), (1, 2));
+    assert!(s.batches >= 1);
     assert_eq!(text(&c, "b.md"), "B");
     let after = f.row("b.md").unwrap();
     assert_eq!(after.content, before.content);
@@ -201,7 +196,8 @@ fn deleted_file_is_removed_from_db() {
     // Still listed (a stale listing) and missing on disk.
     let (c, s) = f.run(&ABC, &[]);
     assert_eq!(paths(&c), ["a.md", "d/c.md"]);
-    assert_eq!((s.removed, s.reused, s.batches), (1, 2, 1));
+    assert_eq!((s.removed, s.reused), (1, 2));
+    assert!(s.batches >= 1);
     assert!(f.row("b.md").is_none());
 }
 
