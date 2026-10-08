@@ -4,7 +4,9 @@ Related: [roots](roots.md) (discovery, nesting, flock roles), [library](library.
 
 Goal: the user never thinks about the index. No init or reindex command; a
 `kill -9` loses at most ~50 ms of work; ten editors starting at once answer
-within milliseconds and improve as the index catches up.
+within milliseconds from the cache. (Background catch-up while serving is
+planned for M6; today the index is brought up to date synchronously on open
+and on `refresh`.)
 
 ## 0. Testbed
 
