@@ -4,3 +4,5 @@
 #![forbid(unsafe_code)]
 
 pub mod probe;
+pub mod registry;
+pub mod walk;
