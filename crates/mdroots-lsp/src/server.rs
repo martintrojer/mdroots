@@ -117,14 +117,18 @@ impl Server {
     /// Until `exit` (Ok after `shutdown`, else Err) or disconnect (Ok).
     pub(crate) fn run(mut self) -> Result<(), BoxError> {
         loop {
-            let msg = match self.queue.pop_front() {
-                Some(m) => m,
-                None => match self.recv() {
-                    Some(m) => m,
+            if self.queue.is_empty() {
+                match self.recv() {
+                    Some(m) => self.queue.push_back(m),
                     None => return Ok(()),
-                },
-            };
+                }
+            }
+            // Drain before popping, so a cancel or a didChange behind the
+            // next request is seen before it runs.
             self.drain();
+            let Some(msg) = self.queue.pop_front() else {
+                continue;
+            };
             match msg {
                 Message::Request(req) => self.request(req),
                 Message::Notification(n) if n.method == "exit" => {
@@ -133,6 +137,8 @@ impl Server {
                         false => Err("exit without shutdown".into()),
                     };
                 }
+                // After shutdown only exit counts (LSP lifecycle).
+                Message::Notification(_) if self.shutdown => {}
                 Message::Notification(n) => self.notification(n),
                 Message::Response(_) => {}
             }
@@ -161,8 +167,10 @@ impl Server {
     }
 
     /// Reads every message already sent into the queue, applying cancels:
-    /// queued requests are marked, the running one has its token set.
-    /// Long handlers may call this between steps.
+    /// queued requests are marked, the running one has its token set. A
+    /// `didChange` also cancels the queued requests on that document,
+    /// which would otherwise answer on stale text. Long handlers may call
+    /// this between steps.
     fn drain(&mut self) {
         loop {
             match self.conn.receiver.try_recv() {
@@ -180,6 +188,26 @@ impl Server {
                             self.cancelled.insert(id);
                         }
                     }
+                }
+                Ok(Message::Notification(n)) if n.method == "textDocument/didChange" => {
+                    if let Some(uri) = n
+                        .params
+                        .pointer("/textDocument/uri")
+                        .and_then(Value::as_str)
+                    {
+                        let stale: Vec<RequestId> = self
+                            .queue
+                            .iter()
+                            .filter_map(|m| match m {
+                                Message::Request(r) if doc_uri(r) == Some(uri) => {
+                                    Some(r.id.clone())
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        self.cancelled.extend(stale);
+                    }
+                    self.queue.push_back(Message::Notification(n));
                 }
                 Ok(m) => self.queue.push_back(m),
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => return,
@@ -202,11 +230,12 @@ impl Server {
     }
 
     fn request(&mut self, req: Request) {
-        if self.cancelled.remove(&req.id) {
-            return self.reply_err(req.id, ErrorCode::RequestCanceled, "cancelled");
-        }
+        let cancelled = self.cancelled.remove(&req.id);
         if self.shutdown {
             return self.reply_err(req.id, ErrorCode::InvalidRequest, "shutdown requested");
+        }
+        if cancelled {
+            return self.reply_err(req.id, ErrorCode::RequestCanceled, "cancelled");
         }
         let cancel = Cancel::new();
         self.current = Some((req.id.clone(), cancel.clone()));
@@ -236,6 +265,8 @@ impl Server {
         Some(match req.method.as_str() {
             "shutdown" => {
                 self.shutdown = true;
+                // No diagnostics after shutdown.
+                self.due.clear();
                 Ok(Value::Null)
             }
             "textDocument/definition"
@@ -395,6 +426,11 @@ impl Server {
     fn send(&self, m: Message) {
         let _ = self.conn.sender.send(m);
     }
+}
+
+/// The request's `textDocument.uri`, if it has one.
+fn doc_uri(r: &Request) -> Option<&str> {
+    r.params.pointer("/textDocument/uri")?.as_str()
 }
 
 fn log_err(what: &str, r: Result<(), mdroots::Error>) {

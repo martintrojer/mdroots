@@ -327,3 +327,64 @@ fn a_disconnected_client_ends_the_server_cleanly() {
     drop(c);
     server.join().unwrap().unwrap();
 }
+
+#[test]
+fn a_change_cancels_queued_requests_on_that_document() {
+    let mut c = Client::new();
+    // All queued before the server runs, so the change is read ahead of
+    // the request it makes stale.
+    let init = c.send_request("initialize", json!({ "capabilities": {} }));
+    c.notify("initialized", json!({}));
+    let (x, y) = ("file:///nowhere/x.md", "file:///nowhere/y.md");
+    let pos = |uri: &str| {
+        json!({ "textDocument": { "uri": uri },
+                                  "position": { "line": 0, "character": 0 } })
+    };
+    let on_x = c.send_request("textDocument/hover", pos(x));
+    let on_y = c.send_request("textDocument/hover", pos(y));
+    c.change(x, 2, "new text");
+    let after = c.send_request("textDocument/hover", pos(x));
+    c.spawn();
+    assert!(c.response(&init).result.is_some());
+    assert_eq!(c.response(&on_x).error.expect("an error").code, -32800);
+    assert!(c.response(&on_y).error.is_none());
+    // A request sent after the change runs on the new text.
+    assert!(c.response(&after).error.is_none());
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn after_shutdown_only_exit_counts() {
+    let v = Vault::corpus("zk-min");
+    let mut c = Client::start();
+    c.initialize(json!({}));
+    let uri = v.uri("broken.md");
+    let text = v.read("broken.md");
+    c.open(&uri, &text);
+    assert_eq!(c.diagnostics(&uri).len(), 1);
+    // A pending debounce is dropped by shutdown.
+    c.change(&uri, 2, &text.replace("(missing-note)", "(a.md)"));
+    let r = c.request("shutdown", Value::Null);
+    assert!(r.error.is_none(), "{r:?}");
+    c.open(&v.uri("a.md"), &v.read("a.md"));
+    c.notify(
+        "textDocument/didSave",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    let id = c.send_request("textDocument/hover", json!({}));
+    // The next message is the error reply: the notifications did nothing.
+    match c.recv() {
+        Message::Response(r) => {
+            assert_eq!(r.id, id);
+            assert_eq!(r.error.expect("an error").code, -32600);
+        }
+        m => panic!("unexpected {m:?}"),
+    }
+    // Past the debounce: nothing more arrives.
+    std::thread::sleep(Duration::from_millis(800));
+    if let Ok(m) = c.conn.receiver.try_recv() {
+        panic!("unexpected {m:?}");
+    }
+    c.notify("exit", Value::Null);
+    c.server.take().unwrap().join().unwrap().unwrap();
+}
