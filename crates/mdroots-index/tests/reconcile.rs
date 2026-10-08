@@ -470,3 +470,50 @@ fn stat_error_other_than_not_found_keeps_the_row() {
     assert_eq!(s, ReconcileStats::default());
     assert_eq!(f.db.rows().unwrap(), rows);
 }
+
+/// StdFs whose `read` fails with PermissionDenied (stat still works).
+struct Unreadable;
+
+impl FileSystem for Unreadable {
+    fn read(&self, _: &Path) -> io::Result<(Arc<[u8]>, Meta)> {
+        Err(io::Error::from(io::ErrorKind::PermissionDenied))
+    }
+    fn stat(&self, p: &Path) -> io::Result<Meta> {
+        StdFs.stat(p)
+    }
+    fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, Meta)>> {
+        StdFs.read_dir(p)
+    }
+    fn canonicalize(&self, p: &Path) -> io::Result<PathBuf> {
+        StdFs.canonicalize(p)
+    }
+    fn case_sensitive(&self, dir: &Path) -> bool {
+        StdFs.case_sensitive(dir)
+    }
+    fn fs_kind(&self, dir: &Path) -> FsKind {
+        StdFs.fs_kind(dir)
+    }
+}
+
+#[test]
+fn read_error_other_than_not_found_keeps_the_row() {
+    let mut f = abc();
+    f.run(&ABC, &[]);
+    let rows = f.db.rows().unwrap();
+    // Change a.md on disk so its stat differs and a read is attempted.
+    std::fs::write(f.root.join("a.md"), "A changed").unwrap();
+    let listed = strings(&ABC);
+    let (c, s) = reconcile(
+        Some(&mut f.db),
+        &rows,
+        &Unreadable,
+        &f.root,
+        Some(&listed),
+        &[],
+        &Cancel::new(),
+    )
+    .unwrap();
+    assert_eq!(paths(&c), vec!["b.md", "d/c.md"]);
+    assert_eq!((s.read, s.removed), (0, 0));
+    assert_eq!(f.db.rows().unwrap(), rows);
+}
