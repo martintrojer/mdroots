@@ -1,7 +1,7 @@
 [package]
 name = "mdroots-index"
 version = "0.0.0"
-description = "Persistent per-root index cache for mdroots: cache dir choice, reconciler locks and a SQLite DB."
+description = "Persistent per-root index cache for mdroots: cache dir choice, reconciler locks and a SQLite (https://sqlite.org) DB."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

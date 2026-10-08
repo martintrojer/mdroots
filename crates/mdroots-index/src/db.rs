@@ -66,6 +66,10 @@ pub enum Change {
     Upsert(FileRow),
     /// Delete the row with this root-relative path.
     Remove(String),
+    /// Update only the stat columns of an existing row (same content, e.g.
+    /// after `touch`); no `change_log` entry, so peers do not re-read it.
+    /// A missing row is left alone.
+    Stat(FileRow),
 }
 
 /// A connection to one root's DB.
@@ -212,6 +216,12 @@ impl IndexDb {
             let mut remove = tx
                 .prepare_cached("DELETE FROM files WHERE path = ?1")
                 .map_err(sql_err)?;
+            let mut stat = tx
+                .prepare_cached(
+                    "UPDATE files SET ino = ?2, ctime_ns = ?3, mtime_ns = ?4, size = ?5,
+                       indexed_at = ?6 WHERE path = ?1",
+                )
+                .map_err(sql_err)?;
             let mut log = tx
                 .prepare_cached("INSERT INTO change_log(path, kind) VALUES (?1, ?2)")
                 .map_err(sql_err)?;
@@ -237,6 +247,17 @@ impl IndexDb {
                             .map_err(sql_err)?;
                         let kind = if had { "mod" } else { "add" };
                         log.execute(params![f.path, kind]).map_err(sql_err)?;
+                    }
+                    Change::Stat(f) => {
+                        stat.execute(params![
+                            f.path,
+                            f.ino as i64,
+                            f.ctime_ns,
+                            f.mtime_ns,
+                            f.size as i64,
+                            now
+                        ])
+                        .map_err(sql_err)?;
                     }
                     Change::Remove(p) => {
                         if remove.execute([p]).map_err(sql_err)? > 0 {

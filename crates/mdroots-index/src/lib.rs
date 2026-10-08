@@ -15,14 +15,18 @@ use std::io;
 use std::path::Path;
 
 /// Create `dir` and missing parents, each new one mode 0700 (before umask),
-/// because the cache holds copies of the user's notes.
+/// and set `dir` itself to 0700 if it already existed, because the cache
+/// holds copies of the user's notes.
 pub(crate) fn create_private_dir(dir: &Path) -> io::Result<()> {
     let mut b = std::fs::DirBuilder::new();
     b.recursive(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::DirBuilderExt;
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         b.mode(0o700);
+        b.create(dir)?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
     }
+    #[cfg(not(unix))]
     b.create(dir)
 }

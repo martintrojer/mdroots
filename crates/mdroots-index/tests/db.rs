@@ -141,3 +141,26 @@ fn thousand_rows_under_a_second() {
     assert!(took.as_secs_f64() < 1.0, "{took:?}");
     assert_eq!(db.rows().unwrap().len(), 1000);
 }
+
+#[test]
+fn stat_change_updates_stat_columns_without_a_change_log_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("r.db");
+    let mut db = IndexDb::open(&p).unwrap();
+    db.apply(&[Change::Upsert(row("a.md", "ay"))]).unwrap();
+    let mut touched = row("a.md", "ignored: content is not written");
+    touched.ino = 7;
+    touched.ctime_ns = 42;
+    touched.mtime_ns = 43;
+    touched.size = 2;
+    db.apply(&[Change::Stat(touched), Change::Stat(row("missing.md", ""))])
+        .unwrap();
+    let rows = db.rows().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].ino, rows[0].ctime_ns, rows[0].mtime_ns),
+        (7, 42, 43)
+    );
+    assert_eq!(&rows[0].content[..], b"ay");
+    assert_eq!(change_log(&p), kinds(&[("a.md", "add")]));
+}

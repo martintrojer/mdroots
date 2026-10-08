@@ -26,3 +26,16 @@ fn separate_stems_are_independent() {
     let b = RootLocks::acquire(tmp.path(), "b.v1").unwrap();
     assert_eq!((a.role(), b.role()), (Role::Reconciler, Role::Reconciler));
 }
+
+#[cfg(unix)]
+#[test]
+fn existing_parent_is_made_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("roots");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _l = mdroots_index::lock::RootLocks::acquire(&dir, "r.v1").unwrap();
+    let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
+}
