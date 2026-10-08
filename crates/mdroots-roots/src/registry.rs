@@ -1,8 +1,9 @@
 //! The root registry (docs/specs/roots.md §1 stage 1, §4, §5, §6).
 //!
 //! M2 ships the data model, the [`Registry`] trait, an in-memory
-//! [`MemRegistry`] and the global [`DiscoverLock`]. The SQLite-backed
-//! registry (`roots.v<k>.db`) implements the same trait later.
+//! [`MemRegistry`] and the global [`DiscoverLock`]. The [SQLite](https://sqlite.org)-backed
+//! registry (`roots.v<k>.db`, in mdroots-index) implements the same trait
+//! and shares [`check_overlap`].
 
 use std::fs::{File, TryLockError};
 use std::io;
@@ -120,6 +121,36 @@ fn nestable(r: &RootRecord) -> bool {
     r.marker.is_some() && !matches!(r.mode, RootMode::Loose | RootMode::SingleFile)
 }
 
+/// The overlap rules of §4: may `new` join the roots in `existing`?
+///
+/// Overlapping roots are allowed only when the inner one is a marker root
+/// (nearest wins) and the outer one is not loose, except that a new marker
+/// root may appear inside an existing loose root
+/// ([git](https://git-scm.com/) `git init` in a loose root). A new loose
+/// root never contains a marker root, and loose roots never nest. Identical
+/// paths always overlap. The error names the first conflicting root.
+pub fn check_overlap(existing: &[RootRecord], new: &RootRecord) -> Result<(), Overlap> {
+    for e in existing {
+        let ok = if e.path == new.path {
+            false
+        } else if new.path.starts_with(&e.path) {
+            // new inside existing
+            nestable(new)
+        } else if e.path.starts_with(&new.path) {
+            // existing inside new
+            nestable(e) && new.mode != RootMode::Loose
+        } else {
+            true
+        };
+        if !ok {
+            return Err(Overlap {
+                existing: e.path.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 impl Registry for MemRegistry {
     fn lookup(&self, path: &Path) -> Option<RootRecord> {
         self.rows
@@ -136,12 +167,7 @@ impl Registry for MemRegistry {
             .cloned()
     }
 
-    /// Overlapping roots are allowed only when the inner one is a marker
-    /// root (nearest wins) and the outer one is not loose, except that a new
-    /// marker root may appear inside an existing loose root
-    /// ([git](https://git-scm.com/) `git init` in a
-    /// loose root). A new loose root never contains a marker root, and loose
-    /// roots never nest. Identical paths always overlap.
+    /// Enforces [`check_overlap`].
     ///
     /// [`RootMode::SingleFile`] records are never registered: they are
     /// dropped (a debug assertion fires) and `Ok(())` is returned.
@@ -153,24 +179,7 @@ impl Registry for MemRegistry {
         if r.mode == RootMode::SingleFile {
             return Ok(());
         }
-        for e in &self.rows {
-            let ok = if e.path == r.path {
-                false
-            } else if r.path.starts_with(&e.path) {
-                // new inside existing
-                nestable(&r)
-            } else if e.path.starts_with(&r.path) {
-                // existing inside new
-                nestable(e) && r.mode != RootMode::Loose
-            } else {
-                true
-            };
-            if !ok {
-                return Err(Overlap {
-                    existing: e.path.clone(),
-                });
-            }
-        }
+        check_overlap(&self.rows, &r)?;
         self.rows.push(r);
         Ok(())
     }
