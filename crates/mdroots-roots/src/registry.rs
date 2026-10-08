@@ -138,7 +138,8 @@ impl Registry for MemRegistry {
 
     /// Overlapping roots are allowed only when the inner one is a marker
     /// root (nearest wins) and the outer one is not loose, except that a new
-    /// marker root may appear inside an existing loose root (`git init` in a
+    /// marker root may appear inside an existing loose root
+    /// ([git](https://git-scm.com/) `git init` in a
     /// loose root). A new loose root never contains a marker root, and loose
     /// roots never nest. Identical paths always overlap.
     ///

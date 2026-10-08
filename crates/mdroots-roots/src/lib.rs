@@ -6,3 +6,9 @@
 pub mod probe;
 pub mod registry;
 pub mod walk;
+
+pub use probe::{Counting, FakeProbe, FsClass, FsStat, MountInfo, Probe, StdProbe, classify};
+pub use registry::{
+    DiscoverLock, MemRegistry, Overlap, Registry, RootMode, RootRecord, VerdictSource, detect_move,
+    lookup_valid, new_root_id,
+};
