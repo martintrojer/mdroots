@@ -14,3 +14,4 @@ pub use registry::{
     DiscoverLock, MemRegistry, Overlap, Registry, RootMode, RootRecord, VerdictSource, detect_move,
     lookup_valid, new_root_id,
 };
+pub use walk::{Abort, Budget, WalkOptions, WalkOutcome, WalkStats, walk};
