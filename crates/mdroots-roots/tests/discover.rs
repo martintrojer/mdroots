@@ -738,7 +738,8 @@ fn slow_notes() -> FakeProbe {
         .home("/h")
         .dir("/h/slow/.zk")
         .read_dir_cost("/h/slow", Duration::from_millis(10));
-    for i in 0..5 {
+    // 12 dirs at 10 ms: the walk passes the 100 ms window, so it is rate-checked.
+    for i in 0..11 {
         f = files(f, &format!("/h/slow/d{i}"), 3, 3);
     }
     f

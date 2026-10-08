@@ -361,7 +361,9 @@ pub fn walk(probe: &dyn Probe, root: &Path, opts: &WalkOptions, cancel: &Cancel)
         times: Vec::new(),
         rate_checked: false,
     };
-    let abort = w.run().err().or_else(|| w.rate_check().err());
+    // No rate check at the end: a walk that finished before the 50-dir /
+    // 100 ms window is fast enough, whatever its median.
+    let abort = w.run().err();
     w.finish(abort)
 }
 
@@ -579,7 +581,8 @@ impl Walker<'_> {
         Ok(())
     }
 
-    /// The one rate check: after the first 50 dirs or 100 ms, else at the end.
+    /// The one rate check, after the first 50 dirs or 100 ms. Walks that end
+    /// sooner are never rate-aborted.
     fn rate_check(&mut self) -> Result<(), Abort> {
         if self.rate_checked {
             return Ok(());

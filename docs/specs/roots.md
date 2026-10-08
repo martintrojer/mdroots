@@ -103,7 +103,7 @@ Prune:
 | wall time | 1.5 s | 300 ms |
 | depth | 32 | 8 |
 
-**Rate check, per directory.** Entries/s depends on entries per directory (a local Documents folder measured 16–19k entries/s), so time each `readdir` instead: after the first 50 directories or 100 ms, whichever comes first, take the median ms/dir. Above the threshold the FS is slow (network, FUSE, cold disk, cloud): abort and go lazy. The threshold is not yet calibrated (Rust walker, cold cache after `sudo purge`, on APFS, a cloud folder and EdenFS); until then it is 5 ms/dir and logged.
+**Rate check, per directory.** Entries/s depends on entries per directory (a local Documents folder measured 16–19k entries/s), so time each `readdir` instead: after the first 50 directories or 100 ms, whichever comes first, take the median ms/dir (a walk that finishes sooner is fast enough and is never rate-aborted). Above the threshold the FS is slow (network, FUSE, cold disk, cloud): abort and go lazy. The threshold is not yet calibrated (Rust walker, cold cache after `sudo purge`, on APFS, a cloud folder and EdenFS); until then it is 5 ms/dir and logged.
 
 **Recording.** Abort or success records `{entries_seen, md_seen, dirs_seen, ms, ms_per_dir, reason}` in the registry, so the next start goes straight to reconcile. A lazy verdict from the rate check **alone** is saved only after a second measurement (later or by another session) agrees, so one slow walk during a herd start or backup does not stick. Other lazy verdicts (virtual FS, Eden, budgets) are saved at once. Retry the full walk at most once per 7 days, or on `fs_type`/`st_dev` change, or on `mdroots.reindex`.
 

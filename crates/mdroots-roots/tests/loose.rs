@@ -372,13 +372,24 @@ fn start_walk_rate_abort() {
     let mut f = FakeProbe::new()
         .home("/h")
         .read_dir_cost("/h/slow", Duration::from_millis(10));
-    for i in 0..3 {
-        f = f.file(format!("/h/slow/d{i}/a.md"), "");
+    // The start /h/slow/d0 has 11 subdirs at 10 ms each: the walk passes the
+    // 100 ms window and the rate check aborts it.
+    for i in 0..11 {
+        f = f.file(format!("/h/slow/d0/s{i}/a.md"), "");
     }
     let (out, _) = run(f, "/h/slow/d0/a.md", &[], &["/h/slow/d0", "/h/slow"]);
-    // The start is /h/slow/d0 (one dir, 10 ms): rate abort at the final check.
     assert_eq!(out.root, Some(p("/h/slow/d0")));
     assert_eq!(out.abort, Some(Abort::Rate));
+}
+
+#[test]
+fn short_slow_start_walk_is_not_rate_aborted() {
+    let f = FakeProbe::new()
+        .home("/h")
+        .read_dir_cost("/h/slow", Duration::from_millis(10))
+        .file("/h/slow/d0/a.md", "");
+    let (out, _) = run(f, "/h/slow/d0/a.md", &[], &["/h/slow/d0", "/h/slow"]);
+    assert_eq!(out.abort, None);
 }
 
 #[test]

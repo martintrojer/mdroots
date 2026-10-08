@@ -322,11 +322,15 @@ fn rate_check_aborts_slow_fs_only() {
 }
 
 #[test]
-fn rate_checked_at_end_of_small_walk() {
+fn small_fast_walk_is_never_rate_aborted() {
+    // 4 dirs at 8 ms finish in 32 ms, before the 50-dir / 100 ms window:
+    // a walk that short is fast enough whatever its median, so one slow
+    // listing (cold cache, loaded machine) does not make a small repo lazy.
     let slow = wide(3).read_dir_cost(ROOT, Duration::from_millis(8));
     let (out, _) = run_default(slow);
-    assert_eq!(out.abort, Some(Abort::Rate));
+    assert_eq!(out.abort, None);
     assert_eq!(out.md.len(), 3);
+    assert_eq!(out.stats.ms_per_dir, Some(8.0));
 }
 
 #[test]
