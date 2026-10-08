@@ -2,7 +2,7 @@
 
 The design choices behind mdroots that are hard to reverse. Mechanics live in the specs: [roots](specs/roots.md), [index](specs/index.md), [library](specs/library.md). Unresolved points are in [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).
 
-Measurements below come from two testbed vaults: a ~730-note zk vault and a ~210-note research vault.
+Measurements below come from two testbed vaults: a ~730-note [zk](https://github.com/zk-org/zk) vault and a ~210-note research vault.
 
 ## D1. Name mdroots
 
@@ -26,17 +26,17 @@ Measurements below come from two testbed vaults: a ~730-note zk vault and a ~210
 
 **Decision**
 - mdroots is a Rust library; `mdroots lsp`, the CLI and other embedders (TUIs, SSGs, MCP servers, other language servers) call the same API (`mdroots::Workspaces`) directly. The CLI is the first embedder.
-- Synchronous core, no async runtime. Background work is opt-in (`Options::background`). With `background(false)` nothing polls; the embedder calls `reconcile(budget)` or any query.
-- Slow calls (`reconcile`, `wait_fresh`, full-text search, workspace-wide diagnostics) take `&Cancel`; the LSP sets it on `$/cancelRequest` or a newer `didChange`.
-- Each query reads one SQLite snapshot (one read transaction) with overlays applied at call time, so a concurrent commit or overlay change is never seen halfway.
-- A non-blocking open returns a `Lazy` workspace at once and finishes discovery in the background, so an editor never blocks on a slow filesystem.
+- Synchronous core, no async runtime and no background thread: nothing polls, and the embedder calls `Workspace::refresh` to pick up changes on disk. Opt-in background work (`Options::background`) comes with the watcher (M6).
+- Slow calls (`refresh`, `diagnostics`, `rename_note`) take `&Cancel`. The LSP answers requests one at a time, in order; a `$/cancelRequest` drops a queued request, and a `didChange` drops the queued requests on that document.
+- Each query sees one consistent state: the process's in-memory index (D9) with overlays applied at call time. A refresh builds a new index and swaps it in, so a concurrent change is never seen halfway.
+- Planned: a non-blocking open that returns a `Lazy` workspace at once and finishes discovery in the background, so an editor never blocks on a slow filesystem. Today `open_for` is synchronous and discovery is bounded by its budgets.
 - The library never writes user files. Refactors return a `WorkspaceEdit`.
-- Extension traits (`FileSystem`, `Store`, `LinkResolver`, `Observer`, `ResolveEnv`) are `Send + Sync`. `SqliteStore` holds one writer connection plus a capped pool of read connections, because `rusqlite::Connection` is `!Sync`.
+- Extension traits (`FileSystem`, `Probe`, `Enumerator`, `ResolveEnv`) are `Send + Sync`. A workspace holds its root's DB connection behind a mutex, because `rusqlite::Connection` is `!Sync`; queries never touch it (D9).
 - A feature that can't be tested without JSON-RPC is in the wrong crate.
 
 **Why**
-- marksman (F#, exe-only) and zk (Go `internal/` packages) can't be reused as libraries; embedding was a goal from the start.
-- Queries are microsecond-to-millisecond SQLite lookups; async adds nothing and would force a runtime on every embedder. Async callers use `spawn_blocking`.
+- [marksman](https://github.com/artempyanykh/marksman) (F#, exe-only) and zk (Go `internal/` packages) can't be reused as libraries; embedding was a goal from the start.
+- Queries are microsecond-to-millisecond lookups; async adds nothing and would force a runtime on every embedder. Async callers use `spawn_blocking`.
 
 **Rejected**
 - Build on iwe's `liwe`: in-memory arena (cold every start, one copy per process), needs `.iwe` config, API explicitly unstable.
@@ -53,7 +53,8 @@ Measurements below come from two testbed vaults: a ~730-note zk vault and a ~210
 - Peers follow commits via `PRAGMA data_version` (~1.2 µs per call; changes only for other connections' commits) plus `change_log`.
 - Crash recovery is the kernel releasing the flock (also on SIGKILL). No heartbeats, PID files or stale-lock cleanup.
 - Only the reconciler acts on watcher events; peers act only on their own `didOpen`/`didChange`/`didSave`, so a save is not parsed N times.
-- Use `std::fs::File::try_lock` / `try_lock_shared` (Rust ≥ 1.89). Rust opens files `O_CLOEXEC`, so children don't inherit locks; a second fd in the same process is refused (that process becomes a peer); flock does not conflict with SQLite's fcntl locks.
+- Built in M4: the election, the `.open` lock, `discover.lock`, peers that never write, and promotion on `refresh`. Peers pick up the reconciler's commits on their next `refresh` (D9). The watcher, FTS, `data_version` following, the 5 s takeover retry and the stuck-reconciler warning come with M6.
+- Use `std::fs::File::try_lock` / `try_lock_shared` (Rust ≥ 1.89). Rust opens files `O_CLOEXEC`, so children don't inherit locks; a second fd in the same process is refused (that process becomes a peer); flock does not conflict with [SQLite](https://sqlite.org)'s fcntl locks.
 
 **Lock files** (in the base dir of D5; full rules in [specs/roots.md](specs/roots.md))
 
@@ -75,7 +76,7 @@ Measurements below come from two testbed vaults: a ~730-note zk vault and a ~210
 **Why**
 - Many editors run at once (tmux, session restore); many processes are short-lived or killed.
 - A single writer removes write races and the freshness-fence problems that come with them (see D4). A peer's own edits are already fresh in its overlay, so peer writes buy nothing visible.
-- A daemon would save ~1–3 MB private memory per extra editor plus duplicate hot caches; mdroots' state lives in SQLite, not RAM. gopls's daemon saves hundreds of MB and is still off by default.
+- A daemon would save the per-process in-memory index (D9) and duplicate parsing; the persistent state lives in SQLite, and the derived tables (D9) will move the index there too. gopls's daemon saves hundreds of MB and is still off by default.
 - What makes gopls fast (snapshots, cancellation, two-phase diagnostics, in-order requests, a persistent cache) needs no daemon; mdroots adopts all of it in-process ([research/gopls.md](research/gopls.md)).
 - A daemon would not remove schema-versioned DB files or GC locks (old and new daemons overlap during upgrades), and embedders would need a running daemon or a second backend.
 
@@ -94,26 +95,27 @@ Measurements below come from two testbed vaults: a ~730-note zk vault and a ~210
 ## D4. Persistent index = one SQLite DB per root, a disposable cache
 
 **Decision**
+- What a row holds, and how processes use it, is D9.
 - One SQLite DB (WAL) per root, `roots/<id>.v<schema>.db`, plus a registry `roots.v<k>.db`. Schema versions are in the filenames, so old and new binaries never share a file or fight over migrations.
 - The DB is a **cache**: correctness never depends on it. It is rebuilt on schema change, corruption or OS purge. `IndexMode::Memory` stays available for embedders.
-- Links are stored unresolved, as normalised keys, and resolved at query time, so adding or renaming a doc never rewrites its referrers' rows.
+- Links are resolved at query time, so adding or renaming a doc never rewrites its referrers' rows. Today they are not stored at all (D9); the derived tables will store them unresolved, as normalised keys.
 - Writes go in small committed batches; changes are published through `change_log`.
 - Corruption: never rename the file. The reconciler builds a new generation `<db>-<gen8>.db` with a new `meta.generation` (UUID) and repoints the registry; GC deletes the old file once `<id>.open` can be taken exclusively.
 - Peers compare the DB path's inode and `meta.generation` on every `data_version` check and reopen when either changed (covers rebuilds and cache purges). `change_log.seq` restarts per generation, so a reopening peer drops its cursor and hot cache.
 - Root moves: `files.path` is root-relative. On a registry miss, a DB whose stored marker inode (or volume UUID + marker inode) matches the new root is re-keyed instead of rebuilt.
 - Rebuild order: metadata first in small batches, so links and diagnostics work early; FTS last, throttled, reconciler only. Batch size and page cache are bounded to stay under the RSS target.
 - GC (at most daily): roots unseen for 30 days or gone, old schema versions older than 7 days, stale generations. Skips any DB whose `.open` is held.
+- Not built yet (M6): corruption rebuild into a new generation, peers reopening on an inode or `generation` change, FTS and GC. A DB of another schema or a corrupt DB is an error today.
 
 **Freshness rule** (single writer, so no fence between writers; details in [specs/index.md](specs/index.md))
 - Version = the `fstat` of the fd the content was read from: stat, read, `fstat`; retry if the stats differ.
-- Change detection by `(ino, ctime_ns, size)`. Mtime is only a "maybe changed" hint for the cheap scan, because `cp -p`, `rsync -a`, `tar x` and restores set old mtimes, while `utimes` cannot set ctime.
-- Re-parse headings, links and tags only when `hash` changed or `parser_ver` increased; otherwise update only the stat columns.
-- Same ctime but different hash (coarse-ctime filesystems): mark the row `dirty`.
+- Change detection by `(ino, ctime_ns, size)`. Mtime is stored but not compared (a future cheap scan may use it as a "maybe changed" hint), because `cp -p`, `rsync -a`, `tar x` and restores set old mtimes, while `utimes` cannot set ctime.
+- Content equality replaces a hash, because the DB stores the bytes (D9): new bytes are written with a `change_log` entry; the same bytes with a new stat (`touch`) update only the stat columns. There is no `parser_ver`: every process parses the stored content, so a parser upgrade needs no re-index.
 
 **Why**
 - Parse speed alone does not justify a DB: walk + parse takes 104–129 ms on the ~730-note vault and 12–36 ms on the ~210-note vault, under the 250 ms cold target (pulldown-cmark ~1.1 GB/s).
 - Warm start < 30 ms to first result: an in-memory server must open every file at start, ~100 µs per open on macOS, so ~2 s at 20k files before parsing.
-- N editors share one index instead of N parses and N in-memory copies. marksman re-parses every start: ~610–840 ms to first result, 134–145 MB RSS. zk answers in 22–43 ms at 32–35 MB from its DB.
+- N editors share one cache instead of N cold reads; with the derived tables (D9) they also stop holding N in-memory copies. marksman re-parses every start: ~610–840 ms to first result, 134–145 MB RSS. zk answers in 22–43 ms at 32–35 MB from its DB.
 - FTS is too large to rebuild per process.
 - Estimated size (unmeasured): metadata ~1 MB per 1k notes; FTS5 with external content ~1× source size. For comparison a clean `zk index` takes 2.2–3.4 s at 42–48 MB RSS.
 
@@ -133,13 +135,13 @@ Measurements below come from two testbed vaults: a ~730-note zk vault and a ~210
 | 1 | `~/Library/Caches/mdroots` / `~/.cache/mdroots` | macOS / Linux default |
 | 2 | `$XDG_RUNTIME_DIR/mdroots` | 1 not local or not writable |
 | 3 | `/var/tmp/mdroots-$UID` | 2 unset or unusable; created `0700`, owner checked |
-| 4 | in memory for the session | nothing usable; log why to `window/logMessage` |
+| 4 | in memory for the session | nothing usable |
 
 - "Local" = `statfs` reports `MNT_LOCAL`, with fs-type name matching as fallback (same test as root classification). flock and WAL are used only there, because both are unsafe on NFS/SMB.
-- A full disk at write time drops the session to in-memory instead of failing requests.
+- A cache dir or registry that cannot be opened leaves the session in memory instead of failing. Dropping to memory on a full disk at write time comes with M6.
 - OS purges and cleared runtime/tmp dirs are treated like deletion: peers reopen (D4), the next reconciler rebuilds. Cost: one cold start.
-- `Options::write_cache(false)` never touches the cache dir (in-memory index), for read-only embedders.
-- Processes with different environments may pick different base dirs; each gets its own reconciler. `mdroots roots` prints the base dir in use and why.
+- `Options::index(IndexMode::Memory)` never touches the cache dir (in-memory index), for read-only embedders. `Options::cache_dir(path)` (the CLI's `MDROOTS_CACHE_DIR`) replaces the chain, for tests.
+- Processes with different environments may pick different base dirs; each gets its own reconciler. `mdroots roots` prints the root's DB path (so the base dir) and the process's role; `cache_dir` also returns why each candidate was taken or rejected.
 
 **Why**
 - The DB is rebuildable, so by XDG it is cache, not state.
@@ -157,20 +159,21 @@ Measurements below come from two testbed vaults: a ~730-note zk vault and a ~210
 **Decision**
 
 ```
-syntax ← resolve ← core ← index ← mdroots ← mdroots-lsp
-                    ↑
-                  roots (behind a feature)
+syntax ← resolve ← core ← roots ← index ← mdroots ← mdroots-lsp ← mdroots-cli
 ```
+
+Each crate may also use any crate to its left directly (`mdroots-cli` uses `mdroots` and `mdroots-lsp`, the latter for `mdroots lsp`).
 
 | Crate | Holds |
 |---|---|
 | `mdroots-syntax` | parse one document → structure + link candidates, `LineIndex`; no I/O; builds for wasm |
 | `mdroots-resolve` | resolution ladder, dialect detection, convention vote; defines `ResolveEnv` (existence, case sensitivity, home dir), so no direct I/O; builds for wasm |
-| `mdroots-core` | `Store`, `FileSystem`, `MemStore`, reconcile logic, `Cancel`; re-exports and implements `ResolveEnv` |
-| `mdroots-index` | `SqliteStore` and the flock roles only |
-| `mdroots-roots` | root discovery; optional in the facade |
+| `mdroots-core` | `FileSystem`, `MemStore` (the in-memory index), the markdown walk, the diagnostics policy, `Cancel`; implements `ResolveEnv` |
+| `mdroots-roots` | root discovery, the `Registry` trait, `list_root` |
+| `mdroots-index` | cache dir choice, flock roles, the per-root DB, reconcile, the SQLite root registry |
 | `mdroots` | the facade embedders depend on |
 | `mdroots-lsp` | protocol only; the only crate that names `lsp-types` |
+| `mdroots-cli` | the `mdroots` binary, including `mdroots lsp` |
 
 - **Independent semver** per crate, `cargo-semver-checks` per crate in CI.
 - crates.io refuses path-only dependencies, so every `mdroots` release publishes its sub-crates. Until a sub-crate's API settles it is an **internal 0.x crate** (README: "no stability promise, depend on `mdroots`") and the facade pins it with `=x.y.z`. `mdroots-syntax` and `mdroots` are the first public crates.
@@ -179,7 +182,7 @@ syntax ← resolve ← core ← index ← mdroots ← mdroots-lsp
 
 **Why**
 - Wasm and linter users who want only the parser must not compile SQLite.
-- `ResolveEnv` lives in `resolve` because `resolve` sits below `core`; putting `Store` in the facade while `index` implements it would be a cycle.
+- `ResolveEnv` lives in `resolve` because `resolve` sits below `core`.
 - Lockstep versions would force a major bump of `mdroots-syntax` whenever `mdroots-index` breaks.
 - `lsp-types` conversions in the facade would tie `mdroots`'s major version to `lsp-types`'s.
 
@@ -212,14 +215,39 @@ syntax ← resolve ← core ← index ← mdroots ← mdroots-lsp
 **Decision**
 - No config file and no init step. Roots are discovered from markers ([specs/roots.md](specs/roots.md)).
 - Dialects are detected from markers (`.zk/`, `.obsidian/`, `.marksman.toml`, `.foam/`, `dendron.yml`, `logseq/`, org files, mkdocs/Hugo/Docusaurus/Jekyll/mdBook configs, ...). Several markers in one tree are merged, not ranked.
-- Existing tool configs are **read** for hints (zk link format, tag syntaxes and `dead-link` severity; Obsidian link style and attachment folder; marksman title settings). mdroots never writes them, and never reads or writes zk's `notebook.db`.
+- Existing tool configs are **read** for hints (zk link format, tag syntaxes and `dead-link` severity; [Obsidian](https://obsidian.md) link style and attachment folder; marksman title settings). mdroots never writes them, and never reads or writes zk's `notebook.db`.
 - A corpus vote, stored in `meta` and recomputed after each full reconcile, decides: completion insert style (share of links per ladder step), piped-wiki order, wiki vs md, `.md` suffix, tag syntaxes (≥ 3 distinct tags in ≥ 2 files), H1-as-title (≥ 70% of docs have exactly one H1), filename scheme.
 
 **Why**
 - Goal: install and forget. zk needs `zk init`; marksman needs a VCS marker or `.marksman.toml` and offers config to pick a style.
-- Reading an existing config is still zero config for the user; writing one would touch user trees, often git repos.
+- Reading an existing config is still zero config for the user; writing one would touch user trees, often [git](https://git-scm.com) repos.
 - The vote picks the style the vault already uses: root-relative paths in the ~730-note vault, stems in the ~210-note vault.
 
 **Rejected**
 - A required config file or init step (zk): the main friction zero config removes.
 - Writing detected settings back to tool configs: modifies user files (see D2).
+
+## D9. The per-root DB caches content; queries run on an in-memory index
+
+**Decision**
+- Each `files` row of the per-root DB (D4) holds a note's root-relative path, its stat (`ino`, `ctime_ns`, `mtime_ns`, `size`) and its **bytes**. There are no derived SQL tables (keys, links, frontmatter) yet.
+- Every process hydrates an in-memory `MemStore` from the DB's bytes (`MemStore::from_contents`) and answers every query from memory. An unchanged note is never opened: it is re-read only when its `(ino, ctime_ns, size)` differs from its row, or it has no row.
+- Content equality replaces the spec's `hash`, because the bytes are stored anyway. A read with new bytes is an upsert plus a `change_log` entry; the same bytes with a new stat (`touch`) update only the stat columns. A parser upgrade needs no re-index, since every process parses the stored content.
+- The reconciler (D3) re-lists the root per its mode on open and on `Workspace::refresh` (budgeted walk, git index scan, enumerator, or the lazy working set), re-stats every file and writes what changed in `BEGIN IMMEDIATE` batches of at most 200 files or 50 ms. A peer never lists: it uses the DB's file set, re-stats it and reads changed files into memory only.
+- No watcher in M4: changes on disk arrive through `refresh`, which `mdroots lsp` calls on `didSave` and `didChangeWatchedFiles`.
+- `Workspace::open_at` (a directory chosen by the caller) and single-file decisions stay in memory; only discovered, registered roots get a DB.
+
+**Why**
+- It gives the warm-start win of D4 (no file opens for unchanged notes) with a small schema and no query layer to keep in sync with the parser; the in-memory layer already existed (M1–M3).
+- Storing bytes makes change detection exact without a hash and makes parser changes free.
+- Measured (release build, macOS APFS): an 11-note vault checks in 0.32 s cold and under 0.01 s warm at 2.2 MB peak footprint; a synthetic 3,000-note notebook (12 MB) takes 0.40 s with a fresh cache and 0.14 s with the DB present, at 36.6 MB peak footprint.
+
+**Costs accepted**
+- Every process holds every note's bytes and parse in memory, so memory grows with the vault. The 3,000-note notebook is already just over the 35 MB per-process target (D3); see [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).
+- Hydrating parses every note at start; a peer sees another process's writes only on its next `refresh`.
+
+**Next (M6)**: derived tables (`keys`, `links`, `frontmatter` with indexed lookups, [specs/index.md](specs/index.md) §1.2) so queries stop needing every note in memory; then the watcher, FTS and GC.
+
+**Rejected**
+- Building the derived tables in M4: a second query layer before the first one was measured.
+- Hash column next to the content: redundant with stored bytes.

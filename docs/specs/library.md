@@ -10,7 +10,7 @@ Two requirements:
 
 [marksman](https://github.com/artempyanykh/marksman) (F#) and [zk](https://github.com/zk-org/zk) (Go `internal/` packages) put their core inside the server or CLI, so it can't be reused. In mdroots all behaviour lives in library crates that a TUI, CLI, static-site generator, MCP server or another language server can embed (e.g. a flashcard scanner, a semantic-search tool reusing the chunker and link graph, or ramble, a separate TUI markdown reader by the same author). See D2.
 
-**`mdroots-lsp` target: ≤ 3k lines of protocol glue.** An estimate: zk is ≈ 14k non-test lines, and its LSP layer alone is 2.2–2.5k lines for fewer features.
+**`mdroots-lsp` target: ≤ 3k lines of protocol glue.** It is ~1.6k non-test lines today. For comparison, zk is ≈ 14k non-test lines, and its LSP layer alone is 2.2–2.5k lines for fewer features.
 
 Rule of thumb: if a feature can't be tested without JSON-RPC, it is in the wrong crate.
 
@@ -20,7 +20,8 @@ Process model (D3): every embedder links the library and calls it directly; no d
 nvim ──LSP── mdroots lsp ── Workspaces ─┐
 nvim ──LSP── mdroots lsp ── Workspaces ─┼── roots/<id>.v<s>.db (SQLite WAL)
 ramble ──────────────────── Workspaces ─┤     one writer per root: the flock holder
-mdroots check ───────────── Workspaces ─┘     everyone else: read-only + own overlays
+mdroots check ───────────── Workspace ──┘     everyone else: read-only
+                                               each process: in-memory index + own overlays
 ```
 
 ## 2. Workspace layout
@@ -30,12 +31,12 @@ mdroots/
   crates/
     mdroots-syntax/   parse one document → structure + liberal link candidates; LineIndex (no I/O)
     mdroots-resolve/  resolution ladder, dialect detection, convention vote (I/O only via ResolveEnv)
-    mdroots-core/     traits (Store, FileSystem, ResolveEnv, …), MemStore, reconcile logic, Cancel
-    mdroots-roots/    root discovery, FS classification, walk budgets (std::fs + statfs via rustix; no SQLite)
-    mdroots-index/    SqliteStore + flock roles (rusqlite)
-    mdroots/          facade: Workspace API, re-exports, feature flags   ← what embedders depend on
-    mdroots-cli/      the `mdroots` binary: check, roots, resolve, backlinks (§6)
-    mdroots-lsp/      LSP server binary + mdroots_lsp::serve() for embedding the server
+    mdroots-core/     FileSystem, MemStore (in-memory index), markdown walk, diagnostics policy, Cancel
+    mdroots-roots/    root discovery, FS classification, walk budgets, list_root (std::fs + statfs via rustix; no SQLite)
+    mdroots-index/    cache dir, flock roles, per-root DB, reconcile, SQLite registry (rusqlite)
+    mdroots/          facade: Workspace, Workspaces, re-exports   ← what embedders depend on
+    mdroots-lsp/      the language server as a library: mdroots_lsp::serve()
+    mdroots-cli/      the `mdroots` binary: check, roots, resolve, backlinks, lsp (§6)
   editors/nvim/       Neovim 0.12+ example config
   bench/              lspbench.py, mdsurvey.py, mdresolve.py, nvim_smoke.lua; criterion benches
   tests/corpus/       fixtures (synthetic, plus scrubbed shapes of two real vaults)
@@ -44,21 +45,21 @@ mdroots/
 Dependency direction (no cycles, no upward edges):
 
 ```
-syntax ← resolve ← core ← index ← mdroots ← mdroots-lsp
-                    ↑                ↑
-                    roots ───────────┘  (optional in the facade)
+syntax ← resolve ← core ← roots ← index ← mdroots ← mdroots-lsp ← mdroots-cli
 ```
+
+Each crate may also use crates further left directly; `mdroots-cli` uses `mdroots` and `mdroots-lsp`.
 
 | Crate | Main deps | Direct I/O | wasm32 | Why separate |
 |---|---|---|---|---|
 | `mdroots-syntax` | `pulldown-cmark` (≈ 1.1 GB/s on the testbeds), `memchr`, small YAML/TOML frontmatter parser | — | ✓ | most reusable piece (linters, formatters, SSGs, browser editors); owns `LineIndex` |
 | `mdroots-resolve` | `mdroots-syntax`, `unicode-normalization` | — (via `ResolveEnv`) | ✓ | other tools resolve links the same way over their own file list |
-| `mdroots-core` | `mdroots-resolve` | only through `FileSystem` | ✓ (`MemStore`, embedder's `FileSystem`) | the traits every store and FS plugs into; `MemStore` and the reconcile queue written once |
+| `mdroots-core` | `mdroots-resolve` | only through `FileSystem` | ✓ (`MemStore`, embedder's `FileSystem`) | the FS seam and the in-memory index every front end queries |
 | `mdroots-roots` | `mdroots-core`, `ignore` (gitignore matcher only), [`rustix`](https://github.com/bytecodealliance/rustix) (`statfs`; unix only) | ✓, all through its `Probe` trait | — | safe root finding is useful alone, e.g. to a search tool |
-| `mdroots-index` | `mdroots-core`, `rusqlite` (bundled); flock via `std::fs::File::try_lock` (no `fs4`) | ✓ | — | heavy deps behind one crate; adds only `SqliteStore` and flock roles |
-| `mdroots` | all of the above, behind features | — | partial | stable public surface |
-| `mdroots-cli` | `mdroots` | — (through the facade) | — | the command line; formatting only |
-| `mdroots-lsp` | `mdroots`, `lsp-server`, `lsp-types` | — | — | protocol only; the only crate naming `lsp-types` |
+| `mdroots-index` | `mdroots-core`, `mdroots-roots`, `rusqlite` (bundled), `rustix` (`getuid`); flock via `std::fs::File::try_lock` (no `fs4`) | ✓ | — | heavy deps behind one crate: cache dir, flock roles, per-root DB, reconcile, registry |
+| `mdroots` | all of the above (no features yet) | — | — | stable public surface |
+| `mdroots-lsp` | `mdroots`, `lsp-server`, `lsp-types`, `serde_json`, `crossbeam-channel` | — | — | protocol only; the only crate naming `lsp-types` |
+| `mdroots-cli` | `mdroots`, `mdroots-lsp`, `lsp-server` | — (through the facade) | — | the command line; formatting only |
 
 MSRV is Rust 1.89 (for `File::try_lock`/`lock_shared`). Lock files (`<id>.lock`, `<id>.open`, `discover.lock`) are in [roots](roots.md).
 
@@ -66,12 +67,12 @@ MSRV is Rust 1.89 (for `File::try_lock`/`lock_shared`). Lock files (`<id>.lock`,
 
 ### Feature flags on `mdroots`
 
-The facade has no features yet: it always depends on `mdroots-roots` and has no `mdroots-index`. The table is the target from M4 on.
+The facade has no features yet: it always depends on `mdroots-roots` and `mdroots-index`, and nothing below `fts` exists. The table is the target.
 
 | Feature | Default | Pulls in | C code | Threads | wasm32 |
 |---|---|---|---|---|---|
 | `roots` | ✓ | `mdroots-roots`: `ignore`, `rustix` (`statfs`) | — | none: the discovery walk is sequential | — |
-| `index` | ✓ | `mdroots-index`, rusqlite bundled | SQLite | none of its own | — |
+| `index` | ✓ | `mdroots-index`, rusqlite bundled | [SQLite](https://sqlite.org) | none of its own | — |
 | `fts` | ✓ | SQLite FTS5 (needs `index`) | SQLite | — | — |
 | `watch` | ✓ | macOS: `fsevent-sys` FFI (replay needs `sinceWhen`, which `notify` can't set); Linux: inotify via `notify` | — | one watcher thread, reconciler only | — |
 | `parallel` | ✓ | `rayon` for the cold parse | — | a pool | — |
@@ -113,24 +114,33 @@ fm.map(|f| f.get("stage"));            // raw access for any key
 
 ### 3.2 A workspace (`mdroots`)
 
-The facade crate over `MemStore` and `mdroots-roots`. Public paths are absolute and canonical (through the workspace's `FileSystem`); a path outside the root is an `Unsupported` error.
+The facade crate over `mdroots-roots`, `mdroots-index` and `MemStore`. Public paths are absolute and canonical (through the workspace's `FileSystem`); a path outside the root is an `Unsupported` error. Everything is synchronous and runs no background thread.
 
 ```rust
-use mdroots::{Workspace, Options, Freshness, Cancel};
+use mdroots::{Workspace, Workspaces, Options, IndexMode, Freshness, Cancel};
 use mdroots::syntax::PositionEncoding;
 
 let ws = Workspace::open_for(path, Options::default())?;      // discovery first (roots spec), then index
-let ws = Workspace::open_at(&root_dir, Options::default())?;  // a directory as the root; no discovery
+let ws = Workspace::open_at(&root_dir, Options::default())?;  // a directory as the root; no discovery, in memory
 let r = ws.root();                                             // RootInfo { path, mode, reason, nested_roots }
 println!("{} ({:?}, {})", r.path.display(), r.mode, r.reason);
+let role = ws.role();                                          // Some(Role::Reconciler | Role::Peer); None = memory
+let db = ws.cache();                                           // Some(<cache>/roots/<id>.v1.db); None = memory
+ws.refresh(&cancel)?;                                          // pick up changes on disk (§3.4)
 
 let files  = ws.files();                                       // Vec<PathBuf>, absolute, sorted
-let notes  = ws.notes();                                       // Vec<NoteSummary>
+let notes  = ws.notes();                                       // Vec<NoteSummary>, by path
+let found  = ws.search_notes("qry", 50);                       // Vec<NoteSummary>, fuzzy, best first
 let tags   = ws.tags();                                        // Vec<(String, usize)>, sorted by name
 let target = ws.resolve(&from_path, "[[some-note]]")?;         // Resolution { targets, step, status, hint }
+let goto   = ws.goto(&note_path, offset)?;                     // Option<Goto { targets, heading, line }>
 let links  = ws.document_links(&note_path)?;                   // Vec<DocLink>, source order
 let back   = ws.backlinks(&note_path)?;                        // Vec<Backlink>, sorted by source path
+let heads  = ws.outline(&note_path)?;                          // Vec<syntax::Heading>, source order
+let prev   = ws.preview(&note_path, 10)?;                      // Preview { title, frontmatter, excerpt }
+let text   = ws.text(&note_path)?;                             // current text, overlay wins
 let diags  = ws.diagnostics(&note_path, &cancel)?;             // Vec<Diagnostic>, same policy for every front end
+let edit   = ws.rename_note(&old, &new, &cancel)?;             // WorkspaceEdit { edits, rename }; writes nothing
 let (line, col) = ws.line_col(&note_path, offset, PositionEncoding::Utf32)?; // 0-based, overlay text wins
 
 match ws.freshness() {                                         // #[non_exhaustive]
@@ -141,34 +151,39 @@ match ws.freshness() {                                         // #[non_exhausti
 
 ws.set_overlay(&path, text)?;                                  // unsaved text; adds the note if not indexed
 ws.clear_overlay(&path)?;
+
+let wss = Workspaces::new(Options::default());                 // one per process; shares cache dir and registry
+let ws = wss.for_path(&file)?;                                 // cached per root; nested roots: the nearest
+let open = wss.all();                                          // every opened workspace, by root path
 ```
 
-- **`Options`** is a builder with `Default`: `workspace_folders` (bound the marker climb), `enumerator` (lists the markdown of a virtual checkout; default `SlFiles`, `NoEnumerator` turns vcs-enumerated mode off), `cancel` (checked during discovery and indexing), and `fs` + `probe`, set together or not at all (default `StdFs` and `StdProbe`; unix only, elsewhere the embedder supplies both).
-- **What `open_for` indexes.** The file must exist. Every mode but lazy and single-file: the notes discovery listed, plus the opened file (`Fresh`). Lazy roots: a working set, the opened file plus the notes of its directory, one level, no hidden, editor-temp or dataless entries, at most 2,000 files by name with the opened file counted (`Lazy`). Single-file decisions, and a file outside the decided root, index the file alone with its directory as root (`Lazy`). The opened file is always read, even if dataless.
-- **`open_at`** walks the directory with the M1 markdown walk (no budget, no filesystem classification) and reports `RootMode::Marker` with reason `opened at <dir>`. It is for a directory the caller already knows is a bounded root.
+- **`Options`** is a builder with `Default`: `workspace_folders` (bound the marker climb), `enumerator` (lists the markdown of a virtual checkout; default `SlFiles`, `NoEnumerator` turns vcs-enumerated mode off), `cancel` (checked during discovery and indexing), `fs` + `probe`, set together or not at all (default `StdFs` and `StdProbe`; unix only, elsewhere the embedder supplies both), `index(IndexMode)` and `cache_dir(path)`.
+- **`IndexMode`** (`#[non_exhaustive]`): `Auto` (default) keeps a per-root DB in the cache dir: `cache_dir` if set, else the user's (D5), else memory. `Auto` with an explicit `fs`/`probe` (in-memory test trees) and no `cache_dir` stays in memory. `Memory` never touches the cache dir. A cache that fails to open falls back to memory.
+- **What `open_for` indexes.** The file must exist. Every mode but lazy and single-file: the notes discovery listed (or `list_root` re-lists on a registry hit), plus the opened file (`Fresh`). Lazy roots: a working set, the opened file plus the notes of its directory, one level, no hidden, editor-temp or dataless entries, at most 2,000 files by name with the opened file counted (`Lazy`). Single-file decisions, and a file outside the decided root, index the file alone with its directory as root (`Lazy`). The opened file is always read, even if dataless.
+- **With a cache**, `open_for` holds `discover.lock` around discovery with the persistent registry; a registered root then opens its DB and takes its locks. The reconciler reconciles and writes, a peer reads the rows and re-reads changed files in memory ([index](index.md) §1.3). Either way the process hydrates its `MemStore` from the returned bytes, so unchanged notes are not opened. Single-file workspaces, `open_at` and roots without a registry row stay in memory.
+- **`refresh(&cancel)`**: a peer first tries to become the reconciler; the reconciler re-lists the root (or the working set) and writes what changed; a peer re-reads the DB and changed files without writing; in memory mode the root is re-listed and re-read. The new index replaces the old one; overlays survive.
+- **`open_at`** walks the directory with the M1 markdown walk (no budget, no filesystem classification), always in memory, and reports `RootMode::Marker` with reason `opened at <dir>`. It is for a directory the caller already knows is a bounded root.
 - **`resolve`** parses `link_text` with the dialect of `from`, takes its first link and resolves it with goto semantics (the Partial step allowed; `hint` is true for a Partial hit). Text without a link is an `Unsupported` error. `targets` may lie outside the root.
-- **`document_links`, `backlinks`, `diagnostics`** return empty for a path inside the root that is not indexed. `Backlink.line` is 0-based; `from_title` is the frontmatter title, else the first level-1 heading, else the file stem.
+- **`goto(path, offset)`**: the link at a byte offset of the note's current text, in any context (code included), resolved like `resolve`. `None` without a link there or without a target (broken, external). `heading` is the byte range of the heading an anchor names (slug, org `:ID:` or `:CUSTOM_ID:`), in `targets[0]`; `line` is the 1-based line of a code mention `path:LINE`.
+- **`search_notes(query, limit)`**: notes whose title, file stem or a frontmatter alias contains the query as a case-insensitive subsequence, best first (exact, prefix, substring, then fewer gaps; ties by path). An empty query lists notes by path.
+- **`preview`** returns the title, frontmatter entries in document order (lists joined with `", "`) and the first `max_lines` lines after the frontmatter. **`preview`, `text`, `line_col`** are `Unsupported` for a note that is not indexed; **`outline`, `document_links`, `backlinks`, `diagnostics`** return empty for it. `Backlink.line` is 0-based; `from_title` is the frontmatter title, else the first level-1 heading, else the file stem.
+- **`rename_note(old, new, &cancel)`**: `old` must be an indexed note and `new` a note path inside the root that neither exists nor is indexed. Links whose best target is `old` are rewritten in the style they were written in (file-relative, root-relative, site-rooted or by stem); links found by id, title, alias, a dialect transform or a partial match are left alone, as are links in code. When `old` moves to another directory its own file-relative links are rewritten too. Anchors are kept. `WorkspaceEdit.edits` is per file (absolute, sorted) with non-overlapping byte-range `TextEdit`s, then `rename = Some((old, new))`. Nothing is written.
 - **Diagnostics** are computed per call under `DiagnosticPolicy::for_store` (the policy is in [index](index.md) §3.3), with `lazy` set when freshness is `Lazy`.
-- The working set never grows after open, and nothing is written anywhere: no cache dir, no registry on disk.
-- Re-exports: `Cancel`, `Error`, `ErrorKind`, `FileSystem`, `StdFs`, `Diagnostic`, `DiagCode`, `Severity`, `RootMode`, `Probe`, `StdProbe`, `Enumerator`, `NoEnumerator`, `ResolveStep`, `LinkStatus`, and `mdroots_syntax` as `mdroots::syntax`.
+- **`Workspaces`** maps files to workspaces, opening each root once and sharing one cache dir and registry. A file is served by the cached workspace with the longest root containing it and not under one of its nested roots; a single-file or rootless lazy workspace serves only its own file. `Clone + Send + Sync`.
+- The working set never grows after open. Only the cache dir is written.
+- Re-exports: `Cancel`, `Error`, `ErrorKind`, `FileSystem`, `StdFs`, `Diagnostic`, `DiagCode`, `Severity`, `RootMode`, `Probe`, `StdProbe`, `Enumerator`, `NoEnumerator`, `ResolveStep`, `LinkStatus`, `Role`, `mdroots_index` as `mdroots::index`, `mdroots_syntax` as `mdroots::syntax`; `mdroots::names` gives the lowercase-hyphenated names of modes, severities, steps and statuses that the CLI and the server print.
 
-Later, with the SQLite index (M4): `open_for_nonblocking` (Lazy until discovery, `RootDecided` to the `Observer`), `search_notes`, `full_text`, `Freshness::Stale { pending }`, `reconcile(budget, &cancel)`, `wait_fresh`, `rename_note` (returns a `WorkspaceEdit`), feature flags, and working-set growth as files are opened.
+Planned: `open_for_nonblocking` (Lazy until discovery), `full_text`, `Freshness::Stale { pending }`, background reconcile (M6), feature flags, and working-set growth as files are opened.
 
-### 3.3 Embedder additions (`Workspaces`)
+### 3.3 Embedder additions
 
-Driven by ramble's needs ([ramble](../research/ramble.md)). Synchronous, byte offsets and paths, `&Cancel` on slow calls. `Workspaces` maps paths to `Workspace`s and comes with M4.
+Driven by ramble's needs ([ramble](../research/ramble.md)). Synchronous, byte offsets and paths, `&Cancel` on slow calls.
 
-- **Exists now** on `Workspace` (one root, no `&Cancel`): `document_links`, `backlinks`, `notes`, with the `DocLink`, `Backlink` and `NoteSummary` below (`NoteSummary` without `modified`).
-- **M4:** `Workspaces`, `preview`, `notes_with_tag`, `full_text`, `touched`, `NoteSummary.modified`, `Options::write_cache`.
-- **M5:** `subscribe` events, fed by the LSP layer's change tracking.
+- **Exists now** on `Workspace` (one root): `document_links`, `backlinks`, `notes`, `search_notes`, `preview`, `outline`, `text`, `goto`, `rename_note`, `refresh`; and `Workspaces::for_path` / `all` to get the workspace of any file. `NoteSummary` has no `modified`; `Preview` has no `summary`.
+- **Planned:** `notes_with_tag`, `full_text` (with FTS, M6), `touched`, `NoteSummary.modified`, `Preview.summary`, and `subscribe` events.
 
 ```rust
-impl Workspaces {
-    /// Every link in the document (disk or overlay), resolved, in source order.
-    pub fn document_links(&self, path: &Path, c: &Cancel) -> Result<Vec<DocLink>>;
-    pub fn preview(&self, target: &Path, max_lines: usize) -> Result<Preview>;
-    pub fn backlinks(&self, path: &Path, c: &Cancel) -> Result<Vec<Backlink>>;
-    pub fn notes(&self, root: &Path) -> Result<Vec<NoteSummary>>;            // unranked, for local fuzzy filters
+impl Workspaces {                  // planned, not built
     pub fn notes_with_tag(&self, root: &Path, tag: &str) -> Result<Vec<NoteSummary>>;
     pub fn full_text(&self, root: &Path, q: &str, n: usize, c: &Cancel) -> Result<Vec<Hit>>;
     /// Read-only embedders: "this file changed on disk", re-read into the overlay.
@@ -188,82 +203,92 @@ impl Workspaces {
 }
 #[non_exhaustive] pub struct Backlink { pub from: PathBuf, pub from_title: String,
     pub range: Range<usize>, pub line: u32, pub in_code: bool }
-#[non_exhaustive] pub struct NoteSummary { pub path: PathBuf, pub title: String,
-    pub tags: Vec<String>, pub modified: Option<SystemTime> }
-#[non_exhaustive] pub struct Preview { pub title: String, pub summary: Option<String>,
+#[non_exhaustive] pub struct NoteSummary { pub path: PathBuf, pub title: String, pub tags: Vec<String> }
+#[non_exhaustive] pub struct Preview { pub title: String,
     pub frontmatter: Vec<(String, String)>, pub excerpt: String }
-#[non_exhaustive] pub struct Hit { pub path: PathBuf, pub line: u32, pub snippet: String }
+#[non_exhaustive] pub struct Goto { pub targets: Vec<PathBuf>, pub heading: Option<Range<usize>>, pub line: Option<u32> }
+#[non_exhaustive] pub struct WorkspaceEdit { pub edits: Vec<(PathBuf, Vec<TextEdit>)>, pub rename: Option<(PathBuf, PathBuf)> }
+pub struct TextEdit { pub range: Range<usize>, pub new_text: String }
 ```
 
-- `LinkStatus::Ambiguous` carries no candidates; `Resolution.targets` and the diagnostic's `related` list them, best first.
-- Code mentions (`` `src/main.rs:12` ``): `:LINE[:COL]` is stripped into `DocLink.line`. Extra search dirs come through `Options` (ramble passes page dir, VCS root, tree root).
-- `Options::write_cache(false)`: never touch the cache dir; in-memory index for the session (browsing someone else's tree).
+- `LinkStatus::Ambiguous` carries no candidates; `Resolution.targets`, `Goto.targets` and the diagnostic's `related` list them, best first.
+- Code mentions (`` `src/main.rs:12` ``): `:LINE[:COL]` is stripped into `DocLink.line`. Planned: extra search dirs through `Options` (ramble passes page dir, VCS root, tree root).
+- `Options::index(IndexMode::Memory)`: never touch the cache dir; in-memory index for the session (browsing someone else's tree).
 
 ### 3.4 Design rules
 
-- **Synchronous core, no async runtime.** Queries are µs–ms SQLite lookups; async callers use `spawn_blocking`. Neither tokio nor rayon is forced on embedders.
-- **Cancellation.** `reconcile`, `wait_fresh`, `full_text`, `diagnostics`, `rename_note` take `&Cancel`: a clonable `Arc<AtomicBool>` plus optional deadline, checked between files and batches. Cancelled calls return `ErrorKind::Cancelled` with no partial state (reconcile batches are committed transactions). The LSP cancels on `$/cancelRequest` and on a newer `didChange` for the same document.
-- **Snapshot reads.** Each query uses one read transaction on one pooled connection and the overlay map as of call start (an `Arc` swapped on `set_overlay`). Concurrent commits or overlay changes are seen by the next query, never halfway.
-- **Background work and roles (D3).** `Options::background` defaults to `false` for libraries, `true` in `mdroots-lsp`. The thread runs at `QOS_CLASS_BACKGROUND` (E-cores; Linux: `nice` + idle `ioprio`); only the link-target queue for open buffers runs at `UTILITY`. The holder of `<id>.lock` is the reconciler and does sweep, watcher and FTS; it is the root's only writer. Peers never write and serve their own unsaved and just-saved files from overlays.
-- **`data_version` polling with `background(false)`.** No timer. Every query and `reconcile` checks `PRAGMA data_version` (≈ 1.2 µs), the DB inode and `meta.generation`, and reopens if changed. `reconcile(budget)` tries the flock with `try_lock`: on success it runs a sweep slice; otherwise it point-checks open files and their link targets in memory.
-- **Cold start.** With no DB for the root, the first `open_for` indexes synchronously, open buffer first. The ~300 ms delay before background work applies only to sweeps of an existing DB ([index](index.md)).
-- **Diagnostics are point-fresh.** `diagnostics(path)` checks the document and its link targets in this process (stat, re-parse if needed); whole-index freshness isn't required. A link target is `stat`ed before reporting broken: an existing gitignored or unindexed file is not broken. In lazy roots only `stat`-checkable links are diagnosed.
-- **Never writes user files.** Mutations are returned as `WorkspaceEdit`. Only the cache dir (D5) is written; `Options::index(IndexMode::Memory)` (Neovim setting `index = 'memory'`) turns that off too.
-- **`Send + Sync`, cheap to clone** (`Arc` inside); many threads query while one reconciles. `rusqlite::Connection` is `!Sync`, so `SqliteStore` holds a writer connection only while reconciler (mutex; every write `BEGIN IMMEDIATE`) and a capped read pool (default 2, bounded page cache each). Target: < 35 MB `phys_footprint` per process with 10 concurrent instances; private memory, not RSS, because macOS counts mmap'd DB pages in every process that touched them.
+- **Synchronous core, no async runtime.** Queries are µs–ms lookups in the in-memory index (D9); async callers use `spawn_blocking`. Neither tokio nor rayon is forced on embedders.
+- **Cancellation.** `refresh`, `diagnostics`, `rename_note` (and `Options::cancel` for `open_for`) take a `Cancel`: a clonable `Arc<AtomicBool>` plus optional deadline, checked between files and batches. Cancelled calls return `ErrorKind::Cancelled` with no partial state (the DB keeps only whole committed batches). The server's use of it is in §3.6.
+- **Consistent reads.** Each query reads the workspace's `MemStore` under one read lock, overlays included. `refresh` builds a new `MemStore` outside the lock and swaps it in, so a query sees the old or the new index, never half of each.
+- **Roles (D3).** The holder of `<id>.lock` is the reconciler, the root's only writer; it reconciles on open and `refresh`. Peers never write; they serve the DB's content, files they re-read themselves, and their own unsaved buffers. `Workspace::role()` tells which.
+- **No background work yet.** Nothing runs between calls: changes on disk arrive through `refresh`. Planned (M6): `Options::background` (default `false` for libraries, `true` in `mdroots-lsp`) with one thread at `QOS_CLASS_BACKGROUND` (Linux: `nice` + idle `ioprio`) for watcher, sweeps and FTS, and `PRAGMA data_version` / `meta.generation` checks per query.
+- **Cold start.** With no DB for the root, the first `open_for` indexes synchronously and writes the DB in committed batches; an existing DB means only changed files are read ([index](index.md) §1.5).
+- **Diagnostics are point-fresh.** `diagnostics(path)` checks the document and its link targets in this process; whole-index freshness isn't required. A link target is `stat`ed before reporting broken: an existing gitignored or unindexed file is not broken. In lazy roots only `stat`-checkable links are diagnosed.
+- **Never writes user files.** Mutations are returned as `WorkspaceEdit`. Only the cache dir (D5) is written; `Options::index(IndexMode::Memory)` turns that off too.
+- **`Send + Sync`, cheap to clone** (`Arc` inside); many threads query while one refreshes. `rusqlite::Connection` is `!Sync`, so a workspace keeps its one DB connection and its locks behind a mutex, used only by open and `refresh` (every write `BEGIN IMMEDIATE`). Target: < 35 MB `phys_footprint` per process with 10 concurrent instances; private memory, not RSS, because macOS counts mmap'd DB pages in every process that touched them. The in-memory index exceeds it at a few thousand notes (D9, [OPEN-QUESTIONS](../OPEN-QUESTIONS.md)).
 - **Multiple roots.** `Workspace` is one root; `Workspaces` maps paths to roots, handles nesting and caches handles. The LSP uses `Workspaces`.
-- **Errors.** One `mdroots::Error` (kind + message) with `#[non_exhaustive] ErrorKind` (`Io`, `Cancelled`, `Unsupported`, `Corrupt`, …). Missing files and broken links are data, not errors. SQLite `BUSY` during WAL recovery is retried internally.
+- **Errors.** One `mdroots::Error` (kind + message) with `#[non_exhaustive] ErrorKind` (`Io`, `Cancelled`, `Unsupported`, `Corrupt`, …). Missing files and broken links are data, not errors. SQLite `BUSY` waits up to `busy_timeout` (2 s); a DB of another schema or a corrupt one is `Corrupt` (rebuild: M6).
 - **Semver hygiene.** Public structs `#[non_exhaustive]`, builder for `Options`, no `pub` fields on types expected to grow.
 
-`#[non_exhaustive]` enums (callers need a `_` arm): `Element`, `LinkKind`, `Context`, `Dialect`, `Freshness`, `RootMode`, `ResolveStep`, `IndexMode`, `ChangeEvent`, `ErrorKind`. Exhaustive because the set is part of the model: `Confidence` (explicit / implicit / external, see [index](index.md)), `Role` (reconciler / peer), `PositionEncoding` (UTF-8 / 16 / 32).
+`#[non_exhaustive]` enums (callers need a `_` arm): `Element`, `LinkKind`, `Context`, `Dialect`, `Freshness`, `RootMode`, `ResolveStep`, `IndexMode`, `ErrorKind`. Exhaustive because the set is part of the model: `Confidence` (explicit / implicit / external, see [index](index.md)), `Role` (reconciler / peer), `PositionEncoding` (UTF-8 / 16 / 32).
 
-### 3.5 Extension traits (`mdroots-core`)
+### 3.5 Extension traits
 
 ```rust
-pub trait FileSystem: Send + Sync {          // default StdFs; embedders: VFS, git tree, zip, test fakes
-    /// Bytes plus the stat of the same fd (read, then fstat; retried if it differs
-    /// from the pre-read stat). That stat is the row's version for the freshness fence.
+pub trait FileSystem: Send + Sync {          // mdroots-core; default StdFs; embedders: VFS, git tree, zip, test fakes
+    /// The file's bytes and its metadata, taken from the same open file
+    /// (the version reconcile stores, index spec §1.2).
     fn read(&self, p: &Path) -> io::Result<(Arc<[u8]>, Meta)>;
-    fn stat(&self, p: &Path) -> io::Result<Meta>;          // ino, ctime_ns, mtime_ns, size, st_flags
-    fn read_dir(&self, p: &Path) -> io::Result<Vec<DirEntry>>;
+    fn stat(&self, p: &Path) -> io::Result<Meta>;          // ino, ctime_ns, mtime_ns, size, is_dir, is_file, dataless
+    fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, Meta)>>;
     fn canonicalize(&self, p: &Path) -> io::Result<PathBuf>;
     fn case_sensitive(&self, dir: &Path) -> bool;
-    fn fs_kind(&self, dir: &Path) -> FsKind;               // Local | Virtual(EdenFS, …) | Remote, from statfs
+    fn fs_kind(&self, dir: &Path) -> FsKind;               // Local | Virtual | Remote | Cloud | Unknown
 }
-pub trait ResolveEnv: Send + Sync {          // declared in resolve; core re-exports and implements it over Store + FileSystem
-    fn exists(&self, p: &Path) -> bool;
-    fn case_sensitive(&self, dir: &Path) -> bool;
+pub trait ResolveEnv: Send + Sync {          // mdroots-resolve; core implements it over MemStore + FileSystem
+    fn exists(&self, root_rel: &str) -> bool;
+    fn is_file(&self, root_rel: &str) -> bool;
+    fn case_sensitive(&self) -> bool;
     fn home_dir(&self) -> Option<&Path>;
+    fn read_config(&self, root_rel: &str) -> Option<String>;   // small tool configs, e.g. .zk/config.toml
 }
-pub trait Store: Send + Sync { /* doc facts, normalised-key lookups, change log */ }  // SqliteStore | MemStore
-pub trait LinkResolver: Send + Sync {        // add a dialect step to the ladder
-    fn resolve(&self, ctx: &ResolveCtx, target: &LinkTarget) -> Option<Resolution>;
+pub trait Probe: Send + Sync { /* stat, lstat, mount, read_dir, read_link, read_small, … */ }  // mdroots-roots: discovery I/O
+pub trait Enumerator: Send + Sync {          // mdroots-roots: lists a vcs-enumerated root (SlFiles, NoEnumerator)
+    fn md_paths(&self, root: &Path, budget: Duration, cap: usize) -> Option<Vec<String>>;
 }
-pub trait Observer: Send + Sync { fn on_change(&self, ev: &ChangeEvent) {} }   // progress, file events, RootDecided
 ```
 
-- `ResolveEnv` lives in `resolve` because `resolve` sits below `core`; embedders see it as `mdroots::core::ResolveEnv`.
+- `ResolveEnv` lives in `resolve` because `resolve` sits below `core`.
 - `FileSystem` returns bytes, not `str`, so invalid UTF-8 is indexed lossily instead of failing the batch.
-- `FileSystem` makes the roots safety rules testable: "no readdir on a large monorepo checkout" runs against a counting fake.
-- A custom `LinkResolver` adds house conventions (e.g. `[[wiki:Page]]`) without forking.
+- `FileSystem` and `Probe` make the roots safety rules testable: "no readdir on a large monorepo checkout" runs against a counting fake.
+- Planned: a `Store` trait once the derived tables (D9) give a second store, a `LinkResolver` trait to add house conventions (e.g. `[[wiki:Page]]`) to the ladder without forking, and an `Observer` for progress and file events.
 
 ### 3.6 Embedding the server
 
 ```rust
-mdroots_lsp::Server::builder()
-    .workspaces(my_workspaces)                  // share library state with the host
-    .command("myapp.publish", |ctx, args| { … })
-    .serve(stdin(), stdout())?;                 // or any Read/Write pair, or crossbeam channels
+let (conn, io) = lsp_server::Connection::stdio();      // or Connection::memory() in tests
+mdroots_lsp::serve(conn)?;                             // default Options
+// mdroots_lsp::serve_with(conn, Options::default().cache_dir(dir))?;  // explicit options
+io.join()?;
 ```
 
-Server behaviour (LSP layer, not library):
-- **File events have one owner.** Only the reconciler acts on watcher events; a peer acts only on its own `didOpen`/`didChange`/`didSave`, so N editors don't mean N parses per save. `workspace/didChangeWatchedFiles` is registered only when reconciler and no native watcher runs (`watch` off, or lazy root).
-- **Diagnostics** are published per document once it and its link targets were checked in this process (point-fresh). Peers and lazy roots publish too.
-- **Completion** triggers: `[`, `(`, `#`, `:`. A `#` as first non-blank character of a line starts a heading: the server returns an empty list, so no popup.
-- **Rename.** `textDocument/rename` on a note link or the note's H1 returns link edits plus a `RenameFile` op (as marksman does). `mdroots.renameFile <from-uri> <to-uri>` does the same and sends `workspace/applyEdit`. `workspace/willRenameFiles` is supported but not relied on (Neovim 0.12 never sends it).
+`serve` runs until `exit` (an `exit` without `shutdown` is an `Err`) or disconnect. `mdroots lsp` (§6) is `serve_with` on stdio with the CLI's options. Workspace folders from `initialize` are added to the options (they bound the marker climb). Planned: a builder to share an embedder's `Workspaces` and add commands.
+
+Server behaviour as built (LSP layer, not library):
+- **One thread, in order.** Requests are answered one at a time in arrival order, synchronously, so each sees the edits before it. Before running the next request the server reads every message already sent: a `$/cancelRequest` for a queued request makes it answer `RequestCanceled`, and a `didChange` cancels the queued requests on that document (they would answer on stale text). A running request is not interrupted.
+- **Handshake.** `positionEncoding` is `utf-8` when the client offers it, else UTF-16. `lsp-server`'s `initialize_finish` consumes the client's `initialized`, so the server registers its watcher right after `initialize`: `client/registerCapability` for `workspace/didChangeWatchedFiles` on `**/*.{md,markdown,org}`, only when the client offers dynamic registration for it.
+- **Document sync.** Full sync. `didOpen`/`didChange` set the document's text as its workspace's overlay (the workspace comes from `Workspaces::for_path`); `didClose` clears the overlay and the diagnostics. A buffer with no file on disk gets no workspace and no diagnostics.
+- **Refresh instead of a watcher.** `didSave` refreshes the saved document's workspace; `didChangeWatchedFiles` refreshes every workspace containing a changed path. Each process refreshes on its own events: the reconciler writes what changed, a peer only re-reads. Then the diagnostics of every open document in those workspaces are re-published.
+- **Diagnostics** are published on `didOpen` and after a refresh at once, and 500 ms after the last `didChange` of a document; nothing after `shutdown`. The `mdroots.diagnostics` setting (`auto`, `off`, `hint`, `warn`, `error`; from `workspace/didChangeConfiguration`) turns them off or sets the severity of broken links and anchors.
+- **Requests.** `definition` (`Workspace::goto`; an anchor jumps to its heading, a code mention to its line), `references` (backlinks of the link's target, or of this note off a link), `hover` (title and first 10 lines of the target, or "broken link"), `documentSymbol` (headings nested by level), `workspace/symbol` (`search_notes` over every open workspace, at most 100), `completion`, `prepareRename`/`rename`, `executeCommand`.
+- **Completion** triggers: `[`, `(`, `#`, `:`. After `[[`: notes by fuzzy search (stem inserted, title as detail, at most 50). After `[[note#` (or `[[#` for this note): its headings, without the H1 title. After `](`: relative paths to notes. After a blank and `#`: tags with note counts. A `#` as first non-blank character of a line starts a heading: the server returns an empty list, so no popup.
+- **Rename.** `textDocument/rename` on a link to a note, or on this note's H1, renames that note: the new name is a file stem (no directory or extension); the result is the link edits plus a `RenameFile` op (as marksman does). On the H1 it renames the file only, not the heading text.
+- **Commands.** `mdroots.backlinks <uri>`: `Location[]` of links to the note from other notes (self-links excluded, one per line). `mdroots.info <uri>`: root, mode, reason and file count, also sent as `window/showMessage`. `mdroots.renameFile <from-uri> <to-uri>`: the rename edit, sent to the client as `workspace/applyEdit`.
+- Planned: `workspace/willRenameFiles`, code actions (extract note), code lenses, folding ranges, semantic tokens, progress, and the single-owner file events of [roots](roots.md) §5 once a native watcher exists (M6).
 
 ## 4. Scheduling
 
-gopls practices applied in-process ([gopls](../research/gopls.md)).
+gopls practices applied in-process ([gopls](../research/gopls.md)). Built: in-order requests (without the worker pool), cancellation of queued requests, and debounced diagnostics (one phase, 500 ms after the last edit). The rest is the target.
 
 | Rule | Behaviour |
 |---|---|
@@ -271,8 +296,8 @@ gopls practices applied in-process ([gopls](../research/gopls.md)).
 | In-order requests | requests from one editor run in arrival order, so a query sees the preceding `didChange`. Workspace symbols, full text, large reference queries and pull diagnostics opt out and run on a small worker pool |
 | Two-phase diagnostics | phase 1 at once on the edited document (syntax, in-document anchors, links checkable from overlay and hot key cache); phase 2 cross-file, ~500 ms after the last edit, cancelled by the next edit. `diagnostics.trigger = "save"` skips phase 2 on change |
 | Recent-mtime guard | in the cheap mtime scan, a file modified < 2 s ago is "maybe changed" even if mtime and size match |
-| Read semaphore | ≤ 64 concurrent file reads per process, smaller budget per lazy/virtual root, so a root on [EdenFS](https://github.com/facebook/sapling) (the virtual filesystem from the Sapling project) can't starve a local vault |
-| Early open | start opening the root's DB while answering `initialize` |
+| Read semaphore | ≤ 64 concurrent file reads per process, smaller budget per lazy/virtual root, so a root on [EdenFS](https://github.com/facebook/sapling) (the virtual filesystem from the [Sapling](https://sapling-scm.com/) project) can't starve a local vault |
+| Early open | start opening the root's DB while answering `initialize` (as built, a workspace opens on the first `didOpen` or request for a file in it) |
 | No roots for navigation targets | goto/hover into a tree with no root yet is served single-file; discovery runs on `didOpen` |
 | Progress | `workDoneProgress` (fallback `showMessage`) for discovery and indexing > 1 s |
 
@@ -280,26 +305,28 @@ The daemon question (D3) is reopened only with numbers: total `phys_footprint` w
 
 ## 5. Cache hygiene
 
-- **Namespacing:** schema-versioned names (`roots/<id>.v<schema>.db`, `roots.v<k>.db`).
-- **GC:** any process, at most hourly per base dir, under the `.open` lock rules. Deletes roots unseen for 30 days and old schema generations nobody holds open, keeps total size under a budget (default 1 GB), throttles stats.
-- **Last-seen:** stamped by the reconciler at most hourly per root.
-- **Errors:** a cache read error is a miss; parse the file, never fail the request.
+- **Namespacing:** schema-versioned names (`roots/<id>.v<schema>.db`, `roots.v<k>.db`). Built.
+- **Errors:** a cache dir or registry that does not open falls back to an in-memory index. Built. Planned: any later cache read error is a miss (parse the file, never fail the request).
+- **GC** (M6): any process, at most hourly per base dir, under the `.open` lock rules. Deletes roots unseen for 30 days and old schema generations nobody holds open, keeps total size under a budget (default 1 GB), throttles stats.
+- **Last-seen** (M6): stamped by the reconciler at most hourly per root.
 
 ## 6. CLI
 
-The `mdroots` binary (crate `mdroots-cli`) depends on the `mdroots` facade only; each command is formatting over §3.2 and holds no logic of its own. As the first embedder, it keeps the API honest. Arguments are parsed by hand.
+The `mdroots` binary (crate `mdroots-cli`) depends on the `mdroots` facade, and on `mdroots-lsp` for `mdroots lsp`; each command is formatting over §3.2 and holds no logic of its own. As the first embedder, it keeps the API honest. Arguments are parsed by hand.
 
 | Command | Does | Exit |
 |---|---|---|
 | `check [--quiet] [PATH...]` | diagnostics of the notes under each PATH (default `.`): a directory is opened with `open_at` and all its notes checked, a file with `open_for` and only that file. A file covered by several PATHs is reported once, under the first. Files are printed sorted by canonical path, each file's diagnostics by position, as `path:line:col: severity: message` (1-based; columns in characters). A summary `N files, E errors, W warnings, I info, H hints` goes to stderr unless `--quiet` | 1 on any error or warning, else 0 |
-| `roots PATH` | the root chosen for PATH: `root:` (absolute), `mode:`, `why:` (discovery's one-line reason), `files:` (indexed count), one `nested:` line per nested root | 0 |
+| `roots PATH` | the root chosen for PATH: `root:` (absolute), `mode:`, `why:` (discovery's one-line reason), `files:` (indexed count), `cache:` (the root's DB path, or `memory`), `role:` (`reconciler`, `peer`, or `none` in memory), one `nested:` line per nested root | 0 |
 | `resolve FROM LINK` | each target, then `step:` and `status:` | 1 without a target |
 | `backlinks NOTE` | `path:line: title` per linking note | 0 |
-| `lsp` | reports "not implemented yet" (M5) | 2 |
+| `lsp [--log FILE]` | the language server (§3.6) on stdin/stdout until `exit` or EOF; `--log` appends one line per message to FILE: time, direction (`<-` from the client, `->` to it), method or `response`, and id | 0 (2 on a protocol error) |
 
-Paths under the current directory print relative to it, others absolute. Usage errors, unknown arguments, `--help` and a bare `mdroots` print usage to stderr and exit 2, so a server never starts implicitly (it would hang under CI or cron); errors print `mdroots: <message>` and exit 2. `search` comes with `search_notes` in M4.
+Paths under the current directory print relative to it, others absolute. Usage errors, unknown arguments, `--help` and a bare `mdroots` print usage to stderr and exit 2, so a server never starts implicitly (it would hang under CI or cron); errors print `mdroots: <message>` and exit 2.
 
-On the corpus: `check tests/corpus/zkvault` reports 5 hints and exits 0 (78% of its explicit links resolve, under the 80% hint threshold); `check tests/corpus/zk-min` reports 1 warning and exits 1. `roots` on a file in a large EdenFS checkout decides lazy on the monorepo marker `.buckconfig` in about 0.6 s cold, without enumerating the tree.
+Every command uses the persistent cache (D5, D9): `check` on a file, `roots`, `resolve`, `backlinks` and `lsp` open discovered roots through it; `check` on a directory uses `open_at`, which stays in memory. `MDROOTS_CACHE_DIR`, when set and non-empty, replaces the cache dir for every command, `lsp` included (`Options::cache_dir`); tests point it at a temp dir. A hidden `__open PATH --hold-ms N` (prints `role:` and `files:`, then holds the workspace open) drives the many-process fixtures. Planned: a `search` command over `search_notes`.
+
+On the corpus: `check tests/corpus/zkvault` reports 5 hints and exits 0 (78% of its explicit links resolve, under the 80% hint threshold); `check tests/corpus/zk-min` reports 1 warning and exits 1. On an 11-note vault, `check` takes 0.32 s with no cache and under 0.01 s with the DB present (release build). `roots` on a file in a large EdenFS checkout decides lazy on the monorepo marker `.buckconfig` in about 0.6 s cold, without enumerating the tree.
 
 `cargo doc` warns that the binary and the library share the name `mdroots`; harmless, the binary has `doc = false`.
 
@@ -310,8 +337,9 @@ On the corpus: `check tests/corpus/zkvault` reports 5 hints and exits 0 (78% of 
 | M1 (done) | `mdroots-syntax` with `LineIndex`, fuzzing, insta snapshot tests on the shapes of a ~730-note zk vault and a ~210-note research vault; `mdroots-core` + `mdroots-resolve` with the offline differential against zk's `notebook.db` and marksman ([M1 differential](../research/m1-differential.md)) |
 | M2 (done) | `mdroots-roots`: stages 1–4 of [roots](roots.md) §1, loose roots, nested-root registry rules, the registry trait with an in-memory `MemRegistry` and `discover.lock`; safety tests on a counting probe with NFS and EdenFS fakes; discovery fixtures 1–11 |
 | M3 (done) | the `mdroots` facade (`Workspace` over `MemStore` and discovery, §3.2) and the `mdroots` CLI (`check`, `roots`, `resolve`, `backlinks`, §6); the diagnostics policy of [index](index.md) §3.3 in `mdroots-core` |
-| M4 | `mdroots-index` (SQLite, the SQLite root registry, reconcile, change log, flock roles) + churn tests and many-process fixtures 12–19 of [roots](roots.md) §7 |
-| M5 | `mdroots-lsp`; the Neovim smoke test switches from the marksman stand-in to the real binary |
+| M4 (done) | `mdroots-index`: cache dir choice, flock roles, the per-root DB caching content and stat, reconcile, change log, the SQLite root registry; `list_root` in `mdroots-roots`; the facade serves discovered roots from the DB (D9) with `Workspace::refresh`; many-process fixtures 12, 13, 16, 17, 18 of [roots](roots.md) §7, adapted (no watcher) |
+| M5 (done) | the facade's editor queries (`goto`, `outline`, `search_notes`, `preview`, `text`, `rename_note`, `Workspaces`); `mdroots-lsp` (§3.6) and `mdroots lsp`; the Neovim smoke test on the real binary |
+| M6 | native watcher with FSEvents replay and the `dir_state` diff; FTS and `full_text`; GC and corruption rebuild; derived SQL tables (D9, [index](index.md) §1.2); fixtures 14, 15, 19 |
 
 ## Neovim 0.12+ example
 
@@ -319,8 +347,8 @@ Files in [`editors/nvim/`](../../editors/nvim/) (drop into your Neovim config di
 
 | File | What |
 |---|---|
-| `lsp/mdroots.lua` | config auto-discovered by `vim.lsp.config`: `cmd = {'mdroots','lsp'}`, `filetypes = {markdown, org}`, a `reuse_client` predicate, `workspace_required = false`, a commented `settings = { mdroots = {…} }` block |
-| `plugin/mdroots.lua` | `vim.lsp.enable('mdroots')` plus optional `LspAttach` extras: `gd`, `gO` (LSP symbols), guarded autotrigger completion, codelens, LSP folding, `<leader>ns` search, `<leader>nb` backlinks to loclist, `<leader>nr` rename note, `<leader>nn` new note from visual selection, `:MdrootsInfo` |
+| `lsp/mdroots.lua` | config auto-discovered by `vim.lsp.config`: `cmd = {'mdroots','lsp'}`, `filetypes = {markdown, org}`, a `reuse_client` predicate, `workspace_required = false`, a commented `settings = { mdroots = { diagnostics = … } }` block |
+| `plugin/mdroots.lua` | `vim.lsp.enable('mdroots')` plus optional `LspAttach` extras: `gd`, `gO` (LSP symbols), guarded autotrigger completion, codelens, LSP folding, `<leader>ns` search, `<leader>nb` backlinks to loclist, `<leader>nr` rename note, `<leader>nn` new note from visual selection, `:MdrootsInfo`. Codelens, folding and `<leader>nn` stay idle until the server offers code lenses, folding ranges and the extract-note code action (planned, §3.6) |
 
 Choices (checked against the 0.12.5 runtime):
 
@@ -329,7 +357,7 @@ Choices (checked against the 0.12.5 runtime):
 | No `root_markers` | 0.12 starts a client for a matching filetype even with no root (root_dir nil; `workspace_required` defaults false). Root logic lives only in mdroots. The client then sends `workspaceFolders = null`, so the server never depends on workspace folders |
 | `reuse_client` | with root_dir nil the default already reuses the client; the predicate matters only if something sets root_dir, keeping one process. A reused client sends no `didChangeWorkspaceFolders`, which is fine because mdroots finds roots from file paths. One process per Neovim; instances share the root's SQLite cache (D3) |
 | `cmd = {'mdroots','lsp'}` | the subcommand is required (§6) |
-| `settings`, not `init_options` | Neovim sends `settings` via `workspace/didChangeConfiguration` and answers `workspace/configuration` from it; `init_options` is sent once, so can't carry changing settings |
+| `settings`, not `init_options` | Neovim sends `settings` via `workspace/didChangeConfiguration` (the server reads `mdroots.diagnostics` from it, §3.6); `init_options` is sent once, so can't carry changing settings |
 | `gO` remap | the markdown ftplugin maps `gO` to a treesitter outline; mapping `vim.lsp.buf.document_symbol` in `LspAttach` runs after the ftplugin |
 | Backlinks handler | `Client:exec_cmd` drops the result without a handler; ours feeds `Location[]` to the loclist via `vim.lsp.util.locations_to_items(result, client.offset_encoding)` |
 | Rename | `grn` on a link or H1 uses `textDocument/rename`; `<leader>nr` calls `mdroots.renameFile` |
@@ -337,7 +365,7 @@ Choices (checked against the 0.12.5 runtime):
 | Position encoding | Neovim offers `utf-8` first; mdroots picks it |
 | Filetypes | `markdown`, `org`. Not `mdx` (no default filetype), `quarto` (`.qmd`) or `rmd` (`.Rmd`) for now |
 
-Other built-in 0.12 mappings cover the rest: `K`, `grr`, `grn`, `gra`, `]d`/`[d`, `<C-]>` via `tagfunc`.
+Other built-in 0.12 mappings cover the rest: `K`, `grr`, `grn`, `]d`/`[d`, `<C-]>` via `tagfunc` (`gra` once code actions exist).
 
 ### Smoke test
 
@@ -345,4 +373,4 @@ Other built-in 0.12 mappings cover the rest: `K`, `grr`, `grn`, `gra`, `]d`/`[d`
 nvim --clean --headless -u NONE -c 'luafile bench/nvim_smoke.lua'   # from the repo root
 ```
 
-[`bench/nvim_smoke.lua`](../../bench/nvim_smoke.lua) loads `editors/nvim` against the real `mdroots lsp` server (`$MDROOTS_BIN`, else `$CARGO_TARGET_DIR/debug/mdroots`, else `target/debug/mdroots`; build it first with `cargo build -p mdroots-cli`). It is read-only on the corpus vaults: edits go to scratch notes under `/tmp/mdroots-smoke/`, wiped at the start, and the server's `XDG_CACHE_HOME` points there too. It waits on conditions rather than sleeps; every line is an assertion and failure gives a non-zero exit. It checks one client with root_dir nil and settings sent, utf-8 position encoding, maps and `:MdrootsInfo` (its `window/showMessage` names the root), `gO` overriding the ftplugin, definition, symbols, backlinks via `exec_cmd` into the loclist (self-links excluded), `[[#` heading completion (the H1 title excluded), no completion for `#` at line start, a diagnostic for a broken link, cross-file goto from a vault README, `mdroots.renameFile` (the `workspace/applyEdit` fixes the linking note and moves the file, the buffer follows) and unmodified vault buffers. It passes on NVIM 0.12.5 (attach ≈ 25–400 ms). Not covered: folding, code actions.
+[`bench/nvim_smoke.lua`](../../bench/nvim_smoke.lua) loads `editors/nvim` against the real `mdroots lsp` server (`$MDROOTS_BIN`, else `$CARGO_TARGET_DIR/debug/mdroots`, else `target/debug/mdroots`; build it first with `cargo build -p mdroots-cli`). It is read-only on the corpus vaults: edits go to scratch notes under `/tmp/mdroots-smoke/`, wiped at the start, and the server's `XDG_CACHE_HOME` points there too. It waits on conditions rather than sleeps; every line is an assertion and failure gives a non-zero exit. It checks one client with root_dir nil and settings sent, utf-8 position encoding, maps and `:MdrootsInfo` (its `window/showMessage` names the root), `gO` overriding the ftplugin, definition, symbols, backlinks via `exec_cmd` into the loclist (self-links excluded), `[[#` heading completion (the H1 title excluded), no completion for `#` at line start, a diagnostic for a broken link, cross-file goto from a vault README, `mdroots.renameFile` (the `workspace/applyEdit` fixes the linking note and moves the file, the buffer follows) and unmodified vault buffers. It passes on NVIM 0.12.5 (29 checks; attach ≈ 25–400 ms). Not covered: folding, code actions.

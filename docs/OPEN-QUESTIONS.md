@@ -13,10 +13,10 @@ Each one ends as a spec change or a decision in [DECISIONS.md](DECISIONS.md).
    [EdenFS](https://github.com/facebook/sapling) (the virtual filesystem from
    the [Sapling](https://sapling-scm.com/) project) is enumerated with `sl files`
    ([Sapling](https://sapling-scm.com/)) within 500 ms or stays lazy
-   ([specs/roots.md](specs/roots.md) §3). Open: is 500 ms the right budget,
-   the EdenFS glob API instead of a child process, refreshing the list
-   without a watcher, and whether `git ls-files` should do the same for
-   other lazy roots.
+   ([specs/roots.md](specs/roots.md) §3). The list is refreshed by enumerating
+   again on `Workspace::refresh`. Open: is 500 ms the right budget, the
+   EdenFS glob API instead of a child process, and whether `git ls-files`
+   should do the same for other lazy roots.
 3. **FSEvents replay cost.** After a day offline, replay from `sinceWhen` may
    report directories only (`MustScanSubDirs`, dropped events,
    `EventIdsWrapped`) and fall back to the `dir_state` diff. How long does it
@@ -38,3 +38,17 @@ Each one ends as a spec change or a decision in [DECISIONS.md](DECISIONS.md).
    [ripgrep](https://github.com/BurntSushi/ripgrep) and
    [fd](https://github.com/sharkdp/fd)) plus a `.mdroots` key would drop one
    magic file name. Revisit when used ([specs/roots.md](specs/roots.md)).
+9. **Memory per process with the in-memory query layer (D9).** Every process
+   holds every note's bytes and parse in a `MemStore`. Measured peak
+   footprint (release build, macOS APFS): 2.2 MB on an 11-note vault, 36.6 MB
+   on a synthetic 3,000-note notebook (12 MB of markdown), already over the
+   35 MB per-process target. The content held in memory dominates. Open: the
+   footprint with 10 concurrent editors, and up to which vault size the
+   target must hold.
+10. **When to add the derived SQL tables.** `keys`, `links` and `frontmatter`
+   with indexed lookups ([specs/index.md](specs/index.md) §1.2) would let a
+   process answer from [SQLite](https://sqlite.org) without holding every note in memory, at the
+   cost of a second query layer kept in sync with the parser (and a parser
+   version to re-index on). Planned for M6; open is whether to add them for
+   every root or only above a vault size, and which queries move first
+   (backlinks and completion are the ones that scan every note).
