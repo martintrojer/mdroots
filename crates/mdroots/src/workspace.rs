@@ -478,7 +478,7 @@ impl Workspace {
 
 /// The lazy working set: the opened file plus the notes of its directory
 /// (one level, no hidden, editor-temp or dataless entries, the first
-/// [`WORKING_SET_CAP`] by name), root-relative. An unreadable directory
+/// [`WORKING_SET_CAP`] by name, opened file included), root-relative. An unreadable directory
 /// leaves the opened file alone.
 fn working_set(
     fs: &dyn FileSystem,
@@ -493,7 +493,7 @@ fn working_set(
         .unwrap_or_default()
         .into_iter()
         .filter(|(n, m)| n != name && m.is_file && !m.dataless && is_note(n) && !is_temp(n))
-        .take(WORKING_SET_CAP)
+        .take(WORKING_SET_CAP - 1) // room for the opened file
         .map(|(n, _)| match dir_rel.is_empty() {
             true => n,
             false => format!("{dir_rel}/{n}"),

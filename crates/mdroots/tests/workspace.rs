@@ -249,6 +249,23 @@ fn lazy_root_indexes_one_dir_listing_only() {
 }
 
 #[test]
+fn lazy_working_set_is_capped_at_2000_including_the_opened_file() {
+    let names: Vec<String> = (0..2_005)
+        .map(|i| format!("/eden/repo/docs/n{i:04}.md"))
+        .collect();
+    let extra: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), "")).collect();
+    let (fs, probe) = eden_repo(&extra);
+    let ws = Workspace::open_for(
+        Path::new("/eden/repo/docs/n2004.md"),
+        opts(Recording::new(fs), Arc::new(Counting::new(probe))),
+    )
+    .unwrap();
+    let files = ws.files();
+    assert_eq!(files.len(), 2_000);
+    assert!(files.contains(&p("/eden/repo/docs/n2004.md")));
+}
+
+#[test]
 fn lazy_opened_dataless_file_is_read() {
     let (fs, probe) = eden_repo(&[]);
     let fs = fs
