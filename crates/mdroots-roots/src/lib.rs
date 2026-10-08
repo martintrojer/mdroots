@@ -12,7 +12,7 @@ pub mod registry;
 pub mod walk;
 
 pub use discover::{
-    Decision, DiscoverOptions, Enumerator, NoEnumerator, SlFiles, discover, explain,
+    Decision, DiscoverOptions, Enumerator, NoEnumerator, SlFiles, discover, explain, list_root,
 };
 pub use loose::{LooseOutcome, find_loose_root, is_denied};
 pub use probe::{Counting, FakeProbe, FsClass, FsStat, MountInfo, Probe, StdProbe, classify};

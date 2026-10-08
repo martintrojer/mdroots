@@ -406,6 +406,77 @@ fn git_index_path(probe: &dyn Probe, root: &Path) -> Option<PathBuf> {
     (!p.is_empty()).then(|| root.join(p).join("index"))
 }
 
+/// The listed paths that exist as files (the index stat data is a
+/// snapshot).
+fn existing(probe: &dyn Probe, root: &Path, paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter(|p| probe.stat(&root.join(p)).is_ok_and(|s| s.is_file))
+        .collect()
+}
+
+/// Walk options for a stage-4 walk; the rate threshold defaults to 5 ms/dir.
+fn walk_options(budget: Budget, rate_ms_per_dir: Option<f64>) -> WalkOptions {
+    WalkOptions {
+        budget,
+        rate_ms_per_dir: rate_ms_per_dir.unwrap_or(5.0),
+        skip: Vec::new(),
+    }
+}
+
+/// The vcs-enumerated listing of `root`, sorted.
+fn enumerate(enumerator: &dyn Enumerator, root: &Path) -> Option<Vec<String>> {
+    let mut md = enumerator.md_paths(root, ENUM_BUDGET, ENUM_CAP)?;
+    md.sort();
+    Some(md)
+}
+
+/// Re-list a known `root` (registered with `mode`) without re-running
+/// discovery: the root-relative, `/`-separated md paths, sorted as
+/// [`discover`] lists them for that mode.
+///
+/// - `Marker`, `Vcs`: a budgeted walk ([`Budget::marker`]); `Loose`: a
+///   budgeted walk with [`Budget::loose`].
+/// - `IndexDriven`, `TrackedOnly`: the git index's md paths that exist as
+///   files (no `read_dir`).
+/// - `VcsEnumerated`: `enumerator`, within its 500 ms budget.
+/// - `Lazy`, `SingleFile` (and any later mode): `None`, with no filesystem
+///   access.
+///
+/// `None` also when the listing aborts (budget, rate, cancel), the git index
+/// is unreadable, split or over its cap, or the enumeration fails.
+pub fn list_root(
+    probe: &dyn Probe,
+    root: &Path,
+    mode: RootMode,
+    enumerator: &dyn Enumerator,
+    cancel: &Cancel,
+) -> Option<Vec<String>> {
+    if cancel.is_cancelled() {
+        return None;
+    }
+    let budget = match mode {
+        RootMode::Marker | RootMode::Vcs => Budget::marker(),
+        RootMode::Loose => Budget::loose(),
+        RootMode::IndexDriven | RootMode::TrackedOnly => {
+            let index = git_index_path(probe, root)?;
+            let s = scan(probe, &index, &keep_md, INDEX_CAP).ok()?;
+            if mode == RootMode::IndexDriven && (s.split || s.truncated) {
+                return None;
+            }
+            let md = existing(probe, root, s.paths);
+            return (!cancel.is_cancelled()).then_some(md);
+        }
+        RootMode::VcsEnumerated => {
+            let md = enumerate(enumerator, root)?;
+            return (!cancel.is_cancelled()).then_some(md);
+        }
+        _ => return None,
+    };
+    let o = walk(probe, root, &walk_options(budget, None), cancel);
+    o.abort.is_none().then_some(o.md)
+}
+
 impl Ctx<'_> {
     /// `dir` for messages: `~/...` under home, else absolute.
     fn show(&self, dir: &Path) -> String {
@@ -515,9 +586,8 @@ impl Ctx<'_> {
             )
             .marker(marker);
         }
-        match enumerator.md_paths(&vroot, ENUM_BUDGET, ENUM_CAP) {
-            Some(mut md) => {
-                md.sort();
+        match enumerate(enumerator, &vroot) {
+            Some(md) => {
                 let reason = format!("vcs-enumerated: {} md from the VCS ({why})", md.len());
                 let mut o = Out::new(
                     Some(vroot),
@@ -635,7 +705,7 @@ impl Ctx<'_> {
                 VerdictSource::Fs,
             )
             .marker(Some(m));
-            o.d.md = self.existing(root, s.paths);
+            o.d.md = existing(self.probe, root, s.paths);
             return o;
         }
         let label = format!("{label} (git index {n} entries)");
@@ -657,7 +727,7 @@ impl Ctx<'_> {
                 "single-file: vcs at {shown} ({why}): git index unreadable"
             ));
         };
-        let md = self.existing(root, s.paths);
+        let md = existing(self.probe, root, s.paths);
         let reason = format!(
             "tracked-only: vcs at {shown} ({why}): {} tracked md",
             md.len()
@@ -673,15 +743,6 @@ impl Ctx<'_> {
         o
     }
 
-    /// The listed paths that exist as files (the index stat data is a
-    /// snapshot).
-    fn existing(&self, root: &Path, paths: Vec<String>) -> Vec<String> {
-        paths
-            .into_iter()
-            .filter(|p| self.probe.stat(&root.join(p)).is_ok_and(|s| s.is_file))
-            .collect()
-    }
-
     /// Stage 4: walk `root` and map the outcome to a decision.
     fn walk_root(
         &mut self,
@@ -691,11 +752,7 @@ impl Ctx<'_> {
         mode: RootMode,
         label: String,
     ) -> Out {
-        let opts = WalkOptions {
-            budget,
-            rate_ms_per_dir: self.opts.rate_ms_per_dir.unwrap_or(5.0),
-            skip: Vec::new(),
-        };
+        let opts = walk_options(budget, self.opts.rate_ms_per_dir);
         let o = walk(self.probe, root, &opts, self.cancel);
         let s = o.stats;
         match o.abort {

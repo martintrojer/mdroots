@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use mdroots_core::Cancel;
 use mdroots_roots::discover::{
-    Decision, DiscoverOptions, Enumerator, NoEnumerator, discover, explain,
+    Decision, DiscoverOptions, Enumerator, NoEnumerator, discover, explain, list_root,
 };
-use mdroots_roots::probe::{Counting, FakeProbe, MountInfo};
+use mdroots_roots::probe::{Counting, FakeProbe, MountInfo, StdProbe};
 use mdroots_roots::registry::{MemRegistry, Registry, RootMode, RootRecord, VerdictSource};
 use mdroots_roots::walk::WalkStats;
 
@@ -902,4 +902,188 @@ fn overlap_without_containing_root_returns_the_new_decision_unregistered() {
         explain(&d)
     );
     assert_eq!(reg.all().len(), 1);
+}
+
+// --- list_root ----------------------------------------------------------------
+
+/// Discover `file`, then re-list its root with `list_root` on the same
+/// probe: the decision and the listing.
+fn relist(
+    probe: &Counting<FakeProbe>,
+    en: &dyn Enumerator,
+    file: &str,
+    allowed: &[&str],
+) -> (Decision, Option<Vec<String>>) {
+    let d = run(probe, &mut MemRegistry::new(), en, file, allowed);
+    let root = d.root.clone().expect("a root");
+    let listed = list_root(probe, &root, d.mode, en, &Cancel::new());
+    assert!(probe.violations().is_empty(), "{:?}", probe.violations());
+    (d, listed)
+}
+
+#[test]
+fn list_root_matches_discover_for_each_listing_mode() {
+    let mut mid = strs(&["a.md", "docs/b.md", "gone.md"]);
+    mid.extend((3..20_000).map(|i| format!("src/f{i}.rs")));
+    let cases: Vec<(FakeProbe, &str, &[&str], RootMode)> = vec![
+        (
+            FakeProbe::new()
+                .home("/h")
+                .dir("/h/nb/.zk")
+                .file("/h/nb/a.md", "")
+                .file("/h/nb/x/b.md", ""),
+            "/h/nb/a.md",
+            &["/h/nb"],
+            RootMode::Marker,
+        ),
+        (
+            FakeProbe::new()
+                .home("/h")
+                .file("/h/p/.git/index", index(&strs(&["README.md"]), &[]))
+                .file("/h/p/README.md", "")
+                .file("/h/p/notes/untracked.md", ""),
+            "/h/p/README.md",
+            &["/h/p"],
+            RootMode::Vcs,
+        ),
+        (
+            files(FakeProbe::new().home("/h"), "/h/notes", 25, 25),
+            "/h/notes/f0000.md",
+            &["/h"],
+            RootMode::Loose,
+        ),
+        (
+            FakeProbe::new()
+                .home("/h")
+                .file("/h/mid/.git/index", index(&mid, &[]))
+                .file("/h/mid/a.md", "")
+                .file("/h/mid/docs/b.md", ""),
+            "/h/mid/a.md",
+            &[],
+            RootMode::IndexDriven,
+        ),
+        (
+            FakeProbe::new()
+                .home("/h")
+                .file(
+                    "/h/.git/index",
+                    index(&strs(&["bashrc", "notes/a.md", "notes/gone.md"]), &[]),
+                )
+                .file("/h/notes/a.md", ""),
+            "/h/notes/a.md",
+            &[],
+            RootMode::TrackedOnly,
+        ),
+    ];
+    for (f, file, allowed, mode) in cases {
+        let probe = Counting::new(f);
+        let (d, listed) = relist(&probe, &NoEnumerator, file, allowed);
+        assert_eq!(d.mode, mode, "{}", explain(&d));
+        assert!(!d.md.is_empty(), "{mode:?}");
+        assert_eq!(listed.as_ref(), Some(&d.md), "{mode:?}");
+    }
+}
+
+#[test]
+fn list_root_matches_discover_when_vcs_enumerated() {
+    let probe = Counting::new(eden_repo(&["/eden/repo/docs"]));
+    let en = FakeEnum(Some(strs(&["docs/a.md", "b.md"])), AtomicUsize::new(0));
+    let (d, listed) = relist(&probe, &en, "/eden/repo/docs/a.md", &[]);
+    assert_eq!(d.mode, RootMode::VcsEnumerated);
+    assert_eq!(listed, Some(strs(&["b.md", "docs/a.md"])));
+    assert_eq!(en.1.load(Ordering::Relaxed), 2);
+    assert_eq!(probe.read_dir_total(), 0);
+}
+
+#[test]
+fn list_root_lazy_and_single_file_list_nothing() {
+    let probe = Counting::new(
+        FakeProbe::new()
+            .home("/h")
+            .dir("/h/nb/.zk")
+            .file("/h/nb/a.md", ""),
+    );
+    let en = FakeEnum(Some(strs(&["a.md"])), AtomicUsize::new(0));
+    for mode in [RootMode::Lazy, RootMode::SingleFile] {
+        assert_eq!(
+            list_root(&probe, Path::new("/h/nb"), mode, &en, &Cancel::new()),
+            None
+        );
+    }
+    assert_eq!(probe.read_dir_total(), 0);
+    assert_eq!(en.1.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn list_root_sees_an_added_md_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonicalize");
+    std::fs::create_dir(root.join(".git")).expect("mkdir .git");
+    std::fs::write(root.join("a.md"), "a\n").expect("write");
+    let cancel = Cancel::new();
+    let first = list_root(&StdProbe, &root, RootMode::Vcs, &NoEnumerator, &cancel);
+    assert_eq!(first, Some(strs(&["a.md"])));
+    std::fs::create_dir(root.join("sub")).expect("mkdir sub");
+    std::fs::write(root.join("sub/b.md"), "b\n").expect("write");
+    let second = list_root(&StdProbe, &root, RootMode::Vcs, &NoEnumerator, &cancel);
+    assert_eq!(second, Some(strs(&["a.md", "sub/b.md"])));
+}
+
+#[test]
+fn list_root_aborts_are_none() {
+    // Walk over the depth budget.
+    let deep: String = (0..40).map(|i| format!("/{i}")).collect();
+    let f = FakeProbe::new()
+        .home("/h")
+        .dir("/h/w/.zk")
+        .file("/h/w/a.md", "")
+        .dir(format!("/h/w/d{deep}"));
+    let probe = Counting::new(f);
+    let c = Cancel::new();
+    let w = Path::new("/h/w");
+    assert_eq!(
+        list_root(&probe, w, RootMode::Marker, &NoEnumerator, &c),
+        None
+    );
+
+    // Cancelled before listing: no read_dir at all.
+    let probe = Counting::new(
+        FakeProbe::new()
+            .home("/h")
+            .dir("/h/nb/.zk")
+            .file("/h/nb/a.md", ""),
+    );
+    let cancelled = Cancel::new();
+    cancelled.cancel();
+    let nb = Path::new("/h/nb");
+    assert_eq!(
+        list_root(&probe, nb, RootMode::Marker, &NoEnumerator, &cancelled),
+        None
+    );
+    assert_eq!(probe.read_dir_total(), 0);
+
+    // A split or missing git index; a failed enumeration.
+    let probe = Counting::new(
+        FakeProbe::new()
+            .home("/h")
+            .file("/h/sp/.git/index", index(&strs(&["a.md"]), &[b"link"]))
+            .file("/h/sp/a.md", "")
+            .dir("/h/none/.git"),
+    );
+    let sp = Path::new("/h/sp");
+    assert_eq!(
+        list_root(&probe, sp, RootMode::IndexDriven, &NoEnumerator, &c),
+        None
+    );
+    let none = Path::new("/h/none");
+    assert_eq!(
+        list_root(&probe, none, RootMode::TrackedOnly, &NoEnumerator, &c),
+        None
+    );
+    let en = FakeEnum(None, AtomicUsize::new(0));
+    assert_eq!(
+        list_root(&probe, sp, RootMode::VcsEnumerated, &en, &c),
+        None
+    );
+    assert_eq!(probe.read_dir_total(), 0);
 }
