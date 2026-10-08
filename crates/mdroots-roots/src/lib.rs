@@ -3,6 +3,7 @@
 //! `read_dir` calls.
 #![forbid(unsafe_code)]
 
+pub mod gitindex;
 pub mod markers;
 pub mod probe;
 pub mod registry;
