@@ -5,7 +5,6 @@
 #![forbid(unsafe_code)]
 
 mod lsp;
-mod names;
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -13,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use mdroots::syntax::PositionEncoding;
-use mdroots::{Cancel, Diagnostic, Error, ErrorKind, Options, Severity, Workspace};
+use mdroots::{Cancel, Diagnostic, Error, ErrorKind, Options, Severity, Workspace, names};
 
 const USAGE: &str = "\
 usage: mdroots <command> [args]

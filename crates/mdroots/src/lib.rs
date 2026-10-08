@@ -8,6 +8,8 @@
 //! [`FileSystem`]); a path outside the root is an `Unsupported` error.
 #![forbid(unsafe_code)]
 
+mod goto;
+pub mod names;
 mod notes;
 mod rename;
 mod workspace;
@@ -24,6 +26,7 @@ pub use mdroots_roots::probe::Probe;
 pub use mdroots_roots::probe::StdProbe;
 pub use mdroots_syntax as syntax;
 
+pub use goto::Goto;
 pub use notes::Preview;
 pub use rename::{TextEdit, WorkspaceEdit};
 pub use workspace::{

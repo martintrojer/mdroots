@@ -2,7 +2,7 @@
 //! are `#[non_exhaustive]`: a variant added later prints `unknown` until it
 //! gets a name here.
 
-use mdroots::{LinkStatus, ResolveStep, RootMode, Severity};
+use crate::{LinkStatus, ResolveStep, RootMode, Severity};
 
 pub fn severity(s: Severity) -> &'static str {
     match s {
