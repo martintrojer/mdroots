@@ -14,7 +14,7 @@
 //! is unchanged.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::probe::Probe;
 
@@ -94,12 +94,30 @@ pub fn scan(
     cap: usize,
 ) -> io::Result<IndexScan> {
     if let Some(dir) = index_path.parent()
-        && is_sha256_repo(probe, &dir.join("config"))
+        && is_sha256_repo(probe, &config_dir(probe, dir).join("config"))
     {
         return Err(invalid("sha256 index not supported"));
     }
     let data = probe.read_small(index_path, MAX_INDEX_BYTES)?;
     parse(&data, keep, cap)
+}
+
+/// The directory holding the repo config for the git dir `dir`. A linked
+/// worktree's git dir has a `commondir` file naming (relative to `dir`, or
+/// absolute) the main git dir, whose `config` applies.
+fn config_dir(probe: &dyn Probe, dir: &Path) -> PathBuf {
+    match probe.read_small(&dir.join("commondir"), 4096) {
+        Ok(bytes) => {
+            let text = String::from_utf8_lossy(&bytes);
+            let common = text.trim_end_matches(['\n', '\r']);
+            if common.is_empty() {
+                dir.to_path_buf()
+            } else {
+                dir.join(common)
+            }
+        }
+        Err(_) => dir.to_path_buf(),
+    }
 }
 
 /// Whether the git config at `config` sets `extensions.objectformat` to

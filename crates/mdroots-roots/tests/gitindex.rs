@@ -255,6 +255,32 @@ fn sha256_repo_rejected() {
     git(root, &["add", "-A"]);
     let e = scan(&StdProbe, &index(root), &is_md, usize::MAX).unwrap_err();
     assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(e.to_string(), "git index: sha256 index not supported");
+}
+
+#[test]
+fn sha256_linked_worktree_rejected() {
+    if !have_git() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("main");
+    std::fs::create_dir(&root).unwrap();
+    if !git_ok(&root, &["init", "-q", "--object-format=sha256"]) {
+        eprintln!("note: git lacks sha256 support; skipping");
+        return;
+    }
+    write(&root, "x.md");
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-q", "-m", "init"]);
+    let wt = tmp.path().join("wt");
+    git(&root, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+    let git_dir = git(&wt, &["rev-parse", "--absolute-git-dir"]);
+    let wt_index = Path::new(git_dir.trim()).join("index");
+    assert!(wt_index.parent().unwrap().join("commondir").exists());
+    let e = scan(&StdProbe, &wt_index, &is_md, usize::MAX).unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(e.to_string(), "git index: sha256 index not supported");
 }
 
 #[test]
