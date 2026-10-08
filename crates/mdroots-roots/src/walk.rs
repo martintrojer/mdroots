@@ -6,11 +6,16 @@
 //! [`Probe::read_dir`]; pruned directories are never listed.
 //!
 //! Ignore files use [git](https://git-scm.com)'s gitignore syntax (matched with
-//! the `ignore` crate's `gitignore` module), except `.hgignore`
+//! the [`ignore`](https://crates.io/crates/ignore) crate's `gitignore` module), except `.hgignore`
 //! ([Mercurial](https://www.mercurial-scm.org)), of which only glob lines are used.
+//!
+//! The wall budget and the cancel token are checked before every probe call,
+//! so an abort lands at most one probe call past the budget.
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use ignore::Match;
@@ -18,7 +23,7 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use mdroots_core::Cancel;
 
 use crate::markers::{MarkerClass, markers_at};
-use crate::probe::{FsStat, Probe};
+use crate::probe::{FsStat, MountInfo, Probe};
 
 /// Walk limits; exceeding one (a count going above it) aborts the walk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,8 +198,29 @@ fn ignored_entirely(probe: &dyn Probe, dir: &Path) -> bool {
         && read_ignore(probe, &p).is_some_and(|t| t.trim().is_empty())
 }
 
+/// Pattern-kind prefixes Mercurial accepts on an `.hgignore` line; a line
+/// starting with one of these (other than `glob:`) is not a glob pattern.
+const HG_KINDS: &[&str] = &[
+    "re:",
+    "regexp:",
+    "path:",
+    "relpath:",
+    "rootfilesin:",
+    "filepath:",
+    "relglob:",
+    "rootglob:",
+    "relre:",
+    "include:",
+    "subinclude:",
+    "listfile:",
+    "listfile0:",
+    "set:",
+];
+
 /// The glob lines of an `.hgignore`: those in `syntax: glob` sections or
 /// prefixed `glob:`. Regexp is Mercurial's default syntax and is skipped.
+/// In a glob section only a leading kind prefix makes a line non-glob; other
+/// colons are part of the pattern.
 fn hg_globs(text: &str) -> Vec<String> {
     let mut glob = false;
     let mut out = Vec::new();
@@ -207,11 +233,84 @@ fn hg_globs(text: &str) -> Vec<String> {
             glob = s.trim() == "glob";
         } else if let Some(p) = l.strip_prefix("glob:") {
             out.push(p.trim().to_owned());
-        } else if glob && !l.contains(':') {
+        } else if glob && !HG_KINDS.iter().any(|k| l.starts_with(k)) {
             out.push(l.to_owned());
         }
     }
     out
+}
+
+/// Wraps the caller's probe: once the wall budget is spent or the walk is
+/// cancelled, every I/O call fails without reaching the inner probe and the
+/// reason is kept for [`Walker::checkpoint`].
+struct Guard<'a> {
+    inner: &'a dyn Probe,
+    cancel: &'a Cancel,
+    start: Duration,
+    wall: Duration,
+    tripped: Mutex<Option<Abort>>,
+}
+
+impl Guard<'_> {
+    fn tripped(&self) -> Option<Abort> {
+        *self.tripped.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn check(&self) -> io::Result<()> {
+        let mut t = self.tripped.lock().unwrap_or_else(|e| e.into_inner());
+        if t.is_none() {
+            if self.cancel.is_cancelled() {
+                *t = Some(Abort::Cancelled);
+            } else if self.inner.now().saturating_sub(self.start) > self.wall {
+                *t = Some(Abort::Wall);
+            }
+        }
+        match *t {
+            Some(_) => Err(io::Error::new(io::ErrorKind::Interrupted, "walk aborted")),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Probe for Guard<'_> {
+    fn stat(&self, p: &Path) -> io::Result<FsStat> {
+        self.check()?;
+        self.inner.stat(p)
+    }
+    fn lstat(&self, p: &Path) -> io::Result<FsStat> {
+        self.check()?;
+        self.inner.lstat(p)
+    }
+    fn mount(&self, p: &Path) -> io::Result<MountInfo> {
+        self.check()?;
+        self.inner.mount(p)
+    }
+    fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, FsStat)>> {
+        self.check()?;
+        self.inner.read_dir(p)
+    }
+    fn read_link(&self, p: &Path) -> io::Result<PathBuf> {
+        self.check()?;
+        self.inner.read_link(p)
+    }
+    fn read_small(&self, p: &Path, cap: usize) -> io::Result<Vec<u8>> {
+        self.check()?;
+        self.inner.read_small(p, cap)
+    }
+    fn read_prefix(&self, p: &Path, n: usize) -> io::Result<Vec<u8>> {
+        self.check()?;
+        self.inner.read_prefix(p, n)
+    }
+    fn volume_id(&self, p: &Path) -> io::Result<String> {
+        self.check()?;
+        self.inner.volume_id(p)
+    }
+    fn home(&self) -> Option<PathBuf> {
+        self.inner.home()
+    }
+    fn now(&self) -> Duration {
+        self.inner.now()
+    }
 }
 
 struct Item {
@@ -223,9 +322,8 @@ struct Item {
 }
 
 struct Walker<'a> {
-    probe: &'a dyn Probe,
+    probe: &'a Guard<'a>,
     opts: &'a WalkOptions,
-    cancel: &'a Cancel,
     root: &'a Path,
     root_dev: u64,
     start: Duration,
@@ -237,13 +335,20 @@ struct Walker<'a> {
 /// Walk `root` within `opts.budget`, pruning as docs/specs/roots.md §1 stage 4
 /// lists. Never follows symlinks or crosses mounts.
 pub fn walk(probe: &dyn Probe, root: &Path, opts: &WalkOptions, cancel: &Cancel) -> WalkOutcome {
-    let mut w = Walker {
-        probe,
-        opts,
+    let start = probe.now();
+    let guard = Guard {
+        inner: probe,
         cancel,
+        start,
+        wall: opts.budget.wall,
+        tripped: Mutex::new(None),
+    };
+    let mut w = Walker {
+        probe: &guard,
+        opts,
         root,
         root_dev: 0,
-        start: probe.now(),
+        start,
         out: WalkOutcome {
             md: Vec::new(),
             dataless: Vec::new(),
@@ -260,13 +365,18 @@ pub fn walk(probe: &dyn Probe, root: &Path, opts: &WalkOptions, cancel: &Cancel)
 
 impl Walker<'_> {
     fn run(&mut self) -> Result<(), Abort> {
-        if self.cancel.is_cancelled() {
-            return Err(Abort::Cancelled);
-        }
-        let Ok(st) = self.probe.stat(self.root) else {
+        self.checkpoint()?;
+        let st = self.probe.stat(self.root);
+        self.checkpoint()?;
+        let Ok(st) = st else {
             return Ok(());
         };
-        if !st.is_dir || ignored_entirely(self.probe, self.root) {
+        if !st.is_dir {
+            return Ok(());
+        }
+        let ignored = ignored_entirely(self.probe, self.root);
+        self.checkpoint()?;
+        if ignored {
             return Ok(());
         }
         self.root_dev = st.dev;
@@ -277,9 +387,7 @@ impl Walker<'_> {
             matchers: Vec::new(),
         }]);
         while let Some(item) = queue.pop_front() {
-            if self.cancel.is_cancelled() {
-                return Err(Abort::Cancelled);
-            }
+            self.checkpoint()?;
             self.visit(item, &mut queue)?;
         }
         Ok(())
@@ -294,6 +402,8 @@ impl Walker<'_> {
         let t0 = self.probe.now();
         let listing = self.probe.read_dir(&item.abs);
         let t1 = self.probe.now();
+        // A refused listing did no I/O; keep it out of the rate sample.
+        self.checkpoint()?;
         self.times.push(ms(t1.saturating_sub(t0)));
         let Ok(listing) = listing else {
             return self.timing_checks();
@@ -301,7 +411,9 @@ impl Walker<'_> {
         self.out.stats.dirs += 1;
 
         let mut matchers = item.matchers;
-        if let Some(gi) = self.matcher(&item.abs, item.depth == 0, &listing) {
+        let gi = self.matcher(&item.abs, item.depth == 0, &listing);
+        self.checkpoint()?;
+        if let Some(gi) = gi {
             matchers.push(Rc::new(gi));
         }
 
@@ -327,7 +439,12 @@ impl Walker<'_> {
             if st.is_file {
                 self.file(name, st, rel)?;
             } else if st.is_dir {
-                if st.dataless || self.nested_root(&abs) || ignored_entirely(self.probe, &abs) {
+                // An empty .mdrootsignore wins over any marker: never index here.
+                if st.dataless || ignored_entirely(self.probe, &abs) {
+                    self.checkpoint()?;
+                    continue;
+                }
+                if self.nested_root(&abs)? {
                     continue;
                 }
                 if item.depth + 1 > self.opts.budget.depth {
@@ -383,7 +500,7 @@ impl Walker<'_> {
     }
 
     /// Records `dir` as a nested root if it has a root marker.
-    fn nested_root(&mut self, dir: &Path) -> bool {
+    fn nested_root(&mut self, dir: &Path) -> Result<bool, Abort> {
         let nested = markers_at(self.probe, dir).iter().any(|m| {
             matches!(
                 m.class,
@@ -394,10 +511,12 @@ impl Walker<'_> {
                     | MarkerClass::Monorepo
             )
         });
+        // An aborted probe may have hidden a marker; do not record then.
+        self.checkpoint()?;
         if nested {
             self.out.nested_roots.push(dir.to_path_buf());
         }
-        nested
+        Ok(nested)
     }
 
     /// The matcher for the ignore files in `dir`'s listing, if any.
@@ -439,11 +558,18 @@ impl Walker<'_> {
         self.probe.now().saturating_sub(self.start)
     }
 
-    fn timing_checks(&mut self) -> Result<(), Abort> {
-        let elapsed = self.elapsed();
-        if elapsed > self.opts.budget.wall {
-            return Err(Abort::Wall);
+    /// Abort if a guarded probe call was refused, the walk is cancelled or
+    /// the wall budget is spent.
+    fn checkpoint(&self) -> Result<(), Abort> {
+        match self.probe.check() {
+            Ok(()) => Ok(()),
+            Err(_) => Err(self.probe.tripped().unwrap_or(Abort::Cancelled)),
         }
+    }
+
+    fn timing_checks(&mut self) -> Result<(), Abort> {
+        self.checkpoint()?;
+        let elapsed = self.elapsed();
         if !self.rate_checked && (self.times.len() >= RATE_DIRS || elapsed >= RATE_WINDOW) {
             self.rate_check()?;
         }

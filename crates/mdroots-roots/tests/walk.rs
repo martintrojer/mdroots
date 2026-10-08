@@ -3,11 +3,14 @@
 //! [Bazel](https://bazel.build), [Mercurial](https://www.mercurial-scm.org).
 //! All trees are in-memory (FakeProbe).
 
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use mdroots_core::Cancel;
-use mdroots_roots::probe::{Counting, FakeProbe, MountInfo};
+use mdroots_roots::probe::{Counting, FakeProbe, FsStat, MountInfo, Probe};
 use mdroots_roots::walk::{Abort, Budget, WalkOptions, WalkOutcome, walk};
 
 const ROOT: &str = "/n";
@@ -391,4 +394,129 @@ fn budget_presets() {
         (d.budget, d.rate_ms_per_dir, d.skip.len()),
         (Budget::marker(), 5.0, 0)
     );
+}
+
+/// A FakeProbe whose `stat`/`lstat` each advance the clock by `cost`, and
+/// which cancels `cancel` after `cancel_after` of them.
+struct SlowStat {
+    inner: FakeProbe,
+    cost: Duration,
+    extra: Mutex<Duration>,
+    stats: AtomicUsize,
+    cancel_after: Option<(usize, Cancel)>,
+}
+
+impl SlowStat {
+    fn new(inner: FakeProbe, cost: Duration) -> Self {
+        SlowStat {
+            inner,
+            cost,
+            extra: Mutex::default(),
+            stats: AtomicUsize::new(0),
+            cancel_after: None,
+        }
+    }
+
+    fn tick(&self) {
+        *self.extra.lock().unwrap() += self.cost;
+        let n = self.stats.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some((after, c)) = &self.cancel_after
+            && n >= *after
+        {
+            c.cancel();
+        }
+    }
+}
+
+impl Probe for SlowStat {
+    fn stat(&self, p: &Path) -> io::Result<FsStat> {
+        self.tick();
+        self.inner.stat(p)
+    }
+    fn lstat(&self, p: &Path) -> io::Result<FsStat> {
+        self.tick();
+        self.inner.lstat(p)
+    }
+    fn mount(&self, p: &Path) -> io::Result<MountInfo> {
+        Probe::mount(&self.inner, p)
+    }
+    fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, FsStat)>> {
+        self.inner.read_dir(p)
+    }
+    fn read_link(&self, p: &Path) -> io::Result<PathBuf> {
+        self.inner.read_link(p)
+    }
+    fn read_small(&self, p: &Path, cap: usize) -> io::Result<Vec<u8>> {
+        self.inner.read_small(p, cap)
+    }
+    fn read_prefix(&self, p: &Path, n: usize) -> io::Result<Vec<u8>> {
+        self.inner.read_prefix(p, n)
+    }
+    fn volume_id(&self, p: &Path) -> io::Result<String> {
+        self.inner.volume_id(p)
+    }
+    fn home(&self) -> Option<PathBuf> {
+        Probe::home(&self.inner)
+    }
+    fn now(&self) -> Duration {
+        self.inner.now() + *self.extra.lock().unwrap()
+    }
+}
+
+#[test]
+fn wall_budget_checked_during_marker_probes() {
+    let opts = WalkOptions {
+        budget: Budget {
+            wall: Duration::from_millis(10),
+            ..Budget::marker()
+        },
+        ..WalkOptions::default()
+    };
+    // One listing (0.2 ms) then 1 ms per lstat of the marker probes.
+    let probe = Counting::new(SlowStat::new(wide(30), Duration::from_millis(1)));
+    let out = walk(&probe, Path::new(ROOT), &opts, &Cancel::new());
+    assert_eq!(out.abort, Some(Abort::Wall));
+    assert!(out.stats.ms <= 11.0 + 0.2 + 1e-9, "{}", out.stats.ms);
+    assert_eq!(probe.read_dir_total(), 1);
+}
+
+#[test]
+fn cancel_checked_during_marker_probes() {
+    let cancel = Cancel::new();
+    let mut slow = SlowStat::new(wide(30), Duration::ZERO);
+    slow.cancel_after = Some((5, cancel.clone()));
+    let probe = Counting::new(slow);
+    let out = walk(&probe, Path::new(ROOT), &WalkOptions::default(), &cancel);
+    assert_eq!(out.abort, Some(Abort::Cancelled));
+    assert_eq!(probe.read_dir_total(), 1);
+    assert!(probe.inner().stats.load(Ordering::Relaxed) <= 5);
+}
+
+#[test]
+fn empty_mdrootsignore_wins_over_marker() {
+    let fake = FakeProbe::new()
+        .file("/n/a.md", "")
+        .file("/n/sub/.git/HEAD", "")
+        .file("/n/sub/.mdrootsignore", "")
+        .file("/n/sub/s.md", "");
+    let (out, probe) = run_default(fake);
+    assert_eq!(out.md, strs(&["a.md"]));
+    assert!(out.nested_roots.is_empty(), "{:?}", out.nested_roots);
+    assert_eq!(probe.read_dir_count(&p("/n/sub")), 0);
+}
+
+#[test]
+fn hgignore_glob_section_keeps_lines_with_colons() {
+    let fake = FakeProbe::new()
+        .file(
+            "/n/.hgignore",
+            "syntax: glob\nfoo:bar.md\nre:^r.*\\.md$\npath:p.md\nglob:g.md\n",
+        )
+        .file("/n/foo:bar.md", "")
+        .file("/n/r1.md", "")
+        .file("/n/p.md", "")
+        .file("/n/g.md", "")
+        .file("/n/k.md", "");
+    let (out, _) = run_default(fake);
+    assert_eq!(out.md, strs(&["k.md", "p.md", "r1.md"]));
 }
