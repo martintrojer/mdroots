@@ -4,6 +4,7 @@
 //! itself.
 #![forbid(unsafe_code)]
 
+mod lsp;
 mod names;
 
 use std::collections::BTreeMap;
@@ -24,7 +25,8 @@ commands:
   roots PATH                  show the root chosen for PATH and why
   resolve FROM LINK           resolve LINK as written in the note FROM
   backlinks NOTE              list the notes linking to NOTE
-  lsp                         the language server (not implemented yet)
+  lsp [--log FILE]            the language server on stdin/stdout; --log
+                              appends one line per message to FILE
 ";
 
 /// How a command ended, before it becomes an exit code.
@@ -66,10 +68,8 @@ fn run(args: &[String]) -> Result<Outcome, Error> {
         ("roots", [path]) if !is_flag(path) => roots(path),
         ("resolve", [from, link]) if !is_flag(from) => resolve(&out, from, link),
         ("backlinks", [note]) if !is_flag(note) => backlinks(&out, note),
-        ("lsp", []) => Err(Error::new(
-            ErrorKind::Unsupported,
-            "lsp: not implemented yet",
-        )),
+        ("lsp", []) => lsp::run(None),
+        ("lsp", [flag, file]) if flag == "--log" && !is_flag(file) => lsp::run(Some(file)),
         _ => Ok(Outcome::Usage),
     }
 }

@@ -139,12 +139,100 @@ fn help_and_unknown_args_print_usage_and_exit_2() {
     insta::assert_snapshot!("usage", v.run(&[]).stderr);
 }
 
+/// Frames each JSON-RPC message with its Content-Length header.
+fn frame(msgs: &[serde_json::Value]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for m in msgs {
+        let body = m.to_string();
+        out.extend_from_slice(format!("Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes());
+    }
+    out
+}
+
+/// Runs `mdroots lsp <extra>` with `stdin` and the cache dirs pointed into
+/// the vault's temp dir; returns (exit code, stdout).
+fn run_lsp(v: &Vault, extra: &[&str], stdin: &[u8]) -> (i32, String) {
+    use std::io::Write;
+    let cache = v.canon.join("cache");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mdroots"))
+        .arg("lsp")
+        .args(extra)
+        .current_dir(v.dir())
+        .env("XDG_CACHE_HOME", &cache)
+        .env("HOME", &cache)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code().unwrap(),
+        String::from_utf8(out.stdout).unwrap(),
+    )
+}
+
+fn lsp_session() -> Vec<u8> {
+    use serde_json::json;
+    frame(&[
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+               "params": {"capabilities": {"general": {"positionEncodings": ["utf-8"]}}}}),
+        json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "shutdown"}),
+        json!({"jsonrpc": "2.0", "method": "exit"}),
+    ])
+}
+
 #[test]
-fn lsp_is_not_implemented_yet() {
+fn lsp_answers_initialize_and_exits_0_after_shutdown() {
     let v = Vault::corpus("zk-min");
-    let r = v.run(&["lsp"]);
-    assert_eq!(r.code, 2);
-    assert_eq!(r.stderr, "mdroots: lsp: not implemented yet\n");
+    let (code, stdout) = run_lsp(&v, &[], &lsp_session());
+    assert_eq!(code, 0, "{stdout}");
+    assert!(stdout.contains(r#""positionEncoding":"utf-8""#), "{stdout}");
+    assert!(stdout.contains(r#""name":"mdroots""#), "{stdout}");
+    assert!(stdout.contains(r#""id":2"#), "{stdout}");
+}
+
+#[test]
+fn lsp_exits_0_at_stdin_eof() {
+    let v = Vault::corpus("zk-min");
+    let (code, stdout) = run_lsp(&v, &[], b"");
+    assert_eq!(code, 0, "{stdout}");
+}
+
+#[test]
+fn lsp_log_appends_one_line_per_message() {
+    let v = Vault::corpus("zk-min");
+    let log = v.canon.join("lsp.log");
+    let (code, _) = run_lsp(&v, &["--log", log.to_str().unwrap()], &lsp_session());
+    assert_eq!(code, 0);
+    let text = fs::read_to_string(&log).unwrap();
+    // Two threads write the log, so only the order per direction is fixed.
+    let lines: Vec<&str> = text.lines().map(|l| l.split_once(' ').unwrap().1).collect();
+    let dir =
+        |d: &str| -> Vec<&str> { lines.iter().copied().filter(|l| l.starts_with(d)).collect() };
+    assert_eq!(
+        dir("<-"),
+        [
+            "<- initialize id=1",
+            "<- initialized",
+            "<- shutdown id=2",
+            "<- exit"
+        ]
+    );
+    assert_eq!(dir("->"), ["-> response id=1", "-> response id=2"]);
+    assert_eq!(lines.len(), 6, "{text}");
+}
+
+#[test]
+fn lsp_rejects_unknown_arguments() {
+    let v = Vault::corpus("zk-min");
+    for args in [&["lsp", "--bogus"][..], &["lsp", "--log"], &["lsp", "x"]] {
+        let r = v.run(args);
+        assert_eq!(r.code, 2, "{args:?}");
+        assert!(r.stderr.starts_with("usage: mdroots"), "{args:?}");
+    }
 }
 
 #[test]

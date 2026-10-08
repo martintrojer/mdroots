@@ -396,7 +396,10 @@ name = "mdroots-cli"
 version = "0.0.0"
 dependencies = [
  "insta",
+ "lsp-server",
  "mdroots",
+ "mdroots-lsp",
+ "serde_json",
  "tempfile",
 ]
 
