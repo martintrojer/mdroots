@@ -60,3 +60,15 @@ fn walk_below_a_subdir_root_and_cancel() {
     let err = walk_md(&fs, Path::new("/missing"), &Cancel::new()).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::Io);
 }
+
+#[test]
+fn walk_skips_dataless_entries() {
+    let fs = MemFs::new()
+        .with_file("a.md", "")
+        .with_file("cloud/b.md", "")
+        .with_file("local/c.md", "")
+        .with_dataless("cloud")
+        .with_dataless("local/d.md");
+    let got = walk_md(&fs, Path::new("/"), &Cancel::new()).unwrap();
+    assert_eq!(got, ["a.md", "local/c.md"]);
+}

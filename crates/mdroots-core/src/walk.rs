@@ -28,7 +28,9 @@ const PRUNED: &[&str] = &[
 /// `root`, sorted. Skips hidden files and dirs (leading `.`, which covers
 /// `.git`, `.jj`, `.hg`, `.sl`, `.venv`), editor temp files (`*~`, `.#*`,
 /// `#*#`, `.*.swp`, `.m-reflow-*`), the dirs in the prune list, and entries
-/// that are neither regular files nor dirs (symlinks are not followed).
+/// that are neither regular files nor dirs (symlinks are not followed), and
+/// dataless entries (cloud placeholders: such dirs are not descended, such
+/// files not listed, since touching them would download them).
 /// `.gitignore` is not honoured in M1 (deferred to mdroots-roots).
 /// Checks `cancel` before each directory; unreadable subdirectories are skipped,
 /// an unreadable root is an error.
@@ -43,7 +45,7 @@ pub fn walk_md(fs: &dyn FileSystem, root: &Path, cancel: &Cancel) -> Result<Vec<
             Err(_) => continue,
         };
         for (name, meta) in entries {
-            if is_hidden_or_temp(&name) {
+            if meta.dataless || is_hidden_or_temp(&name) {
                 continue;
             }
             let path = match rel.is_empty() {

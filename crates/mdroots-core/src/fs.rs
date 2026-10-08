@@ -47,9 +47,22 @@ pub trait FileSystem: Send + Sync {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StdFs;
 
+/// `SF_DATALESS` from `<sys/stat.h>`: the file's contents are not local
+/// (cloud placeholder). See Apple's stat(2) man page:
+/// <https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/stat.2.html>
+#[cfg(target_os = "macos")]
+const SF_DATALESS: u32 = 0x4000_0000;
+
 #[cfg(unix)]
 fn std_meta(m: &std::fs::Metadata) -> Meta {
     use std::os::unix::fs::MetadataExt;
+    #[cfg(target_os = "macos")]
+    let dataless = {
+        use std::os::macos::fs::MetadataExt as _;
+        m.st_flags() & SF_DATALESS != 0
+    };
+    #[cfg(not(target_os = "macos"))]
+    let dataless = false;
     let ns = |s: i64, n: i64| i128::from(s) * 1_000_000_000 + i128::from(n);
     Meta {
         ino: m.ino(),
@@ -58,8 +71,7 @@ fn std_meta(m: &std::fs::Metadata) -> Meta {
         size: m.size(),
         is_dir: m.is_dir(),
         is_file: m.is_file(),
-        // TODO(roots milestone): read st_flags & SF_DATALESS on macOS.
-        dataless: false,
+        dataless,
     }
 }
 
@@ -200,6 +212,20 @@ impl MemFs {
     /// Create or overwrite a file; an overwrite bumps its ino and ctime.
     pub fn with_file(self, path: &str, text: &str) -> Self {
         self.write(path, text.as_bytes());
+        self
+    }
+
+    /// Mark `path` dataless (a cloud placeholder), creating an empty file
+    /// there if it does not exist. Reads still return its bytes.
+    pub fn with_dataless(self, path: &str) -> Self {
+        let p = abs(Path::new(path));
+        if self.node(&p).is_err() {
+            self.write(path, b"");
+        }
+        let key = self.key(&p);
+        if let Some(n) = self.lock().nodes.get_mut(&key) {
+            n.meta.dataless = true;
+        }
         self
     }
 
@@ -415,6 +441,36 @@ mod tests {
             fs.canonicalize(&link.join("new.md")).unwrap(),
             real.canonicalize().unwrap().join("new.md")
         );
+    }
+
+    #[test]
+    fn memfs_dataless() {
+        let fs = MemFs::new()
+            .with_file("a.md", "x")
+            .with_dataless("a.md")
+            .with_dataless("d/new.md")
+            .with_dir("dir")
+            .with_dataless("dir");
+        let a = fs.stat(Path::new("/a.md")).unwrap();
+        assert!(a.dataless && a.is_file);
+        assert_eq!(&*fs.read(Path::new("/a.md")).unwrap().0, b"x");
+        let n = fs.stat(Path::new("/d/new.md")).unwrap();
+        assert!(n.dataless && n.is_file && n.size == 0);
+        let d = fs.stat(Path::new("/dir")).unwrap();
+        assert!(d.dataless && d.is_dir);
+        assert!(!fs.stat(Path::new("/d")).unwrap().dataless);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stdfs_regular_file_is_not_dataless() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("n.md");
+        std::fs::write(&f, "x").unwrap();
+        assert!(!StdFs.stat(&f).unwrap().dataless);
+        assert!(!StdFs.read(&f).unwrap().1.dataless);
+        let entries = StdFs.read_dir(tmp.path()).unwrap();
+        assert!(entries.iter().all(|(_, m)| !m.dataless));
     }
 
     #[cfg(unix)]
