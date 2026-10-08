@@ -311,7 +311,9 @@ fn want(line: &str) -> (Want<'_>, usize) {
         .map_or(line.len(), |(i, _)| i);
     if let Some(before) = line[..typed].strip_suffix('#') {
         // A `#` first on the line starts a heading (spec §3.6): no popup.
-        let tag_pos = before.ends_with(char::is_whitespace) && !before.trim().is_empty();
+        // Same tag-start rule as the parser: after whitespace or `(`.
+        let tag_pos =
+            before.ends_with(|c: char| c.is_whitespace() || c == '(') && !before.trim().is_empty();
         if tag_pos {
             return (Want::Tags, typed);
         }
@@ -561,6 +563,7 @@ mod tests {
         assert_eq!(want("[t](a.md) x").0, Want::Nothing);
         assert_eq!(want("text #pro"), (Want::Tags, 6));
         assert_eq!(want("text #"), (Want::Tags, 6));
+        assert_eq!(want("Try (#pr"), (Want::Tags, 6));
         // A `#` first on the line (after blanks) is a heading.
         assert_eq!(want("#").0, Want::Nothing);
         assert_eq!(want("  #pro").0, Want::Nothing);
