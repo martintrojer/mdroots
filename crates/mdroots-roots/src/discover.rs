@@ -22,7 +22,9 @@ use mdroots_core::Cancel;
 
 use crate::gitindex::{MAX_INDEX_BYTES, scan};
 use crate::loose::{find_loose_root, is_denied};
-use crate::markers::{Climb, FoundMarker, MarkerClass, StopReason, climb, markers_at};
+use crate::markers::{
+    Climb, FoundMarker, MarkerClass, StopReason, climb, markers_at, mdrootsignore_matches,
+};
 use crate::probe::{FsClass, Probe, classify};
 use crate::registry::{
     Registry, RootMode, RootRecord, VerdictSource, detect_move, lookup_valid, new_root_id,
@@ -40,9 +42,9 @@ const ENUM_CAP: usize = 20_000;
 const RETRY_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 /// Names stat'ed per level by the stage-1 probe on a non-local filesystem:
 /// explicit and notes-tool markers, plus VCS markers for nested repos.
+/// (`.mdrootsignore` is checked separately on every filesystem.)
 const NON_LOCAL_PROBE: &[&str] = &[
     ".mdroots",
-    ".mdrootsignore",
     ".zk",
     ".obsidian",
     ".marksman.toml",
@@ -319,18 +321,26 @@ fn stage1(cx: &mut Ctx<'_>) -> Option<Out> {
     {
         return None;
     }
+    // A `.mdrootsignore` from dir(file) up to and including the root,
+    // matched like climb matches it, ejects the file on any filesystem.
+    let mut upward = cx.dir.ancestors();
+    for d in upward.by_ref() {
+        if mdrootsignore_matches(cx.probe, d, cx.dir) {
+            return Some(Out::single(format!(
+                "single-file: .mdrootsignore at {}",
+                cx.show(d)
+            )));
+        }
+        if d == rec.path {
+            break;
+        }
+    }
     let remote = non_local(cx.probe, cx.dir, cx.home.as_deref());
     for d in cx.dir.ancestors().take_while(|d| *d != rec.path) {
         if remote {
             let hit = NON_LOCAL_PROBE
                 .iter()
                 .find(|n| cx.probe.lstat(&d.join(n)).is_ok());
-            if let Some(&".mdrootsignore") = hit {
-                return Some(Out::single(format!(
-                    "single-file: .mdrootsignore at {}",
-                    cx.show(d)
-                )));
-            }
             if let Some(name) = hit {
                 let reason = format!(
                     "lazy: new marker {name} at {} inside {} on a non-local filesystem",

@@ -201,6 +201,17 @@ fn ignore_file(probe: &dyn Probe, dir: &Path, start_dir: &Path) -> Option<bool> 
     Some(gi.matched_path_or_any_parents(rel, true).is_ignore())
 }
 
+/// Whether `<ignore_dir>/.mdrootsignore` exists and ignores `start_dir`,
+/// by the same rule [`climb`] uses (empty or unreadable: ignores; else
+/// gitignore patterns rooted at `ignore_dir`).
+pub(crate) fn mdrootsignore_matches(
+    probe: &dyn Probe,
+    ignore_dir: &Path,
+    start_dir: &Path,
+) -> bool {
+    ignore_file(probe, ignore_dir, start_dir) == Some(true)
+}
+
 /// Whether the mount holding `parent` is virtual or remote, or `parent` has
 /// `.eden`: a local mount below it is inside a virtual repo.
 fn parent_is_virtual(probe: &dyn Probe, parent: &Path, home: Option<&Path>) -> bool {

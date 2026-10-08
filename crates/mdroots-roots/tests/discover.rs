@@ -570,6 +570,57 @@ fn mdrootsignore_is_single_file() {
 // --- stage 1 ----------------------------------------------------------------
 
 #[test]
+fn new_local_mdrootsignore_below_registered_root_is_a_miss() {
+    let mut reg = MemRegistry::new();
+    let before = FakeProbe::new()
+        .home("/h")
+        .dir("/h/nb/.zk")
+        .file("/h/nb/sub/a.md", "");
+    run(
+        &Counting::new(before),
+        &mut reg,
+        &NoEnumerator,
+        "/h/nb/sub/a.md",
+        &["/h/nb"],
+    );
+
+    let after = FakeProbe::new()
+        .home("/h")
+        .dir("/h/nb/.zk")
+        .file("/h/nb/sub/.mdrootsignore", "")
+        .file("/h/nb/sub/a.md", "");
+    let d = run(
+        &Counting::new(after),
+        &mut reg,
+        &NoEnumerator,
+        "/h/nb/sub/a.md",
+        &[],
+    );
+    assert_eq!(d.mode, RootMode::SingleFile);
+}
+
+#[test]
+fn nonmatching_mdrootsignore_on_virtual_hit_does_not_ignore() {
+    let mut reg = MemRegistry::new();
+    let before = Counting::new(eden_repo(&["/eden/repo", "/eden/repo/sub"]));
+    let first = run(&before, &mut reg, &NoEnumerator, "/eden/repo/sub/a.md", &[]);
+    assert_eq!(first.root, Some(p("/eden/repo")));
+
+    let after = eden_repo(&["/eden/repo", "/eden/repo/sub"])
+        .file("/eden/repo/sub/.mdrootsignore", "other/**")
+        .file("/eden/repo/sub/a.md", "");
+    let d = run(
+        &Counting::new(after),
+        &mut reg,
+        &NoEnumerator,
+        "/eden/repo/sub/a.md",
+        &[],
+    );
+    assert_eq!(d.mode, RootMode::Lazy);
+    assert_eq!(d.root, Some(p("/eden/repo")));
+}
+
+#[test]
 fn registry_hit_path_does_zero_read_dir() {
     let f = FakeProbe::new()
         .home("/h")
