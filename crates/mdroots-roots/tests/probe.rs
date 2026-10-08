@@ -1,3 +1,7 @@
+//! Probe tests. Filesystems named here include [EdenFS](https://github.com/facebook/sapling)
+//! (the virtual filesystem from the [Sapling](https://sapling-scm.com/) project); every
+//! tree is a tempdir or a FakeProbe.
+
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
