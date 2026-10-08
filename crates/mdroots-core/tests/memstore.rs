@@ -1,7 +1,11 @@
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
-use mdroots_core::{AnchorStatus, Cancel, ErrorKind, MemFs, MemStore, StdFs};
+use mdroots_core::{
+    AnchorStatus, Cancel, ErrorKind, FileSystem, FsKind, MemFs, MemStore, Meta, StdFs,
+};
 use mdroots_resolve::keys::{KeyKind, KeyLookup, ResolveStep};
 use mdroots_resolve::ladder::{LinkStatus, Resolution};
 use mdroots_syntax::{Anchor, Context, Link};
@@ -298,4 +302,174 @@ fn anchors_are_checked_separately_from_file_status() {
         raws(&s.broken_anchors("a.md")),
         ["b.md#missing", "#nowhere", "b#^nope"]
     );
+}
+
+/// A [`FileSystem`] wrapper that counts `read` and `read_dir` calls.
+struct Recording {
+    inner: MemFs,
+    reads: Mutex<Vec<PathBuf>>,
+    read_dirs: AtomicUsize,
+}
+
+impl Recording {
+    fn new(inner: MemFs) -> Arc<Self> {
+        Arc::new(Recording {
+            inner,
+            reads: Mutex::new(Vec::new()),
+            read_dirs: AtomicUsize::new(0),
+        })
+    }
+
+    fn read_paths(&self) -> Vec<PathBuf> {
+        self.reads.lock().unwrap().clone()
+    }
+}
+
+impl FileSystem for Recording {
+    fn read(&self, p: &Path) -> io::Result<(Arc<[u8]>, Meta)> {
+        self.reads.lock().unwrap().push(p.to_path_buf());
+        self.inner.read(p)
+    }
+    fn stat(&self, p: &Path) -> io::Result<Meta> {
+        self.inner.stat(p)
+    }
+    fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, Meta)>> {
+        self.read_dirs.fetch_add(1, Ordering::SeqCst);
+        self.inner.read_dir(p)
+    }
+    fn canonicalize(&self, p: &Path) -> io::Result<PathBuf> {
+        self.inner.canonicalize(p)
+    }
+    fn case_sensitive(&self, dir: &Path) -> bool {
+        self.inner.case_sensitive(dir)
+    }
+    fn fs_kind(&self, dir: &Path) -> FsKind {
+        self.inner.fs_kind(dir)
+    }
+}
+
+fn open_files(fs: Arc<Recording>, files: &[&str], force: &[&str]) -> MemStore {
+    let files = files.iter().map(|s| s.to_string()).collect();
+    let force: Vec<String> = force.iter().map(|s| s.to_string()).collect();
+    MemStore::open_files(fs, PathBuf::from("/"), files, &force, &Cancel::new()).unwrap()
+}
+
+fn skipped(s: &MemStore) -> Vec<(&str, ErrorKind, &str)> {
+    s.skipped()
+        .iter()
+        .map(|(p, e)| (p.as_str(), e.kind(), e.message()))
+        .collect()
+}
+
+#[test]
+fn open_files_indexes_exactly_the_listed_files() {
+    let fs = Recording::new(
+        MemFs::new()
+            .with_file("a.md", "[[b]]")
+            .with_file("sub/b.md", "# B")
+            .with_file("unlisted.md", "")
+            .with_file("notes.txt", "plain"),
+    );
+    let s = open_files(
+        fs.clone(),
+        &["sub/b.md", "a.md", "gone.md", "a.md", "notes.txt"],
+        &[],
+    );
+    assert_eq!(
+        s.files().collect::<Vec<_>>(),
+        ["a.md", "notes.txt", "sub/b.md"]
+    );
+    let sk = skipped(&s);
+    assert_eq!(sk.len(), 1);
+    assert_eq!((sk[0].0, sk[0].1), ("gone.md", ErrorKind::Io));
+    assert!(sk[0].2.starts_with("gone.md: "), "{}", sk[0].2);
+    assert_eq!(fs.read_dirs.load(Ordering::SeqCst), 0);
+    assert_eq!(link(&s, "a.md", "b").1.targets, ["sub/b.md"]);
+}
+
+#[test]
+fn open_files_rejects_invalid_paths() {
+    let fs = Recording::new(MemFs::new().with_file("a.md", "").with_file("d/b.md", ""));
+    let s = open_files(
+        fs.clone(),
+        &[
+            "",
+            "/a.md",
+            "./a.md",
+            "d/../a.md",
+            "d//b.md",
+            "d/b.md/",
+            "d/b.md",
+        ],
+        &[],
+    );
+    assert_eq!(s.files().collect::<Vec<_>>(), ["d/b.md"]);
+    let sk = skipped(&s);
+    let want: Vec<(&str, ErrorKind, String)> =
+        ["", "./a.md", "/a.md", "d/../a.md", "d//b.md", "d/b.md/"]
+            .into_iter()
+            .map(|p| (p, ErrorKind::Unsupported, format!("{p}: invalid path")))
+            .collect();
+    let got: Vec<(&str, ErrorKind, String)> = sk
+        .into_iter()
+        .map(|(p, k, m)| (p, k, m.to_owned()))
+        .collect();
+    assert_eq!(got, want);
+    assert_eq!(fs.read_paths(), [PathBuf::from("/d/b.md")]);
+}
+
+#[test]
+fn dataless_files_are_skipped_unread_unless_forced() {
+    let fs = Recording::new(
+        MemFs::new()
+            .with_file("a.md", "local")
+            .with_file("cloud.md", "remote")
+            .with_file("opened.md", "remote too")
+            .with_dataless("cloud.md")
+            .with_dataless("opened.md"),
+    );
+    let s = open_files(
+        fs.clone(),
+        &["a.md", "cloud.md", "opened.md"],
+        &["opened.md"],
+    );
+    assert_eq!(s.files().collect::<Vec<_>>(), ["a.md", "opened.md"]);
+    assert_eq!(
+        skipped(&s),
+        [(
+            "cloud.md",
+            ErrorKind::Unsupported,
+            "cloud.md: dataless: not downloaded"
+        )]
+    );
+    assert!(!fs.read_paths().contains(&PathBuf::from("/cloud.md")));
+    assert!(fs.read_paths().contains(&PathBuf::from("/opened.md")));
+}
+
+#[test]
+fn open_skips_dataless_without_reading() {
+    let fs = Recording::new(
+        MemFs::new()
+            .with_file("a.md", "")
+            .with_file("cloud.md", "")
+            .with_file("cdir/x.md", "")
+            .with_dataless("cloud.md")
+            .with_dataless("cdir"),
+    );
+    let s = MemStore::open(fs.clone(), PathBuf::from("/"), &Cancel::new()).unwrap();
+    assert_eq!(s.files().collect::<Vec<_>>(), ["a.md"]);
+    assert!(s.skipped().is_empty());
+    assert_eq!(fs.read_paths(), [PathBuf::from("/a.md")]);
+}
+
+#[test]
+fn cancelled_open_files_fails() {
+    let c = Cancel::new();
+    c.cancel();
+    let fs = Recording::new(MemFs::new().with_file("a.md", ""));
+    let err = MemStore::open_files(fs.clone(), PathBuf::from("/"), vec!["a.md".into()], &[], &c)
+        .err()
+        .unwrap();
+    assert_eq!(err.kind(), ErrorKind::Cancelled);
+    assert!(fs.read_paths().is_empty());
 }

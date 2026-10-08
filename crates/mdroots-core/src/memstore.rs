@@ -100,12 +100,35 @@ pub struct MemStore {
 }
 
 impl MemStore {
-    /// Detect the root's conventions, walk it and parse every note. A file
-    /// that cannot be read or is binary is listed in [`skipped`](Self::skipped)
-    /// and never fails the open; cancellation does.
+    /// Detect the root's conventions, walk it and parse every note: the
+    /// root is canonicalized, walked with [`walk_md`](crate::walk::walk_md)
+    /// and indexed by [`open_files`](Self::open_files). A file that cannot be
+    /// read or is binary is listed in [`skipped`](Self::skipped) and never
+    /// fails the open; cancellation and an unreadable root do.
     pub fn open(
         fs: Arc<dyn FileSystem>,
         root: PathBuf,
+        cancel: &Cancel,
+    ) -> Result<MemStore, Error> {
+        cancel.check()?;
+        let root = fs.canonicalize(&root).unwrap_or(root);
+        let files = crate::walk::walk_md(&*fs, &root, cancel)?;
+        Self::open_files(fs, root, files, &[], cancel)
+    }
+
+    /// Like [`open`](Self::open), but index exactly `files` (root-relative,
+    /// `/`-separated) without listing any directory. Exact duplicates are
+    /// dropped; there is no extension filter. Each file is statted first.
+    /// These go to [`skipped`](Self::skipped) instead of the index: invalid
+    /// paths (empty, absolute, or with an empty, `.` or `..` component;
+    /// `Unsupported`), failed stats and reads (`Io`), binary files
+    /// (`Unsupported`), and dataless files (`Unsupported`), which are not read
+    /// because reading would download them, unless listed in `force_read`.
+    pub fn open_files(
+        fs: Arc<dyn FileSystem>,
+        root: PathBuf,
+        mut files: Vec<String>,
+        force_read: &[String],
         cancel: &Cancel,
     ) -> Result<MemStore, Error> {
         cancel.check()?;
@@ -124,9 +147,12 @@ impl MemStore {
             index: BTreeMap::new(),
             skipped: Vec::new(),
         };
-        for rel in crate::walk::walk_md(&*store.env.fs, &store.env.root, cancel)? {
+        files.sort();
+        files.dedup();
+        for rel in files {
             cancel.check()?;
-            match store.read_disk(&rel) {
+            let force = force_read.contains(&rel);
+            match store.read_listed(&rel, force) {
                 Ok(p) => store.replace(&rel, |e| e.disk = Some(p)),
                 Err(e) => store.skipped.push((rel, e)),
             }
@@ -300,6 +326,28 @@ impl MemStore {
         Parsed { doc, keys }
     }
 
+    /// Validate, stat and (unless dataless and not forced) read a listed file.
+    fn read_listed(&self, rel: &str, force: bool) -> Result<Parsed, Error> {
+        if !valid_rel(rel) {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                format!("{rel}: invalid path"),
+            ));
+        }
+        let meta = self
+            .env
+            .fs
+            .stat(&self.env.root.join(rel))
+            .map_err(|e| Error::new(ErrorKind::Io, format!("{rel}: {e}")))?;
+        if meta.dataless && !force {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                format!("{rel}: dataless: not downloaded"),
+            ));
+        }
+        self.read_disk(rel)
+    }
+
     fn read_disk(&self, rel: &str) -> Result<Parsed, Error> {
         let (bytes, _) = self
             .env
@@ -397,4 +445,10 @@ impl KeyLookup for MemStore {
             false => by_name,
         }
     }
+}
+
+/// Root-relative, `/`-separated, with no empty, `.` or `..` component.
+fn valid_rel(rel: &str) -> bool {
+    rel.split('/')
+        .all(|c| !c.is_empty() && c != "." && c != "..")
 }
