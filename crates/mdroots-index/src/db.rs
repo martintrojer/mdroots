@@ -80,7 +80,7 @@ pub struct IndexDb {
 
 /// Map a SQLite error: corruption is [`ErrorKind::Corrupt`] (the caller
 /// rebuilds), everything else [`ErrorKind::Io`] with the message kept.
-fn sql_err(e: rusqlite::Error) -> Error {
+pub(crate) fn sql_err(e: rusqlite::Error) -> Error {
     let corrupt = matches!(
         e.sqlite_error_code(),
         Some(ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase)
