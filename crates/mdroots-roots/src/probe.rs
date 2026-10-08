@@ -73,7 +73,7 @@ pub trait Probe: Send + Sync {
 }
 
 /// Name prefixes of virtual filesystems: [EdenFS](https://github.com/facebook/sapling)
-/// (the virtual filesystem from the Sapling project; macOS reports
+/// (the virtual filesystem from the [Sapling](https://sapling-scm.com/) project; macOS reports
 /// `edenfs:` with a trailing colon), [macFUSE](https://macfuse.github.io)
 /// and other FUSE mounts, virtiofs and 9p.
 const VIRTUAL_PREFIXES: &[&str] = &["edenfs", "fuse", "macfuse", "osxfuse", "virtiofs", "9p"];
