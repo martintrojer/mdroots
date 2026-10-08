@@ -904,3 +904,94 @@ fn rename_file_command_sends_apply_edit() {
     assert_eq!(snapshot(&v), before);
     c.shutdown().unwrap();
 }
+
+// ---- refresh from disk ----
+
+/// A client on a temp cache dir (not the user's), initialized with
+/// `capabilities`, and the initialize result.
+fn cached_session(cache: &Path, capabilities: Value) -> Client {
+    let mut c = Client::new();
+    c.spawn_with(Options::default().cache_dir(cache.to_path_buf()));
+    c.initialize(capabilities);
+    c
+}
+
+#[test]
+fn did_save_refreshes_from_disk_and_republishes() {
+    let v = Vault::corpus("zk-min");
+    let cache = tempfile::tempdir().unwrap();
+    let mut c = cached_session(cache.path(), json!({}));
+    let uri = v.uri("a.md");
+    let text = "# Note A\n\nSee [the part](b.md#part).\n";
+    v.write("a.md", text);
+    c.open(&uri, text);
+    let d = c.diagnostics(&uri);
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0]["code"], "broken-anchor");
+    // Another program adds the heading to b.md; the save of a.md picks it up.
+    v.write("b.md", "# Note B\n\n## Part\n");
+    c.notify(
+        "textDocument/didSave",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    assert_eq!(c.diagnostics(&uri), Vec::<Value>::new());
+    // The DB lives in the cache dir, never in the vault.
+    assert!(cache.path().join("roots.v1.db").exists());
+    assert!(!v.dir.join("roots.v1.db").exists());
+    let _ = c.request("shutdown", Value::Null);
+    c.notify("exit", Value::Null);
+    c.server.take().unwrap().join().unwrap().unwrap();
+}
+
+#[test]
+fn did_change_watched_files_refreshes_affected_workspaces() {
+    let v = Vault::corpus("zk-min");
+    let mut c = Client::start();
+    c.initialize(json!({}));
+    let uri = v.uri("a.md");
+    let text = "See [the part](b.md#part).\n";
+    v.write("a.md", text);
+    c.open(&uri, text);
+    assert_eq!(c.diagnostics(&uri).len(), 1);
+    v.write("b.md", "## Part\n");
+    c.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({ "changes": [{ "uri": v.uri("b.md"), "type": 2 }] }),
+    );
+    assert_eq!(c.diagnostics(&uri), Vec::<Value>::new());
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn registers_a_watcher_when_the_client_offers_dynamic_registration() {
+    let mut c = Client::start();
+    let caps = json!({ "workspace": { "didChangeWatchedFiles": { "dynamicRegistration": true } } });
+    c.initialize(caps);
+    let req = loop {
+        if let Message::Request(r) = c.recv() {
+            break r;
+        }
+    };
+    assert_eq!(req.method, "client/registerCapability");
+    let reg = &req.params["registrations"][0];
+    assert_eq!(reg["method"], "workspace/didChangeWatchedFiles");
+    assert_eq!(
+        reg["registerOptions"]["watchers"][0]["globPattern"],
+        "**/*.{md,markdown,org}"
+    );
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn no_watcher_without_dynamic_registration() {
+    let mut c = Client::start();
+    c.initialize(json!({}));
+    let id = c.send_request("shutdown", Value::Null);
+    // The first message after initialize is the shutdown reply.
+    match c.recv() {
+        Message::Response(r) => assert_eq!(r.id, id),
+        m => panic!("unexpected {m:?}"),
+    }
+    c.notify("exit", Value::Null);
+    c.server.take().unwrap().join().unwrap().unwrap();
+}

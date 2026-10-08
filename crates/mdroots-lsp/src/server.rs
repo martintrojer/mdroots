@@ -8,10 +8,12 @@ use crossbeam_channel::{RecvTimeoutError, TryRecvError};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
     CancelParams, CompletionOptions, DidChangeConfigurationParams, DidChangeTextDocumentParams,
+    DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-    ExecuteCommandOptions, ExecuteCommandParams, MessageType, NumberOrString, OneOf, Position,
-    PositionEncodingKind, PublishDiagnosticsParams, RenameOptions, SaveOptions, ServerCapabilities,
-    ShowMessageParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    ExecuteCommandOptions, ExecuteCommandParams, FileSystemWatcher, GlobPattern, MessageType,
+    NumberOrString, OneOf, Position, PositionEncodingKind, PublishDiagnosticsParams, Registration,
+    RegistrationParams, RenameOptions, SaveOptions, ServerCapabilities, ShowMessageParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
     TextDocumentSyncSaveOptions, Uri, WorkDoneProgressOptions,
 };
 use mdroots::syntax::{LineIndex, PositionEncoding};
@@ -61,6 +63,9 @@ pub(crate) struct Server {
     shutdown: bool,
     /// Ids of the `workspace/applyEdit` requests sent to the client.
     apply_seq: u64,
+    /// The client registers file watchers on request
+    /// (`workspace.didChangeWatchedFiles.dynamicRegistration`).
+    watch_dynamic: bool,
 }
 
 impl Server {
@@ -93,10 +98,20 @@ impl Server {
             "capabilities": capabilities(enc),
             "serverInfo": { "name": "mdroots", "version": env!("CARGO_PKG_VERSION") },
         });
+        let watch_dynamic = params
+            .pointer("/capabilities/workspace/didChangeWatchedFiles/dynamicRegistration")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let mut server = Server::closed(conn, opts);
         server.enc = enc;
+        server.watch_dynamic = watch_dynamic;
+        // `initialize_finish` waits for `initialized`, so the watcher is
+        // registered here rather than in the message loop.
         match server.conn.initialize_finish(id, result) {
-            Ok(()) => Ok(server),
+            Ok(()) => {
+                server.register_watcher();
+                Ok(server)
+            }
             Err(e) if e.channel_is_disconnected() => Ok(server),
             Err(e) => Err(e.into()),
         }
@@ -115,6 +130,7 @@ impl Server {
             due: HashMap::new(),
             shutdown: false,
             apply_seq: 0,
+            watch_dynamic: false,
         }
     }
 
@@ -435,7 +451,29 @@ impl Server {
                 if let Ok(p) = serde_json::from_value::<DidSaveTextDocumentParams>(n.params) {
                     let key = p.text_document.uri.as_str().to_owned();
                     self.due.remove(&key);
-                    self.publish(&key);
+                    match self.docs.get(&key).and_then(|d| d.ws.clone()) {
+                        Some(ws) => self.refresh(&[ws]),
+                        None => self.publish(&key),
+                    }
+                }
+            }
+            "workspace/didChangeWatchedFiles" => {
+                if let Ok(p) = serde_json::from_value::<DidChangeWatchedFilesParams>(n.params) {
+                    let paths: Vec<PathBuf> = p
+                        .changes
+                        .iter()
+                        .filter_map(|c| uri::to_path(&c.uri))
+                        .collect();
+                    let affected: Vec<Workspace> = self
+                        .workspaces
+                        .all()
+                        .into_iter()
+                        .filter(|ws| {
+                            let root = ws.root().path;
+                            paths.iter().any(|p| p.starts_with(&root))
+                        })
+                        .collect();
+                    self.refresh(&affected);
                 }
             }
             "textDocument/didClose" => {
@@ -462,6 +500,54 @@ impl Server {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Asks the client to watch the notes, if it registers watchers on
+    /// request; [Neovim](https://neovim.io) offers this on some platforms
+    /// only.
+    fn register_watcher(&mut self) {
+        if !self.watch_dynamic {
+            return;
+        }
+        let opts = DidChangeWatchedFilesRegistrationOptions {
+            watchers: vec![FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/*.{md,markdown,org}".to_owned()),
+                kind: None,
+            }],
+        };
+        let params = RegistrationParams {
+            registrations: vec![Registration {
+                id: "mdroots/watch".to_owned(),
+                method: "workspace/didChangeWatchedFiles".to_owned(),
+                register_options: serde_json::to_value(opts).ok(),
+            }],
+        };
+        let id: RequestId = "mdroots/registerCapability".to_owned().into();
+        self.send(Request::new(id, "client/registerCapability".to_owned(), params).into());
+    }
+
+    /// Re-reads each workspace from disk ([`Workspace::refresh`]), then
+    /// republishes the diagnostics of the open documents in them.
+    fn refresh(&mut self, wss: &[Workspace]) {
+        let mut roots = Vec::new();
+        for ws in wss {
+            log_err("refresh", ws.refresh(&Cancel::new()));
+            roots.push(ws.root().path);
+        }
+        let mut keys: Vec<String> = self
+            .docs
+            .iter()
+            .filter(|(_, d)| {
+                d.ws.as_ref()
+                    .is_some_and(|w| roots.contains(&w.root().path))
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        keys.sort();
+        for k in keys {
+            self.due.remove(&k);
+            self.publish(&k);
         }
     }
 
