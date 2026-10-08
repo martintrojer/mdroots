@@ -1,8 +1,10 @@
 ---
 source: crates/mdroots-cli/tests/cli.rs
-expression: redact_ms(&r.stdout)
+expression: redact_cache(&redact_ms(&r.stdout))
 ---
 root: <TMP>/vault
 mode: marker
 why: marker .zk at <TMP>/vault: 6 md, 8 entries, 1 dirs in N ms
 files: 6
+cache: <CACHE>/roots/<ID>.v1.db
+role: reconciler

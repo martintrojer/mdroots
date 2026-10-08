@@ -366,7 +366,45 @@ fn roots_explains_the_choice() {
     let v = Vault::corpus("zk-min");
     let r = v.run(&["roots", "a.md"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
-    insta::assert_snapshot!("roots_zk_min", redact_ms(&r.stdout));
+    insta::assert_snapshot!("roots_zk_min", redact_cache(&redact_ms(&r.stdout)));
+}
+
+/// The root id in the DB path is time-based:
+/// `<TMP>/cache/mdroots/roots/<id>.v1.db` -> `<CACHE>/roots/<ID>.v1.db`.
+fn redact_cache(s: &str) -> String {
+    s.lines()
+        .map(
+            |l| match l.strip_prefix("cache: <TMP>/cache/mdroots/roots/") {
+                Some(rest) if rest.ends_with(".v1.db") => {
+                    "cache: <CACHE>/roots/<ID>.v1.db".to_owned()
+                }
+                _ => l.to_owned(),
+            },
+        )
+        .map(|l| l + "\n")
+        .collect()
+}
+
+#[test]
+fn roots_second_run_reuses_the_registered_db() {
+    let v = Vault::corpus("zk-min");
+    let first = v.run(&["roots", "a.md"]);
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    assert!(
+        first.stdout.contains("\nrole: reconciler\n"),
+        "{}",
+        first.stdout
+    );
+    let second = v.run(&["roots", "a.md"]);
+    let cache = |s: &str| {
+        s.lines()
+            .find(|l| l.starts_with("cache: "))
+            .map(str::to_owned)
+    };
+    // The registry kept the root: the same DB file.
+    assert_eq!(cache(&first.stdout), cache(&second.stdout));
+    assert!(v.canon.join("cache/mdroots/roots.v1.db").exists());
+    assert!(!v.dir().join("roots.v1.db").exists());
 }
 
 #[test]

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use mdroots::syntax::PositionEncoding;
-use mdroots::{Cancel, Diagnostic, Error, ErrorKind, Options, Severity, Workspace, names};
+use mdroots::{Cancel, Diagnostic, Error, ErrorKind, Options, Role, Severity, Workspace, names};
 
 const USAGE: &str = "\
 usage: mdroots <command> [args]
@@ -183,6 +183,16 @@ fn roots(path: &str) -> Result<Outcome, Error> {
     println!("mode: {}", names::mode(r.mode));
     println!("why: {}", r.reason);
     println!("files: {}", ws.files().len());
+    match ws.cache() {
+        Some(db) => println!("cache: {}", db.display()),
+        None => println!("cache: memory"),
+    }
+    let role = match ws.role() {
+        Some(Role::Reconciler) => "reconciler",
+        Some(Role::Peer) => "peer",
+        None => "none",
+    };
+    println!("role: {role}");
     for n in &r.nested_roots {
         println!("nested: {}", n.display());
     }
