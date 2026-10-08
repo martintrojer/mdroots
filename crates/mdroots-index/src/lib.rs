@@ -1,17 +1,20 @@
 //! mdroots-index: the persistent per-root index cache (docs/DECISIONS.md D3,
 //! D4, D5). [`cache`] picks the cache dir, [`lock`] elects the one writer per
-//! root, [`db`] is the per-root [SQLite](https://sqlite.org) DB and
+//! root, [`db`] is the per-root [SQLite](https://sqlite.org) DB,
+//! [`reconcile`] brings its rows up to date with the files on disk and
 //! [`registry`] is the persistent root registry.
 #![forbid(unsafe_code)]
 
 pub mod cache;
 pub mod db;
 pub mod lock;
+pub mod reconcile;
 pub mod registry;
 
 pub use cache::{CacheDir, CacheEnv, cache_dir};
 pub use db::{Change, FileRow, IndexDb, SCHEMA};
 pub use lock::{Role, RootLocks};
+pub use reconcile::{ReconcileStats, reconcile};
 pub use registry::SqliteRegistry;
 
 use std::io;
