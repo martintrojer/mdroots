@@ -1,18 +1,33 @@
--- Headless smoke test for editors/nvim (Neovim 0.12+), with marksman standing in
--- for the mdroots binary. Read-only on two vaults given by $MDROOTS_VAULT_A and
+-- Headless smoke test for editors/nvim (Neovim 0.12+) against the real
+-- `mdroots lsp` server. Read-only on two vaults given by $MDROOTS_VAULT_A and
 -- $MDROOTS_VAULT_B (defaults: tests/corpus/zkvault and tests/corpus/notesvault):
--- buffers there are only opened and queried; the edits (code action, completion
--- probe) go to a scratch note under /tmp, and nothing is ever written back.
+-- buffers there are only opened and queried. Edits (completion probe, broken
+-- link, note rename) go to scratch notes under /tmp/mdroots-smoke, which is
+-- wiped at the start, and the server's cache dir is pointed there as well.
 --
+--   cargo build -p mdroots-cli
 --   nvim --clean --headless -u NONE -c 'luafile bench/nvim_smoke.lua'   (from the repo root)
 --
--- Exit code 0 = all assertions passed, 1 = at least one failed.
+-- Binary: $MDROOTS_BIN, else $CARGO_TARGET_DIR/debug/mdroots, else
+-- <repo>/target/debug/mdroots. Exit code 0 = all assertions passed, 1 = at
+-- least one failed (or no binary).
 
 local repo = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':p:h:h')
 vim.opt.rtp:prepend(repo .. '/editors/nvim')
 local vault_a = os.getenv('MDROOTS_VAULT_A') or (repo .. '/tests/corpus/zkvault')
 local vault_b = os.getenv('MDROOTS_VAULT_B') or (repo .. '/tests/corpus/notesvault')
-vim.lsp.config('mdroots', { cmd = { 'marksman', 'server' } }) -- stand-in for { 'mdroots', 'lsp' }
+local dir = '/tmp/mdroots-smoke'
+vim.fn.delete(dir, 'rf')
+vim.fn.mkdir(dir, 'p')
+local target = os.getenv('CARGO_TARGET_DIR')
+local bin = os.getenv('MDROOTS_BIN')
+  or (target and target ~= '' and (target .. '/debug/mdroots'))
+  or (repo .. '/target/debug/mdroots')
+if vim.fn.executable(bin) ~= 1 then
+  io.stdout:write('FAIL no mdroots binary at ' .. bin .. ' (run: cargo build -p mdroots-cli, or set MDROOTS_BIN)\n')
+  vim.cmd('cq! 1')
+end
+vim.lsp.config('mdroots', { cmd = { bin, 'lsp' }, cmd_env = { XDG_CACHE_HOME = dir .. '/cache' } })
 vim.cmd('runtime! plugin/mdroots.lua')
 
 local out, failed = {}, 0
@@ -40,33 +55,34 @@ local function maps_of(buf)
 end
 local function loclist_len(win) return #vim.fn.getloclist(win) end
 
--- Scratch note with two headings and three in-document links.
-local dir = '/tmp/mdroots-smoke'
-vim.fn.mkdir(dir, 'p')
+-- Scratch notes: one with two headings and three in-document links, and one
+-- linking to it (backlinks, rename).
 local loose = dir .. '/loose-note.md'
 vim.fn.writefile({
   '# Loose note', '', 'See [the setup](#setup) and [[#Usage]].', '',
   '## Setup', '', 'Text.', '', '## Usage', '', 'Back to [setup](#setup).',
 }, loose)
+local linker = dir .. '/linker.md'
+vim.fn.writefile({ '# Linker', '', 'Points at [[loose-note]].' }, linker)
 
--- 1. Attach: three buffers in two marker roots and one loose dir, one client.
+-- 1. Attach: four buffers in two marker roots and one loose dir, one client.
 local t0 = vim.uv.hrtime()
 local bufs = {}
-for _, p in ipairs({ vault_a .. '/README.md', vault_b .. '/README.md', loose }) do
+for _, p in ipairs({ vault_a .. '/README.md', vault_b .. '/README.md', linker, loose }) do
   vim.cmd('edit ' .. p)
   local b = vim.api.nvim_get_current_buf()
   local ok = vim.wait(5000, function() local c = client_of(b); return c ~= nil and c.initialized end, 20)
   check('attach ' .. vim.fn.fnamemodify(p, ':t'), ok, ms(t0) .. ' ms')
   table.insert(bufs, b)
 end
-local b_a, b_b, b = bufs[1], bufs[2], bufs[3]
+local b_a, b_b, b_l, b = bufs[1], bufs[2], bufs[3], bufs[4]
 local clients = vim.lsp.get_clients({ name = 'mdroots' })
 local c = clients[1]
 if not c then return finish() end
 check('one client for all buffers', #clients == 1, 'clients=' .. #clients)
 check('root_dir nil', c.root_dir == nil, 'root_dir=' .. tostring(c.root_dir))
 check('settings block sent', type(c.settings.mdroots) == 'table', 'settings.mdroots=' .. type(c.settings.mdroots))
-say('info position encoding: ' .. c.offset_encoding .. ' (marksman; mdroots answers utf-8)')
+check('position encoding utf-8', c.offset_encoding == 'utf-8', c.offset_encoding)
 
 -- 2. Buffer-local setup from plugin/mdroots.lua.
 local m = maps_of(b_b)
@@ -109,28 +125,17 @@ vim.wait(3000, function() return loclist_len(win) > 0 end, 20)
 check('gO -> loclist', loclist_len(win) == 3, loclist_len(win) .. ' entries')
 vim.cmd('lclose')
 
--- 6. Backlinks through exec_cmd and the plugin's loclist handler. marksman has
---    no mdroots.backlinks, so the stand-in advertises it and answers it with
---    textDocument/references at the position the plugin passes.
-c.server_capabilities.executeCommandProvider = { commands = { 'mdroots.backlinks' } }
-local request = c.request
-c.request = function(self, method, params, handler, bufnr)
-  if method == 'workspace/executeCommand' and params.command == 'mdroots.backlinks' then
-    local a = params.arguments
-    return request(self, 'textDocument/references',
-      { textDocument = { uri = a[1] }, position = a[2], context = { includeDeclaration = false } }, handler, bufnr)
-  end
-  return request(self, method, params, handler, bufnr)
-end
+-- 6. Backlinks through exec_cmd and the plugin's loclist handler: the note's
+--    own anchor links are excluded, so only linker.md line 3 remains.
 vim.api.nvim_win_set_cursor(win, { 5, 3 }) -- on "## Setup"
 vim.fn.setloclist(win, {}, 'r', { items = {} })
 maps_of(b)['\\nb'].callback()
 vim.wait(3000, function() return loclist_len(win) > 0 end, 20)
 local ll = vim.fn.getloclist(win)
-check('backlinks -> loclist', #ll == 2 and ll[1].lnum == 3 and ll[2].lnum == 11,
-  #ll .. ' entries' .. (#ll > 0 and (', lines ' .. ll[1].lnum .. ',' .. (ll[2] and ll[2].lnum or '-')) or ''))
+local ll_name = ll[1] and vim.api.nvim_buf_get_name(ll[1].bufnr) or ''
+check('backlinks -> loclist', #ll == 1 and ll_name:match('/linker%.md$') ~= nil and ll[1].lnum == 3,
+  #ll .. ' entries' .. (#ll > 0 and (', ' .. vim.fn.fnamemodify(ll_name, ':t') .. ':' .. ll[1].lnum) or ''))
 vim.cmd('lclose')
-c.request = nil -- back to Client.request
 
 -- 7. Completion after [[# (heading completion in the same document).
 vim.api.nvim_buf_set_lines(b, -1, -1, false, { '[[#' })
@@ -146,22 +151,28 @@ table.sort(labels)
 check('completion [[#', table.concat(labels, ',') == 'Setup,Usage', table.concat(labels, ','))
 vim.api.nvim_buf_set_lines(b, last, last + 1, false, {})
 
--- 8. Code action through vim.lsp.buf.code_action{filter, apply} (the same call
---    the <leader>nn map makes). marksman offers a ToC action, not the
---    extract-note one, so filter on that. The edit lands in the /tmp buffer only.
-vim.api.nvim_win_set_cursor(win, { 1, 0 })
-vim.lsp.buf.code_action({
-  filter = function(a) return a.title == 'Create a Table of Contents' end,
-  apply = true,
-})
-local applied = vim.wait(3000, function()
-  return vim.tbl_contains(vim.api.nvim_buf_get_lines(b, 0, -1, false), '<!--toc:start-->')
-end, 20)
-check('code action applied (ToC)', applied, applied and 'toc block inserted' or 'no edit')
+-- 8. `#` at line start is a heading, not a tag: no completion items.
+vim.api.nvim_buf_set_lines(b, -1, -1, false, { '#' })
+last = vim.api.nvim_buf_line_count(b) - 1
+local r = c:request_sync('textDocument/completion', { textDocument = { uri = uri }, position = { line = last, character = 1 } }, 2000, b)
+local hitems = r and r.result and (r.result.items or r.result) or {}
+check('no completion for line-start #', r ~= nil and r.err == nil and #hitems == 0, #hitems .. ' items')
+vim.api.nvim_buf_set_lines(b, last, last + 1, false, {})
 
--- 9. Cross-file goto from vault B's README (its first [[link]]). Informational:
---    marksman gets no folder (root_dir nil) and does no discovery of its own,
---    so it serves the vault in single-file mode. mdroots must resolve this.
+-- 9. Diagnostics for a broken link in the scratch note.
+vim.api.nvim_buf_set_lines(b, -1, -1, false, { 'Gone: [[no-such-note-anywhere]].' })
+last = vim.api.nvim_buf_line_count(b) - 1
+local diag
+vim.wait(5000, function()
+  for _, d in ipairs(vim.diagnostic.get(b)) do
+    if d.lnum == last then diag = d; return true end
+  end
+  return false
+end, 50)
+check('diagnostic for broken link', diag ~= nil, diag and diag.message or 'none')
+vim.api.nvim_buf_set_lines(b, last, last + 1, false, {})
+
+-- 10. Cross-file goto from vault B's README (its first [[link]]).
 local lnum, col
 for i, line in ipairs(vim.api.nvim_buf_get_lines(b_b, 0, -1, false)) do
   local s = line:find('%[%[')
@@ -169,11 +180,70 @@ for i, line in ipairs(vim.api.nvim_buf_get_lines(b_b, 0, -1, false)) do
 end
 local res
 if lnum then
-  local r = c:request_sync('textDocument/definition',
+  local rr = c:request_sync('textDocument/definition',
     { textDocument = { uri = vim.uri_from_bufnr(b_b) }, position = { line = lnum, character = col } }, 2000, b_b)
-  res = r and r.result
+  res = rr and rr.result
+  res = res and (res.uri or (res[1] and res[1].uri))
 end
-say('info first [[link]] in vault B README: ' .. ((res and (res.uri or (res[1] and res[1].uri))) or 'unresolved (single-file mode)'))
+local res_path = res and vim.uri_to_fname(res)
+check('cross-file goto vault B', res_path ~= nil and vim.fn.filereadable(res_path) == 1
+  and vim.startswith(res_path, vim.fn.fnamemodify(vault_b, ':p')),
+  res_path and vim.fn.fnamemodify(res_path, ':.') or 'unresolved')
+
+-- 11. :MdrootsInfo reports vault B's root via window/showMessage.
+local msgs = {}
+local show = vim.lsp.handlers['window/showMessage']
+vim.lsp.handlers['window/showMessage'] = function(err, res2, ctx)
+  table.insert(msgs, res2 and res2.message or '')
+end
+local notify = vim.notify
+vim.notify = function(m2) table.insert(msgs, tostring(m2)) end
+vim.api.nvim_set_current_buf(b_b)
+vim.cmd('MdrootsInfo')
+local root_b = vim.fn.fnamemodify(vault_b, ':p'):gsub('/$', '')
+local info_ok = vim.wait(3000, function()
+  for _, m2 in ipairs(msgs) do
+    if m2:find('root: ', 1, true) and m2:find(root_b, 1, true) then return true end
+  end
+  return false
+end, 20)
+vim.lsp.handlers['window/showMessage'] = show
+vim.notify = notify
+check(':MdrootsInfo shows root', info_ok, (msgs[1] or 'no message'):gsub('\n.*', ''))
+
+-- 12. Rename (last): mdroots.renameFile on the scratch note. The server sends
+--     workspace/applyEdit; the client fixes linker.md and moves the file.
+vim.api.nvim_set_current_buf(b)
+local renamed = dir .. '/renamed-note.md'
+local applied
+local apply = vim.lsp.handlers['workspace/applyEdit']
+vim.lsp.handlers['workspace/applyEdit'] = function(err, params, ctx)
+  -- Quiet the handler's print and the :saveas message.
+  local print0 = print
+  _G.print = function() end
+  _G.mdroots_smoke_apply = function() applied = apply(err, params, ctx) end
+  vim.cmd('silent lua mdroots_smoke_apply()')
+  _G.print, _G.mdroots_smoke_apply = print0, nil
+  return applied
+end
+c:exec_cmd({
+  command = 'mdroots.renameFile',
+  arguments = { vim.uri_from_fname(loose), vim.uri_from_fname(renamed) },
+}, { bufnr = b })
+local moved = vim.wait(5000, function()
+  return vim.fn.filereadable(renamed) == 1 and vim.fn.filereadable(loose) == 0
+end, 20)
+vim.lsp.handlers['workspace/applyEdit'] = apply
+check('workspace/applyEdit applied', applied ~= nil and applied.applied == true,
+  applied and tostring(applied.failureReason or 'applied') or 'not received')
+local ltext = table.concat(vim.api.nvim_buf_get_lines(b_l, 0, -1, false), '\n')
+check('rename moved file', moved, moved and 'renamed-note.md' or 'old file still there')
+check('rename fixed link', ltext:find('[[renamed-note]]', 1, true) ~= nil, (ltext:match('Points at [^\n]*') or ''))
+local cur = vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf())
+check('rename buffer renamed', vim.uv.fs_realpath(cur) == vim.uv.fs_realpath(renamed), vim.fn.fnamemodify(cur, ':t'))
+local strays = vim.fn.glob(vim.fn.fnamemodify(vault_a, ':p') .. '**/renamed-note.md', true, true)
+vim.list_extend(strays, vim.fn.glob(vim.fn.fnamemodify(vault_b, ':p') .. '**/renamed-note.md', true, true))
+check('nothing written in vaults', #strays == 0, #strays .. ' strays')
 
 -- Read-only guard: no vault buffer was modified.
 check('vault buffers unmodified', not vim.bo[b_a].modified and not vim.bo[b_b].modified)
