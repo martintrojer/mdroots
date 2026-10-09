@@ -2,8 +2,9 @@
 -- `mdroots lsp` server. Read-only on two vaults given by $MDROOTS_VAULT_A and
 -- $MDROOTS_VAULT_B (defaults: tests/corpus/zkvault and tests/corpus/notesvault):
 -- buffers there are only opened and queried. Edits (completion probe, broken
--- link, note rename) go to scratch notes under /tmp/mdroots-smoke, which is
--- wiped at the start, and the server's cache dir is pointed there as well.
+-- link, extract note, note rename) go to scratch notes under
+-- /tmp/mdroots-smoke, which is wiped at the start, and the server's cache dir
+-- is pointed there as well.
 --
 --   cargo build -p mdroots-cli
 --   nvim --clean --headless -u NONE -c 'luafile bench/nvim_smoke.lua'   (from the repo root)
@@ -233,7 +234,36 @@ check('codelens backlinks', lens_title == '6 backlinks', lens_title or 'none')
 vim.api.nvim_win_set_buf(fold_win, prev_buf)
 vim.api.nvim_buf_delete(g, {})
 
--- 13. Rename (last): mdroots.renameFile on the scratch note. The server sends
+-- 13. Extract note: select the loose note's first two lines (linewise, so
+--     the range ends at the last character of line 2) and run the
+--     <leader>nn map. The client applies CreateFile (an empty file on disk;
+--     the content stays in its unsaved buffer) and the link edit. The H1
+--     "Loose note" names it; loose-note.md exists, so it is loose-note-2.md.
+vim.api.nvim_set_current_buf(b)
+local extracted = dir .. '/loose-note-2.md'
+local notify0 = vim.notify
+vim.notify = function() end
+vim.cmd('normal! ggVj')
+local visual = vim.api.nvim_get_mode().mode
+maps_of(b)['x:\\nn'].callback()
+local created = vim.wait(5000, function() return vim.fn.filereadable(extracted) == 1 end, 20)
+vim.cmd('normal! \27')
+vim.notify = notify0
+check('extract in visual mode', visual == 'V', 'mode ' .. visual)
+check('extract created file', created, created and 'loose-note-2.md' or 'no file')
+local nb = vim.fn.bufnr(extracted)
+local first = nb > 0 and (vim.api.nvim_buf_get_lines(nb, 0, 1, false)[1] or '') or ''
+check('extract buffer has the text', vim.startswith(first, '# '), first)
+local stext = table.concat(vim.api.nvim_buf_get_lines(b, 0, -1, false), '\n')
+local slink = stext:match('%[%[[^%]]*loose%-note%-2[^%]]*%]%]') or stext:match('%[[^%]]*%]%([^)]*loose%-note%-2[^)]*%)')
+check('extract linked the selection', slink ~= nil and not stext:find('# Loose note', 1, true), slink or stext:sub(1, 40))
+local estrays = vim.fn.glob(vim.fn.fnamemodify(vault_a, ':p') .. '**/loose-note-2.md', true, true)
+vim.list_extend(estrays, vim.fn.glob(vim.fn.fnamemodify(vault_b, ':p') .. '**/loose-note-2.md', true, true))
+check('extract wrote only in scratch', #estrays == 0 and vim.startswith(vim.uv.fs_realpath(extracted) or '', vim.uv.fs_realpath(dir)),
+  #estrays .. ' strays')
+check('extract left vaults unmodified', not vim.bo[b_a].modified and not vim.bo[b_b].modified)
+
+-- 14. Rename (last): mdroots.renameFile on the scratch note. The server sends
 --     workspace/applyEdit; the client fixes linker.md and moves the file.
 vim.api.nvim_set_current_buf(b)
 local renamed = dir .. '/renamed-note.md'
