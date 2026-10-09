@@ -71,7 +71,7 @@ Each marker costs one `lstat` and is typed (file or dir), so a `workspace/` dir 
 
 1. **Local or not**, by `statfs` on the candidate root:
    - `MNT_LOCAL` unset → virtual/remote.
-   - By name prefix, case-insensitive, on the type and on `f_mntfromname` (so `edenfs:` matches); a match wins even when `MNT_LOCAL` is set. Virtual: `edenfs`, `fuse`, `macfuse`, `osxfuse`, `virtiofs`, `9p`. Remote: `nfs`, `smbfs`, `afpfs`, `webdav`, `sshfs`, `cifs`, `smb3`. Any other non-local mount is remote.
+   - By name prefix, case-insensitive, on the type and on `f_mntfromname` (so `edenfs:` matches); a match wins even when `MNT_LOCAL` is set. Virtual: `edenfs`, `fuse`, `macfuse`, `osxfuse`, `virtiofs`, `9p`. Remote: `nfs`, `smbfs`, `afpfs`, `webdav`, `sshfs`, `cifs`, `smb3`. Kernel pseudo-filesystems (`proc`, `sysfs`, `devtmpfs`, `devfs`, `cgroup2`, `tracefs`, `rpc_pipefs` and the like, by exact type name) are flagged local but generated on read, so they count as virtual: never walked. Any other non-local mount is remote.
    - Linux has no `MNT_LOCAL`: the implementation parses `/proc/self/mountinfo`, takes the mount whose mount point is the longest component-wise prefix of the canonical path (the later line wins a tie, as an overmount does), and treats `nfs*`, `fuse`, `fuse.*`, `cifs`, `smb3`, `smbfs`, `9p`, `virtiofs`, `ceph` and `afs` as not local.
    - Cloud folders (`~/Library/CloudStorage/*`, `~/Library/Mobile Documents/*`) are marked `cloud`: walks allowed, `st_flags` checked per entry, rate check without relaxation.
 2. `.eden/` at the root → virtual, whatever statfs says.

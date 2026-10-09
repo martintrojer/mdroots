@@ -50,6 +50,21 @@ fn classify_table() {
         (mi("fuse.sshfs", "host:/", false, 5), notes, v("fuse.sshfs")),
         // Unknown non-local type → remote.
         (mi("weirdfs", "x", false, 5), notes, r("weirdfs")),
+        // Linux kernel pseudo-filesystems are never note roots.
+        (mi("proc", "proc", true, 5), notes, v("proc")),
+        (mi("sysfs", "sysfs", true, 5), notes, v("sysfs")),
+        (mi("devtmpfs", "devtmpfs", true, 5), notes, v("devtmpfs")),
+        (mi("cgroup2", "cgroup2", true, 5), notes, v("cgroup2")),
+        (mi("tracefs", "tracefs", true, 5), notes, v("tracefs")),
+        (mi("rpc_pipefs", "sunrpc", true, 5), notes, v("rpc_pipefs")),
+        // Ordinary local filesystems stay local.
+        (mi("tmpfs", "tmpfs", true, 5), notes, FsClass::Local),
+        (
+            mi("btrfs", "/dev/nvme0n1p3", true, 5),
+            notes,
+            FsClass::Local,
+        ),
+        (mi("overlay", "composefs", true, 5), notes, FsClass::Local),
     ];
     for (m, p, want) in cases {
         assert_eq!(&classify(m, p, Some(home)), want, "{m:?}");

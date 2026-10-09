@@ -77,6 +77,32 @@ pub trait Probe: Send + Sync {
 /// `edenfs:` with a trailing colon), [macFUSE](https://macfuse.github.io)
 /// and other FUSE mounts, virtiofs and 9p.
 const VIRTUAL_PREFIXES: &[&str] = &["edenfs", "fuse", "macfuse", "osxfuse", "virtiofs", "9p"];
+/// Kernel pseudo-filesystems (Linux; `devfs` on macOS): flagged local but
+/// generated on read, never note roots, so they are treated as virtual
+/// (no walk). Exact fs type names.
+const PSEUDO_FS: &[&str] = &[
+    "proc",
+    "sysfs",
+    "devtmpfs",
+    "devfs",
+    "devpts",
+    "cgroup",
+    "cgroup2",
+    "tracefs",
+    "debugfs",
+    "securityfs",
+    "pstore",
+    "bpf",
+    "configfs",
+    "efivarfs",
+    "mqueue",
+    "hugetlbfs",
+    "selinuxfs",
+    "rpc_pipefs",
+    "binfmt_misc",
+    "autofs",
+    "nsfs",
+];
 /// Name prefixes of network filesystems.
 const REMOTE_PREFIXES: &[&str] = &["nfs", "smbfs", "afpfs", "webdav", "sshfs", "cifs", "smb3"];
 
@@ -94,7 +120,7 @@ pub fn classify(m: &MountInfo, path: &Path, home: Option<&Path>) -> FsClass {
             .iter()
             .any(|n| prefixes.iter().any(|p| n.starts_with(p)))
     };
-    if matches(VIRTUAL_PREFIXES) {
+    if matches(VIRTUAL_PREFIXES) || PSEUDO_FS.contains(&names[0].as_str()) {
         return FsClass::Virtual(m.fs_type.clone());
     }
     if matches(REMOTE_PREFIXES) || !m.local {
