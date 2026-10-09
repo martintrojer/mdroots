@@ -4,6 +4,16 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
+## Unreleased
+
+- `Workspace::notes_with_tag(tag)`: the notes carrying a tag, compared
+  case-insensitively (`#Rust` and `tags: [rust]` both match `rust`), sorted
+  by path like `notes()`.
+- `NoteSummary::modified`: the file's modification time, `None` for a note
+  that exists only as an editor overlay. `NoteSummary` is `#[non_exhaustive]`,
+  so code outside the crate cannot build it with a struct literal and is not
+  broken by the new field.
+
 ## 0.2.2
 
 - `Frontmatter::fields()`: the top-level front matter entries as written,

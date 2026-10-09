@@ -5,7 +5,7 @@ use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mdroots_core::{Cancel, Diagnostic, Error, ErrorKind, FileSystem, MemStore};
 use mdroots_resolve::ResolveStep;
@@ -254,6 +254,9 @@ pub struct NoteSummary {
     pub title: String,
     /// Tag names, deduplicated, in document order.
     pub tags: Vec<String>,
+    /// The file's modification time on disk; `None` when unknown (an
+    /// overlay-only note, a failed stat, or a filesystem without times).
+    pub modified: Option<SystemTime>,
 }
 
 /// One link of a document, resolved.
@@ -865,21 +868,47 @@ impl Workspace {
         v
     }
 
+    /// Every indexed note, sorted by path.
     pub fn notes(&self) -> Vec<NoteSummary> {
+        self.notes_where(|_| true)
+    }
+
+    /// The notes carrying `tag`, compared case-insensitively, sorted by
+    /// path like [`notes`](Self::notes). Empty when none match.
+    pub fn notes_with_tag(&self, tag: &str) -> Vec<NoteSummary> {
+        let want = tag.to_lowercase();
+        self.notes_where(|doc| doc.tags().any(|t| t.name.to_lowercase() == want))
+    }
+
+    fn notes_where(&self, keep: impl Fn(&Document) -> bool) -> Vec<NoteSummary> {
         let store = self.store();
         let mut v: Vec<NoteSummary> = store
             .files()
             .filter_map(|rel| {
-                let doc = store.document(rel)?;
+                let doc = store.document(rel).filter(|d| keep(d))?;
+                let path = self.abs(rel);
                 Some(NoteSummary {
-                    path: self.abs(rel),
+                    modified: self.modified(&path),
                     title: title(rel, doc),
                     tags: tag_names(doc),
+                    path,
                 })
             })
             .collect();
         v.sort_by(|a, b| a.path.cmp(&b.path));
         v
+    }
+
+    /// `path`'s modification time on disk; `None` when the stat fails or
+    /// the filesystem reports no time (zero).
+    fn modified(&self, path: &Path) -> Option<SystemTime> {
+        let ns = self.inner.fs.stat(path).ok()?.mtime_ns;
+        if ns == 0 {
+            return None;
+        }
+        let secs = u64::try_from(ns.div_euclid(1_000_000_000)).ok()?;
+        let nanos = ns.rem_euclid(1_000_000_000) as u32;
+        UNIX_EPOCH.checked_add(Duration::new(secs, nanos))
     }
 
     /// Each tag with the number of notes carrying it, sorted by name.

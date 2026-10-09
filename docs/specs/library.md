@@ -134,6 +134,7 @@ let rx = ws.subscribe();                                       // mpsc::Receiver
 
 let files  = ws.files();                                       // Vec<PathBuf>, absolute, sorted
 let notes  = ws.notes();                                       // Vec<NoteSummary>, by path
+let tagged = ws.notes_with_tag("rust");                         // Vec<NoteSummary>, by path; tag compared case-insensitively
 let found  = ws.search_notes("qry", 50);                       // Vec<NoteSummary>, fuzzy, best first
 let hits   = ws.full_text("some words", 50, &cancel)?;         // Vec<Hit>, full-text, every word must appear
 let tags   = ws.tags();                                        // Vec<(String, usize)>, sorted by name
@@ -201,14 +202,10 @@ Planned (M8): `Freshness::Stale { pending }`, background reconcile, feature flag
 
 Driven by ramble's needs ([ramble](../research/ramble.md)). Synchronous, byte offsets and paths, `&Cancel` on slow calls.
 
-- **Exists now** on `Workspace` (one root): `document_links`, `backlinks`, `notes`, `search_notes`, `full_text`, `preview`, `outline`, `text`, `goto`, `rename_note`, `extract_note`, `link_style`, `link_to`, `frontmatter_range`, `anchor_backlinks`, `heading_backlinks`, `refresh`, `refresh_paths`, `watching`, `subscribe`, and `Workspace::open_single`; and `Workspaces::for_path` / `get` / `all` to get the workspace of any file. `NoteSummary` has no `modified`; `Preview` has no `summary`. `refresh_paths` is what a read-only embedder calls for "this file changed on disk".
-- **Planned:** `notes_with_tag`, `NoteSummary.modified`, `Preview.summary`, and typed `subscribe` events (today it sends changed paths only).
+- **Exists now** on `Workspace` (one root): `document_links`, `backlinks`, `notes`, `notes_with_tag`, `search_notes`, `full_text`, `preview`, `outline`, `text`, `goto`, `rename_note`, `extract_note`, `link_style`, `link_to`, `frontmatter_range`, `anchor_backlinks`, `heading_backlinks`, `refresh`, `refresh_paths`, `watching`, `subscribe`, and `Workspace::open_single`; and `Workspaces::for_path` / `get` / `all` to get the workspace of any file. `NoteSummary.modified` is the file's mtime (`None` for an unsaved note); `Preview` has no `summary`. `refresh_paths` is what a read-only embedder calls for "this file changed on disk".
+- **Planned:** `Preview.summary` and typed `subscribe` events (today it sends changed paths only).
 
 ```rust
-impl Workspaces {                  // planned, not built
-    pub fn notes_with_tag(&self, root: &Path, tag: &str) -> Result<Vec<NoteSummary>>;
-}
-
 #[non_exhaustive] pub struct Hit {
     pub path: PathBuf,             // absolute
     pub line: u32,                 // 0-based: the first line containing the first query term in the current text; 0 if none
@@ -226,7 +223,8 @@ impl Workspaces {                  // planned, not built
 }
 #[non_exhaustive] pub struct Backlink { pub from: PathBuf, pub from_title: String,
     pub range: Range<usize>, pub line: u32, pub in_code: bool }
-#[non_exhaustive] pub struct NoteSummary { pub path: PathBuf, pub title: String, pub tags: Vec<String> }
+#[non_exhaustive] pub struct NoteSummary { pub path: PathBuf, pub title: String, pub tags: Vec<String>,
+    pub modified: Option<SystemTime> }   // file mtime; None for an overlay-only note or a failed stat
 #[non_exhaustive] pub struct Preview { pub title: String,
     pub frontmatter: Vec<(String, String)>, pub excerpt: String }
 #[non_exhaustive] pub struct Goto { pub targets: Vec<PathBuf>, pub heading: Option<Range<usize>>, pub line: Option<u32> }

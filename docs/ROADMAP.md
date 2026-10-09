@@ -86,7 +86,7 @@ Ordered by expected value. Each has a reason it is not built yet.
 | Library heading sections (`Workspace::sections(path)`) and per-heading backlink counts for embedders | ramble, a read-only TUI, can use the library parts behind the editor features: `frontmatter_range` for its frontmatter fold (instead of its own detection), `anchor_backlinks`/`heading_backlinks` for link counts next to headings. Heading-section folding is computed inside `mdroots-lsp` today; moving it into the library would let ramble fold by section too |
 | "New note" command and the filename scheme vote | the link style exists (`Workspace::link_style`); the filename scheme (slug, id prefix, date) is not voted yet |
 | `workspace/willRenameFiles`, a full-text LSP request, semantic tokens | small server additions; no client asked yet ([Neovim](https://neovim.io) 0.12 never sends `willRenameFiles`) |
-| Embedder API: typed `subscribe` events, `notes_with_tag`, `NoteSummary.modified`, `Preview.summary`, a server builder that shares an embedder's `Workspaces` | driven by ramble, a separate TUI markdown reader by the same author ([research/ramble](research/ramble.md)) |
+| Embedder API: typed `subscribe` events, `Preview.summary`, a server builder that shares an embedder's `Workspaces` | driven by ramble, a separate TUI markdown reader by the same author ([research/ramble](research/ramble.md)) |
 | Derived SQL tables (`keys`, `links`, `frontmatter`) | memory is under target at 3,000 notes; adds a second query layer and a parser version to keep in sync (D9) |
 | FSEvents replay (`sinceWhen`) | needs FFI and the workspace forbids unsafe code; the re-list on open already catches offline changes (D9) |
 | Cross-root `ATTACH` | no measured need ([roots spec §4](specs/roots.md)) |

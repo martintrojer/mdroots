@@ -533,6 +533,59 @@ fn notes_and_tags() {
     assert_eq!(ws.tags(), [("x".to_owned(), 1), ("y".to_owned(), 2)]);
 }
 
+/// A temp git repo with `files`, opened in memory mode.
+fn temp_repo(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, Workspace) {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap().join("repo");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    for (name, text) in files {
+        std::fs::write(root.join(name), text).unwrap();
+    }
+    let ws = Workspace::open_for(&root.join(files[0].0), std_opts()).unwrap();
+    (tmp, root, ws)
+}
+
+#[test]
+fn note_summary_modified_is_the_file_mtime() {
+    let (_tmp, root, ws) = temp_repo(&[("a.md", "# A\n"), ("b.md", "# B\n")]);
+    let notes = ws.notes();
+    assert_eq!(notes.len(), 2);
+    for n in &notes {
+        let mtime = std::fs::metadata(&n.path).unwrap().modified().unwrap();
+        assert_eq!(n.modified, Some(mtime), "{}", n.path.display());
+    }
+    // An unsaved note has no time on disk.
+    let fresh = root.join("fresh.md");
+    ws.set_overlay(&fresh, "# Fresh\n").unwrap();
+    let n = ws.notes().into_iter().find(|n| n.path == fresh).unwrap();
+    assert_eq!(n.modified, None);
+}
+
+#[test]
+fn notes_with_tag_matches_frontmatter_and_hash_tags_ignoring_case() {
+    let (_tmp, root, ws) = temp_repo(&[
+        ("a.md", "---\ntags: [Rust, cli]\n---\n# A\n"),
+        ("b.md", "# B\n\nabout #rust here\n"),
+        ("c.md", "# C\n\n#RUST and #other\n"),
+        ("d.md", "# D\n\n#cli only\n"),
+    ]);
+    let paths = |tag: &str| -> Vec<PathBuf> {
+        ws.notes_with_tag(tag).into_iter().map(|n| n.path).collect()
+    };
+    let rust = [root.join("a.md"), root.join("b.md"), root.join("c.md")];
+    assert_eq!(paths("rust"), rust);
+    assert_eq!(paths("RUST"), rust);
+    assert_eq!(paths("Rust"), rust);
+    assert_eq!(paths("cli"), [root.join("a.md"), root.join("d.md")]);
+    assert!(paths("none").is_empty());
+    assert!(paths("rus").is_empty());
+    // The summaries are those of notes().
+    let all = ws.notes();
+    for n in ws.notes_with_tag("rust") {
+        assert!(all.contains(&n));
+    }
+}
+
 #[test]
 fn diagnostics_equal_the_policy() {
     let (fs, _) = both(VAULT);
