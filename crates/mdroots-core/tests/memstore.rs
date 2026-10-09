@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use mdroots_core::{
     AnchorStatus, Cancel, ErrorKind, FileSystem, FsKind, MemFs, MemStore, Meta, StdFs,
 };
+use mdroots_resolve::dialect::{LinkStyle, link_style};
 use mdroots_resolve::keys::{KeyKind, KeyLookup, ResolveStep};
 use mdroots_resolve::ladder::{LinkStatus, Resolution};
 use mdroots_syntax::{Anchor, Context, Link};
@@ -643,4 +644,90 @@ fn apply_contents_keeps_overlays_and_records_binary_files() {
     s.apply_contents(vec![change("a.md", Some(b"text\n"))]);
     assert!(s.skipped().is_empty());
     assert_eq!(s.document("a.md").unwrap().source(), "text\n");
+}
+
+// --- vote --------------------------------------------------------------
+
+/// The notes of a corpus root in a `MemFs` at `/`, without its tool config
+/// (`.zk/`, dotfiles): a root the vote alone decides.
+fn corpus_without_config(name: &str) -> MemStore {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/corpus")
+        .join(name);
+    let mut fs = MemFs::new();
+    let mut dirs = vec![PathBuf::new()];
+    while let Some(dir) = dirs.pop() {
+        for e in std::fs::read_dir(root.join(&dir)).unwrap() {
+            let e = e.unwrap();
+            let name = e.file_name().into_string().unwrap();
+            if name.starts_with('.') {
+                continue;
+            }
+            let rel = dir.join(&name);
+            if e.file_type().unwrap().is_dir() {
+                dirs.push(rel);
+            } else if name.ends_with(".md") {
+                let text = std::fs::read_to_string(e.path()).unwrap();
+                fs = fs.with_file(&format!("/{}", rel.display()), &text);
+            }
+        }
+    }
+    mem(fs)
+}
+
+#[test]
+fn zkvault_vote_is_root_relative_wiki() {
+    let s = corpus("zkvault");
+    let v = s.vote();
+    assert!(v.explicit_links > 0);
+    assert!(v.wiki_share >= 0.5, "{v:?}");
+    assert_eq!(v.insert_style, Some(ResolveStep::RootRelative));
+    // Its config says the same: `link-format = "wiki"`.
+    assert_eq!(link_style(s.conventions(), &v), LinkStyle::WikiPath);
+}
+
+#[test]
+fn notesvault_config_wins_and_its_majority_is_wiki_stem() {
+    let s = corpus("notesvault");
+    // `link-format = "wiki"`: zk's root-relative wiki links.
+    assert_eq!(link_style(s.conventions(), &s.vote()), LinkStyle::WikiPath);
+
+    let bare = corpus_without_config("notesvault");
+    assert!(bare.conventions().markers.is_empty());
+    let v = bare.vote();
+    // Bare stems: same-directory ones stop at step 1, the rest at Stem;
+    // either way not root-relative.
+    assert_eq!(v.insert_style, Some(ResolveStep::FileRelative), "{v:?}");
+    assert!(v.wiki_share >= 0.5, "{v:?}");
+    assert_eq!(link_style(bare.conventions(), &v), LinkStyle::WikiStem);
+}
+
+#[test]
+fn vote_counts_referencing_non_external_links_only() {
+    let s = mem(MemFs::new()
+        .with_file(
+            "/a.md",
+            "# A\n\n[b](b.md) <https://example.com> `[[b]]`\n\n```\n[[b]]\n```\n",
+        )
+        .with_file("/b.md", "# B\n"));
+    let v = s.vote();
+    assert_eq!(v.explicit_links, 1);
+    assert_eq!(v.wiki_share, 0.0);
+    assert_eq!(v.md_suffix_share, 1.0);
+    assert_eq!(v.insert_style, Some(ResolveStep::FileRelative));
+    assert!(v.h1_is_title);
+}
+
+#[test]
+fn vote_cache_is_dropped_by_set_overlay() {
+    let mut s = mem(MemFs::new()
+        .with_file("/a.md", "[b](b.md)\n")
+        .with_file("/b.md", ""));
+    assert_eq!(s.vote().wiki_share, 0.0);
+    s.set_overlay("a.md", "[[b]] [[b]]\n");
+    let v = s.vote();
+    assert_eq!(v.wiki_share, 1.0);
+    assert_eq!(v.explicit_links, 2);
+    s.clear_overlay("a.md");
+    assert_eq!(s.vote().wiki_share, 0.0);
 }

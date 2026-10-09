@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use mdroots_resolve::dialect::{RootConventions, detect};
+use mdroots_resolve::dialect::{RootConventions, Vote, VoteResult, detect};
 use mdroots_resolve::env::ResolveEnv;
 use mdroots_resolve::keys::{KeyKind, KeyLookup, doc_keys};
 use mdroots_resolve::ladder::{LinkStatus, Resolution, ResolveCtx, resolve};
@@ -109,6 +109,7 @@ struct Caches {
     /// [`DiagnosticPolicy::for_store`], indexed by the `lazy` flag.
     policy: [OnceLock<DiagnosticPolicy>; 2],
     backlinks: OnceLock<Backlinks>,
+    vote: OnceLock<VoteResult>,
 }
 
 pub struct MemStore {
@@ -354,6 +355,32 @@ impl MemStore {
                 Some((from.clone(), l.clone()))
             })
             .collect()
+    }
+
+    /// The root's convention [`Vote`] over the current notes (overlays
+    /// win; a lazy working set votes over what it holds): every note's
+    /// headings and tags, and its links in referencing contexts that are not
+    /// External (the [`DiagnosticPolicy::for_store`] filter), with the
+    /// ladder step that resolved them. Computed on first use and kept until
+    /// the next content change.
+    pub fn vote(&self) -> VoteResult {
+        self.caches
+            .vote
+            .get_or_init(|| {
+                let mut vote = Vote::new();
+                for (rel, e) in &self.entries {
+                    let Some(p) = e.current() else { continue };
+                    vote.record_doc(&p.doc);
+                    for l in p.doc.links().filter(|l| counts(l)) {
+                        let r = self.resolve_link(rel, l, false);
+                        if r.status != LinkStatus::External {
+                            vote.record_link(l, r.step);
+                        }
+                    }
+                }
+                vote.result()
+            })
+            .clone()
     }
 
     fn build_backlinks(&self) -> Backlinks {
