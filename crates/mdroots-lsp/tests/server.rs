@@ -1270,7 +1270,7 @@ fn extract_note_creates_fills_then_links_without_writing() {
     let uri = v.uri("x.md");
     let new_uri = v.uri("big-idea.md");
     // Lines 2-4, the end at the last character (as a linewise selection
-    // arrives from Neovim).
+    // arrives from [Neovim](https://neovim.io)).
     let r = code_action(&mut c, &uri, range(2, 0, 4, 13), Some("refactor"));
     assert_eq!(
         r,
