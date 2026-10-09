@@ -1,5 +1,7 @@
 # mdroots
 
+[![CI](https://github.com/martintrojer/mdroots/actions/workflows/ci.yml/badge.svg)](https://github.com/martintrojer/mdroots/actions/workflows/ci.yml)
+
 A zero-config markdown (and org) language server and Rust library. It finds
 your notes, caches them in a per-root index, and understands the link styles
 of [zk](https://github.com/zk-org/zk), [Obsidian](https://obsidian.md), [marksman](https://github.com/artempyanykh/marksman), [Foam](https://foambubble.github.io/foam/), [Dendron](https://www.dendron.so), [Logseq](https://logseq.com), [org-mode](https://orgmode.org) and plain
