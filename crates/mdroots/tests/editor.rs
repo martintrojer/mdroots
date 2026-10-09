@@ -370,3 +370,49 @@ fn frontmatter_range_and_anchor_backlinks() {
     assert_eq!(b[0].from, p("/v/a.md"));
     assert!(ws.heading_backlinks(t, 3).unwrap().is_empty());
 }
+
+#[test]
+fn open_single_indexes_the_file_alone_without_discovery_or_cache() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().join("nb");
+    let cache = tmp.path().join("cache");
+    write(&base.join(".mdroots"), "");
+    write(
+        &base.join("a.md"),
+        "[[nowhere]] and [gone](gone.md) and [b](b.md)\n",
+    );
+    write(&base.join("b.md"), "b\n");
+    let opts = std_opts().index(IndexMode::Auto).cache_dir(cache.clone());
+    let ws = Workspace::open_single(&base.join("a.md"), opts.clone()).unwrap();
+    let canon = base.canonicalize().unwrap();
+    assert_eq!(ws.root().path, canon);
+    assert_eq!(ws.root().mode, mdroots::RootMode::SingleFile);
+    assert_eq!(ws.freshness(), mdroots::Freshness::Lazy);
+    assert_eq!(ws.files(), [canon.join("a.md")]);
+    // Lazy rules: the wiki link is only "not in the working set"; the
+    // markdown links are checked with a stat.
+    let codes: Vec<_> = ws
+        .diagnostics(&canon.join("a.md"), &Cancel::new())
+        .unwrap()
+        .iter()
+        .map(|d| d.code)
+        .collect();
+    assert_eq!(
+        codes,
+        [
+            mdroots::DiagCode::NotInWorkingSet,
+            mdroots::DiagCode::BrokenLink
+        ]
+    );
+    // No discovery, no cache dir, no DB.
+    assert!(!cache.exists());
+    // Nothing cached: Workspaces::get stays empty until for_path opens it.
+    let wss = Workspaces::new(std_opts());
+    assert!(wss.get(&base.join("a.md")).is_none());
+    let real = wss.for_path(&base.join("a.md")).unwrap();
+    assert_eq!(real.root().mode, mdroots::RootMode::Marker);
+    let got = wss
+        .get(&base.join("b.md"))
+        .expect("the marker root serves b.md");
+    assert_eq!(got.root().path, canon);
+}

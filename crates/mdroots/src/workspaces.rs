@@ -44,7 +44,7 @@ impl Workspaces {
     pub fn for_path(&self, file: &Path) -> Result<Workspace, Error> {
         let (fs, _) = self.opts.io()?;
         let file = fs.canonicalize(file)?;
-        if let Some(ws) = self.cached(&file) {
+        if let Some(ws) = self.lookup(&file) {
             return Ok(ws);
         }
         // Opened without the lock held: discovery and indexing are slow.
@@ -61,6 +61,15 @@ impl Workspaces {
         Ok(entry.ws)
     }
 
+    /// The cached workspace serving `file`, as [`for_path`](Self::for_path)
+    /// picks it, without opening one: never discovers or indexes. `None`
+    /// when no cached workspace serves it or it cannot be canonicalized.
+    pub fn get(&self, file: &Path) -> Option<Workspace> {
+        let (fs, _) = self.opts.io().ok()?;
+        let file = fs.canonicalize(file).ok()?;
+        self.lookup(&file)
+    }
+
     /// Every cached workspace, sorted by root path.
     pub fn all(&self) -> Vec<Workspace> {
         let mut v = self.lock().clone();
@@ -68,7 +77,7 @@ impl Workspaces {
         v.into_iter().map(|e| e.ws).collect()
     }
 
-    fn cached(&self, file: &Path) -> Option<Workspace> {
+    fn lookup(&self, file: &Path) -> Option<Workspace> {
         let cache = self.lock();
         cache
             .iter()

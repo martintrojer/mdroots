@@ -452,6 +452,54 @@ impl Workspace {
         Ok(ws)
     }
 
+    /// Index the existing file `path` alone, without discovery: no cache
+    /// dir, registry or discovery lock is touched, and nothing is cached.
+    /// The root is the file's directory, the mode
+    /// [`RootMode::SingleFile`], freshness [`Freshness::Lazy`]. Cheap enough
+    /// to serve a file at once while [`Workspace::open_for`] runs elsewhere.
+    pub fn open_single(path: &Path, opts: Options) -> Result<Workspace, Error> {
+        let (fs, probe) = opts.io()?;
+        opts.cancel.check()?;
+        let file = fs.canonicalize(path)?;
+        if !fs.stat(&file)?.is_file {
+            return Err(Error::new(
+                ErrorKind::Io,
+                format!("not a file: {}", file.display()),
+            ));
+        }
+        let parent = file.parent().map(Path::to_path_buf).unwrap_or_default();
+        let name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let store = MemStore::open_files(
+            fs.clone(),
+            parent,
+            vec![name.clone()],
+            std::slice::from_ref(&name),
+            &opts.cancel,
+        )?;
+        let info = RootInfo {
+            path: store.root().to_path_buf(),
+            mode: RootMode::SingleFile,
+            reason: "single-file: opened without discovery".to_owned(),
+            nested_roots: Vec::new(),
+        };
+        Ok(Workspace::new(Parts {
+            fs,
+            probe,
+            enumerator: opts.enumerator_or_default(),
+            root: info,
+            freshness: Freshness::Lazy,
+            single: true,
+            listing: Listing::Single,
+            opened: name,
+            index: None,
+            store,
+            watch: false,
+        }))
+    }
+
     /// Index the directory `root` as a root, without discovery. Always in
     /// memory (M4 caches discovered roots only).
     pub fn open_at(root: &Path, opts: Options) -> Result<Workspace, Error> {
