@@ -640,9 +640,9 @@ impl Workspace {
             .into_iter()
             .filter_map(|(from, l)| {
                 let doc = store.document(&from)?;
-                let (line, _) = doc
-                    .line_index()
-                    .line_col(l.range.start, PositionEncoding::Utf8);
+                let (line, _) =
+                    doc.line_index()
+                        .line_col(doc.source(), l.range.start, PositionEncoding::Utf8);
                 Some(Backlink {
                     from: self.abs(&from),
                     from_title: title(&from, doc),
@@ -699,7 +699,7 @@ impl Workspace {
         let doc = store
             .document(&rel)
             .ok_or_else(|| Error::new(ErrorKind::Unsupported, format!("{rel}: not indexed")))?;
-        Ok(doc.line_index().line_col(offset, enc))
+        Ok(doc.line_index().line_col(doc.source(), offset, enc))
     }
 
     /// Whether only the opened file belongs to this workspace.

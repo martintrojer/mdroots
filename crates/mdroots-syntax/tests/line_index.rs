@@ -38,7 +38,7 @@ fn single_line_offset_and_col_tables() {
     for &(line, ch, enc, byte) in cases {
         let idx = LineIndex::new(line);
         assert_eq!(
-            idx.offset(0, ch, enc),
+            idx.offset(line, 0, ch, enc),
             byte,
             "offset({line:?}, {ch}, {enc:?})"
         );
@@ -64,7 +64,7 @@ fn single_line_offset_and_col_tables() {
     for &(line, byte, enc, ch) in back {
         let idx = LineIndex::new(line);
         assert_eq!(
-            idx.line_col(byte, enc),
+            idx.line_col(line, byte, enc),
             (0, ch),
             "line_col({line:?}, {byte}, {enc:?})"
         );
@@ -75,31 +75,32 @@ fn single_line_offset_and_col_tables() {
 fn multi_line_with_crlf() {
     let src = "a😀\r\n日b\n\nlast";
     let idx = LineIndex::new(src);
-    assert_eq!(idx.offset(0, 3, Utf16), 5);
+    assert_eq!(idx.offset(src, 0, 3, Utf16), 5);
     // the trailing '\r' is part of line 0
-    assert_eq!(idx.offset(0, 4, Utf16), 6);
-    assert_eq!(idx.offset(0, 99, Utf16), 6);
-    assert_eq!(idx.offset(1, 1, Utf32), 10);
-    assert_eq!(idx.offset(2, 0, Utf8), 12);
-    assert_eq!(idx.offset(3, 2, Utf8), 15);
+    assert_eq!(idx.offset(src, 0, 4, Utf16), 6);
+    assert_eq!(idx.offset(src, 0, 99, Utf16), 6);
+    assert_eq!(idx.offset(src, 1, 1, Utf32), 10);
+    assert_eq!(idx.offset(src, 2, 0, Utf8), 12);
+    assert_eq!(idx.offset(src, 3, 2, Utf8), 15);
     // line past EOF
-    assert_eq!(idx.offset(9, 0, Utf8), src.len());
-    assert_eq!(idx.line_col(10, Utf32), (1, 1));
-    assert_eq!(idx.line_col(src.len(), Utf16), (3, 4));
-    assert_eq!(idx.line_col(src.len() + 5, Utf16), (3, 4));
-    assert_eq!(idx.line_col(3, Utf16), (0, 1)); // inside 😀
-    assert_eq!(idx.line_col(5, Utf8), (0, 5)); // the '\r'
-    assert_eq!(idx.line_col(6, Utf8), (0, 6)); // the '\n' ends line 0
-    assert_eq!(idx.line_col(7, Utf8), (1, 0));
+    assert_eq!(idx.offset(src, 9, 0, Utf8), src.len());
+    assert_eq!(idx.line_col(src, 10, Utf32), (1, 1));
+    assert_eq!(idx.line_col(src, src.len(), Utf16), (3, 4));
+    assert_eq!(idx.line_col(src, src.len() + 5, Utf16), (3, 4));
+    assert_eq!(idx.line_col(src, 3, Utf16), (0, 1)); // inside 😀
+    assert_eq!(idx.line_col(src, 5, Utf8), (0, 5)); // the '\r'
+    assert_eq!(idx.line_col(src, 6, Utf8), (0, 6)); // the '\n' ends line 0
+    assert_eq!(idx.line_col(src, 7, Utf8), (1, 0));
 }
 
 #[test]
 fn trailing_newline_opens_an_empty_line() {
-    let idx = LineIndex::new("a\n");
-    assert_eq!(idx.line_col(2, Utf16), (1, 0));
-    assert_eq!(idx.offset(1, 0, Utf16), 2);
-    assert_eq!(idx.offset(1, 5, Utf16), 2);
-    assert_eq!(idx.offset(2, 0, Utf16), 2);
+    let src = "a\n";
+    let idx = LineIndex::new(src);
+    assert_eq!(idx.line_col(src, 2, Utf16), (1, 0));
+    assert_eq!(idx.offset(src, 1, 0, Utf16), 2);
+    assert_eq!(idx.offset(src, 1, 5, Utf16), 2);
+    assert_eq!(idx.offset(src, 2, 0, Utf16), 2);
 }
 
 fn text() -> impl Strategy<Value = String> {
@@ -126,8 +127,8 @@ proptest! {
         bytes.push(src.len());
         let byte = bytes[pick.index(bytes.len())];
         for enc in [Utf8, Utf16, Utf32] {
-            let (line, col) = idx.line_col(byte, enc);
-            prop_assert_eq!(idx.offset(line, col, enc), byte, "{:?}", enc);
+            let (line, col) = idx.line_col(&src, byte, enc);
+            prop_assert_eq!(idx.offset(&src, line, col, enc), byte, "{:?}", enc);
         }
     }
 }

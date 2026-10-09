@@ -77,11 +77,12 @@ fn severity(s: Severity) -> DiagnosticSeverity {
     }
 }
 
-/// One LSP diagnostic; `index` is over the text the diagnostic was
-/// computed on, `root` resolves the root-relative related paths.
+/// One LSP diagnostic; `index` is over `text`, the text the diagnostic was
+/// computed on; `root` resolves the root-relative related paths.
 pub(crate) fn to_lsp(
     d: &Diagnostic,
     index: &LineIndex,
+    text: &str,
     enc: PositionEncoding,
     root: &Path,
 ) -> lsp_types::Diagnostic {
@@ -99,7 +100,7 @@ pub(crate) fn to_lsp(
         })
         .collect();
     lsp_types::Diagnostic {
-        range: position::range(index, d.range.clone(), enc),
+        range: position::range(index, text, d.range.clone(), enc),
         severity: Some(severity(d.severity)),
         code: Some(NumberOrString::String(code_name(d.code).to_owned())),
         source: Some("mdroots".to_owned()),

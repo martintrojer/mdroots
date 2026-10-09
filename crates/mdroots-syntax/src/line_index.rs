@@ -24,10 +24,11 @@ impl PositionEncoding {
     }
 }
 
-/// Precomputed line starts of one text.
+/// Precomputed line starts of one text. The text itself is not kept:
+/// [`line_col`](Self::line_col) and [`offset`](Self::offset) take it again,
+/// and it must be the text the index was built from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LineIndex {
-    text: String,
     /// Byte offset of the start of each line; `starts[0] == 0`.
     starts: Vec<usize>,
 }
@@ -37,35 +38,32 @@ impl LineIndex {
         let starts = std::iter::once(0)
             .chain(text.match_indices('\n').map(|(i, _)| i + 1))
             .collect();
-        LineIndex {
-            text: text.to_owned(),
-            starts,
-        }
+        LineIndex { starts }
     }
 
     /// Zero-based (line, column) of `offset`. The offset is clamped to the
     /// text length and rounded down to a char boundary.
-    pub fn line_col(&self, offset: usize, enc: PositionEncoding) -> (u32, u32) {
-        let b = floor_char_boundary(&self.text, offset);
+    pub fn line_col(&self, text: &str, offset: usize, enc: PositionEncoding) -> (u32, u32) {
+        let b = floor_char_boundary(text, offset);
         let line = self.starts.partition_point(|&s| s <= b) - 1;
         let start = self.starts[line];
-        let col = self.text[start..b].chars().map(|c| enc.width(c)).sum();
+        let col = text[start..b].chars().map(|c| enc.width(c)).sum();
         (line as u32, col)
     }
 
     /// Byte offset of (`line`, `col`). A column inside a code point rounds
     /// down to its start; past the end of the line clamps to the line end
     /// (before its `'\n'`); a line past the end gives `text.len()`.
-    pub fn offset(&self, line: u32, col: u32, enc: PositionEncoding) -> usize {
+    pub fn offset(&self, text: &str, line: u32, col: u32, enc: PositionEncoding) -> usize {
         let Some(&start) = self.starts.get(line as usize) else {
-            return self.text.len();
+            return text.len();
         };
         let end = self
             .starts
             .get(line as usize + 1)
-            .map_or(self.text.len(), |&next| next - 1);
+            .map_or(text.len(), |&next| next - 1);
         let mut units = 0u32;
-        for (i, c) in self.text[start..end].char_indices() {
+        for (i, c) in text[start..end].char_indices() {
             let next = units + enc.width(c);
             if next > col {
                 return start + i;

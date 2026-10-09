@@ -22,21 +22,32 @@ pub(crate) fn kind(enc: PositionEncoding) -> PositionEncodingKind {
     }
 }
 
-pub(crate) fn position(index: &LineIndex, offset: usize, enc: PositionEncoding) -> Position {
-    let (line, character) = index.line_col(offset, enc);
+/// `index` is over `text`.
+pub(crate) fn position(
+    index: &LineIndex,
+    text: &str,
+    offset: usize,
+    enc: PositionEncoding,
+) -> Position {
+    let (line, character) = index.line_col(text, offset, enc);
     Position { line, character }
 }
 
-pub(crate) fn range(index: &LineIndex, r: Range<usize>, enc: PositionEncoding) -> lsp_types::Range {
+pub(crate) fn range(
+    index: &LineIndex,
+    text: &str,
+    r: Range<usize>,
+    enc: PositionEncoding,
+) -> lsp_types::Range {
     lsp_types::Range {
-        start: position(index, r.start, enc),
-        end: position(index, r.end, enc),
+        start: position(index, text, r.start, enc),
+        end: position(index, text, r.end, enc),
     }
 }
 
 /// Byte offset of `pos`; used by the request handlers that take a position.
-pub(crate) fn offset(index: &LineIndex, pos: Position, enc: PositionEncoding) -> usize {
-    index.offset(pos.line, pos.character, enc)
+pub(crate) fn offset(index: &LineIndex, text: &str, pos: Position, enc: PositionEncoding) -> usize {
+    index.offset(text, pos.line, pos.character, enc)
 }
 
 #[cfg(test)]
@@ -59,9 +70,9 @@ mod tests {
         let idx = LineIndex::new(text);
         let x = text.find('x').unwrap();
         for (enc, col) in [(PositionEncoding::Utf8, 6), (PositionEncoding::Utf16, 3)] {
-            let p = position(&idx, x, enc);
+            let p = position(&idx, text, x, enc);
             assert_eq!((p.line, p.character), (1, col), "{enc:?}");
-            assert_eq!(offset(&idx, p, enc), x, "{enc:?}");
+            assert_eq!(offset(&idx, text, p, enc), x, "{enc:?}");
         }
     }
 }

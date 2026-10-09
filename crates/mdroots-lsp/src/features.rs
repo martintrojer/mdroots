@@ -63,19 +63,20 @@ impl<'a> Ctx<'a> {
     }
 
     pub(crate) fn offset(&self, pos: Position) -> usize {
-        position::offset(&self.index, pos, self.enc)
+        position::offset(&self.index, &self.text, pos, self.enc)
     }
 
     fn range(&self, r: Range<usize>) -> lsp_types::Range {
-        position::range(&self.index, r, self.enc)
+        position::range(&self.index, &self.text, r, self.enc)
     }
 }
 
-/// Line indexes of the files locations point into, read once each.
+/// Texts and line indexes of the files locations point into, read once
+/// each.
 struct Texts<'a> {
     ws: &'a Workspace,
     enc: PositionEncoding,
-    seen: HashMap<PathBuf, Option<LineIndex>>,
+    seen: HashMap<PathBuf, Option<(String, LineIndex)>>,
 }
 
 impl<'a> Texts<'a> {
@@ -91,12 +92,14 @@ impl<'a> Texts<'a> {
     /// indexed note.
     fn range(&mut self, path: &Path, r: Range<usize>) -> lsp_types::Range {
         let ws = self.ws;
-        let idx = self
-            .seen
-            .entry(path.to_path_buf())
-            .or_insert_with(|| ws.text(path).ok().map(|t| LineIndex::new(&t)));
+        let idx = self.seen.entry(path.to_path_buf()).or_insert_with(|| {
+            ws.text(path).ok().map(|t| {
+                let i = LineIndex::new(&t);
+                (t, i)
+            })
+        });
         match idx {
-            Some(i) => position::range(i, r, self.enc),
+            Some((t, i)) => position::range(i, t, r, self.enc),
             None => lsp_types::Range::default(),
         }
     }

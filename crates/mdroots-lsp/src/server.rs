@@ -608,7 +608,7 @@ impl Server {
             .setting
             .apply(diags)
             .iter()
-            .map(|d| diagnostics::to_lsp(d, &index, self.enc, &root))
+            .map(|d| diagnostics::to_lsp(d, &index, &doc.text, self.enc, &root))
             .collect();
         let (uri, version) = (doc.uri.clone(), doc.version);
         self.send_diagnostics(uri, out, Some(version));
