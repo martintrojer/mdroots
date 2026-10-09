@@ -12,7 +12,7 @@ use mdroots_syntax::{Context, Document, Link, LinkKind};
 
 use crate::workspace::{Workspace, is_note};
 
-/// Edits to apply before renaming a file.
+/// File changes for an editor to apply: create, then edit, then rename.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WorkspaceEdit {
@@ -20,6 +20,9 @@ pub struct WorkspaceEdit {
     pub edits: Vec<(PathBuf, Vec<TextEdit>)>,
     /// The file rename to perform after the edits: `(old, new)`.
     pub rename: Option<(PathBuf, PathBuf)>,
+    /// Files to create (absolute, not existing) with their content, before
+    /// the edits.
+    pub create: Vec<(PathBuf, String)>,
 }
 
 /// Replace the bytes `range` of the file's current text with `new_text`.
@@ -65,6 +68,7 @@ impl Workspace {
         let mut out = WorkspaceEdit {
             edits: Vec::new(),
             rename: Some((old_abs.clone(), new_abs.clone())),
+            create: Vec::new(),
         };
         let moved_dir = parent(&old_rel) != parent(&new_rel);
         let new_stem = stem(&new_rel).to_lowercase();

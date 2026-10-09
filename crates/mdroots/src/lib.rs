@@ -11,6 +11,7 @@
 //! [`FileSystem`]); a path outside the root is an `Unsupported` error.
 #![forbid(unsafe_code)]
 
+mod extract;
 mod goto;
 mod indexing;
 mod links;
