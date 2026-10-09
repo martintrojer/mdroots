@@ -13,7 +13,7 @@ keywords = ["markdown", "notes", "links", "zettelkasten"]
 categories = ["text-processing"]
 
 [dependencies]
-mdroots-syntax = { path = "../mdroots-syntax", version = "=0.2.2" }
+mdroots-syntax = { path = "../mdroots-syntax", version = "=0.2.3" }
 serde_json = "1"
 toml = { version = "1", default-features = false, features = ["parse", "serde"] }
 unicode-normalization = "0.1"

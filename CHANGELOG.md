@@ -4,7 +4,7 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
-## Unreleased
+## 0.2.3
 
 - `Workspace::notes_with_tag(tag)`: the notes carrying a tag, compared
   case-insensitively (`#Rust` and `tags: [rust]` both match `rust`), sorted
@@ -13,6 +13,7 @@ on are internal and pinned to the exact version.
   that exists only as an editor overlay. `NoteSummary` is `#[non_exhaustive]`,
   so code outside the crate cannot build it with a struct literal and is not
   broken by the new field.
+- CI: the gate runs on GitHub Actions for Linux and macOS, plus the MSRV.
 
 ## 0.2.2
 

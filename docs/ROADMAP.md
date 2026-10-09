@@ -5,7 +5,7 @@ questions still open. Specs describe what exists; [DECISIONS.md](DECISIONS.md)
 holds the decisions in force. An item leaves this file when it becomes code
 plus a spec change, or a decision.
 
-Status: 0.2.2. Milestones M1–M7 are built: parsing and resolution, root
+Status: 0.2.3. Milestones M1–M7 are built: parsing and resolution, root
 discovery, the `mdroots` facade and CLI, the per-root
 [SQLite](https://sqlite.org) cache, the language server, the file watcher,
 full-text search, cache GC, folding, code lenses, extract-note and a

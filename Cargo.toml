@@ -19,7 +19,7 @@ license = "MIT"
 authors = ["Martin Trojer <martin.trojer@gmail.com>"]
 repository = "https://github.com/martintrojer/mdroots"
 homepage = "https://github.com/martintrojer/mdroots"
-version = "0.2.2"
+version = "0.2.3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
