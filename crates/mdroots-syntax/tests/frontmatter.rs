@@ -566,3 +566,9 @@ fn map_list_items_are_placeholders() {
     let doc = md("---\ntags:\n- - b\n  - c\n- d\n---\n");
     assert_eq!(fm(&doc).tags(), ["b, c", "d"]);
 }
+
+#[test]
+fn block_scalar_list_items_are_their_text() {
+    let src = "---\nl:\n  - |\n    a: b\n  - c\n---\n\nbody\n";
+    assert_eq!(entries_of(src), [("l".into(), list(&["a: b", "c"]))]);
+}
