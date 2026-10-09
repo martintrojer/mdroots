@@ -300,6 +300,131 @@ impl SqliteRegistry {
     }
 }
 
+/// How often [`SqliteRegistry::touch`] re-stamps a root's `last_seen_ms`.
+const TOUCH_EVERY_MS: u64 = 3_600_000;
+
+/// How often GC runs per cache dir (docs/specs/roots.md §6).
+pub(crate) const GC_EVERY_MS: u64 = 24 * 3_600_000;
+
+/// What GC needs of one registry row.
+#[derive(Debug, Clone)]
+pub(crate) struct GcRow {
+    pub(crate) root_id: String,
+    pub(crate) path: PathBuf,
+    pub(crate) last_seen_ms: u64,
+    pub(crate) db_file: Option<String>,
+}
+
+impl SqliteRegistry {
+    /// Stamp `last_seen_ms` of `root_id` with `now_ms`, unless it was
+    /// stamped less than an hour before; a missing row is left alone.
+    pub fn touch(&mut self, root_id: &str, now_ms: u64) {
+        let res = (|| {
+            let seen: Option<i64> = self
+                .conn
+                .query_row(
+                    "SELECT last_seen_ms FROM roots WHERE root_id = ?1",
+                    [root_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(seen) = seen else {
+                return Ok(());
+            };
+            if now_ms.saturating_sub(seen as u64) < TOUCH_EVERY_MS {
+                return Ok(());
+            }
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            tx.execute(
+                "UPDATE roots SET last_seen_ms = ?2 WHERE root_id = ?1",
+                params![root_id, now_ms as i64],
+            )?;
+            tx.commit()
+        })();
+        // Errors are ignored: a missed stamp only makes GC see the root as
+        // older than it is, and the next open stamps it again.
+        let _: rusqlite::Result<()> = res;
+    }
+
+    /// Delete the row of `root_id`; a missing row is fine.
+    pub fn remove(&mut self, root_id: &str) {
+        let res = (|| {
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            tx.execute("DELETE FROM roots WHERE root_id = ?1", [root_id])?;
+            tx.commit()
+        })();
+        // Errors are ignored, as for every registry write.
+        let _ = res;
+    }
+
+    /// Whether GC is due: `meta.gc_at` is unset, unreadable, or at least
+    /// 24 h before `now_ms`. A plain read, cheap enough for every open.
+    pub fn gc_due(&self, now_ms: u64) -> bool {
+        self.gc_at()
+            .is_none_or(|at| now_ms.saturating_sub(at) >= GC_EVERY_MS)
+    }
+
+    fn gc_at(&self) -> Option<u64> {
+        self.conn
+            .query_row("SELECT value FROM meta WHERE key = 'gc_at'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .ok()?
+            .parse()
+            .ok()
+    }
+
+    /// Claim this GC run: in one `BEGIN IMMEDIATE` transaction, check that
+    /// GC is due (unless `force`) and set `meta.gc_at` to `now_ms`. Of
+    /// several processes, only the first gets `true`.
+    pub(crate) fn claim_gc(&mut self, now_ms: u64, force: bool) -> Result<bool, Error> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sql_err)?;
+        let at: Option<String> = tx
+            .query_row("SELECT value FROM meta WHERE key = 'gc_at'", [], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(sql_err)?;
+        let at = at.and_then(|v| v.parse::<u64>().ok());
+        if !force && at.is_some_and(|at| now_ms.saturating_sub(at) < GC_EVERY_MS) {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES ('gc_at', ?1)",
+            [now_ms.to_string()],
+        )
+        .map_err(sql_err)?;
+        tx.commit().map_err(sql_err)?;
+        Ok(true)
+    }
+
+    /// Every row's id, path, `last_seen_ms` and `db_file`, by `root_id`.
+    pub(crate) fn gc_rows(&self) -> Result<Vec<GcRow>, Error> {
+        let mut st = self
+            .conn
+            .prepare("SELECT root_id, path, last_seen_ms, db_file FROM roots ORDER BY root_id")
+            .map_err(sql_err)?;
+        let rows = st
+            .query_map([], |r| {
+                Ok(GcRow {
+                    root_id: r.get(0)?,
+                    path: PathBuf::from(r.get::<_, String>(1)?),
+                    last_seen_ms: r.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
+                    db_file: r.get(3)?,
+                })
+            })
+            .map_err(sql_err)?;
+        rows.collect::<Result<_, _>>().map_err(sql_err)
+    }
+}
+
 impl Registry for SqliteRegistry {
     fn lookup(&self, path: &Path) -> Option<RootRecord> {
         all_rows(&self.conn)

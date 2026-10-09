@@ -102,7 +102,7 @@ pub(crate) fn sql_err(e: rusqlite::Error) -> Error {
 
 /// 16 hex digits, different per DB creation: std's per-process random hash
 /// keys over the time and pid.
-fn new_generation() -> String {
+pub(crate) fn new_generation() -> String {
     let mut h = RandomState::new().build_hasher();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -126,10 +126,55 @@ impl IndexDb {
     ///
     /// A DB of another schema version is [`ErrorKind::Corrupt`].
     pub fn open(path: &Path) -> Result<IndexDb, Error> {
+        IndexDb::open_with_generation(path, &new_generation())
+    }
+
+    /// [`IndexDb::open`], with `generation` as `meta.generation` if the DB
+    /// is created now (an existing DB keeps its own).
+    pub fn open_with_generation(path: &Path, generation: &str) -> Result<IndexDb, Error> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             crate::create_private_dir(parent)?;
         }
-        let mut conn = Connection::open(path).map_err(sql_err)?;
+        let conn = Connection::open(path).map_err(sql_err)?;
+        IndexDb::init(conn, generation)
+    }
+
+    /// An empty DB in memory, never shared: the stand-in a peer serves from
+    /// while the root's DB file is corrupt and not yet rebuilt.
+    pub fn open_in_memory() -> Result<IndexDb, Error> {
+        let conn = Connection::open_in_memory().map_err(sql_err)?;
+        IndexDb::init(conn, &new_generation())
+    }
+
+    /// Build a new generation file for a corrupt DB: `<dir>/<stem>-<gen8>.db`
+    /// where `gen8` is the first 8 hex digits of its new `meta.generation`.
+    /// Returns the DB and its file name. The old file is left alone (it may
+    /// still be open elsewhere); GC deletes it once nobody holds the root.
+    pub fn open_new_generation(dir: &Path, stem: &str) -> Result<(IndexDb, String), Error> {
+        let generation = new_generation();
+        let name = format!("{stem}-{}.db", &generation[..8]);
+        let db = IndexDb::open_with_generation(&dir.join(&name), &generation)?;
+        Ok((db, name))
+    }
+
+    /// `PRAGMA quick_check`; anything but `ok` is [`ErrorKind::Corrupt`].
+    pub fn quick_check(&self) -> Result<(), Error> {
+        let mut st = self.conn.prepare("PRAGMA quick_check").map_err(sql_err)?;
+        let lines = st
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(sql_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_err)?;
+        match lines.as_slice() {
+            [ok] if ok == "ok" => Ok(()),
+            _ => Err(Error::new(
+                ErrorKind::Corrupt,
+                format!("quick_check: {}", lines.join("; ")),
+            )),
+        }
+    }
+
+    fn init(mut conn: Connection, generation: &str) -> Result<IndexDb, Error> {
         conn.busy_timeout(Duration::from_secs(2)).map_err(sql_err)?;
         conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get::<_, String>(0))
             .map_err(sql_err)?;
@@ -141,7 +186,7 @@ impl IndexDb {
         tx.execute_batch(SCHEMA_SQL).map_err(sql_err)?;
         tx.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema', ?1), ('generation', ?2)",
-            params![SCHEMA.to_string(), new_generation()],
+            params![SCHEMA.to_string(), generation],
         )
         .map_err(sql_err)?;
         let schema: Option<String> = tx

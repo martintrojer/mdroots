@@ -2,17 +2,20 @@
 //! D4, D5). [`cache`] picks the cache dir, [`lock`] elects the one writer per
 //! root, [`db`] is the per-root [SQLite](https://sqlite.org) DB,
 //! [`reconcile`] brings its rows up to date with the files on disk and
-//! [`registry`] is the persistent root registry.
+//! [`registry`] is the persistent root registry; [`gc`] deletes DB files
+//! nobody needs.
 #![forbid(unsafe_code)]
 
 pub mod cache;
 pub mod db;
+pub mod gc;
 pub mod lock;
 pub mod reconcile;
 pub mod registry;
 
 pub use cache::{CacheDir, CacheEnv, cache_dir};
 pub use db::{Change, FileRow, IndexDb, SCHEMA};
+pub use gc::{GcOptions, GcReport, gc};
 pub use lock::{Role, RootLocks};
 pub use reconcile::{ReconcileStats, reconcile};
 pub use registry::SqliteRegistry;
