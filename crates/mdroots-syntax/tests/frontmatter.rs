@@ -514,3 +514,26 @@ fn quoted_toml_table_key_keeps_its_dot() {
     let links: Vec<_> = doc.links().map(|l| &src[l.range.clone()]).collect();
     assert_eq!(links, ["x.md"]);
 }
+
+/// The entries of the frontmatter `parse_bytes` reads from `src`.
+fn entries_of(src: &str) -> Vec<(String, Value)> {
+    let doc = mdroots_syntax::parse_bytes(
+        src.as_bytes(),
+        &mdroots_syntax::ParseOptions::new(Dialect::Markdown),
+    )
+    .expect("text");
+    fm(&doc).entries().to_vec()
+}
+
+#[test]
+fn block_scalars_are_one_line_of_text() {
+    let src = "---\ndesc: |\n  a: b\n  c\nlist: >\n  - a\n  - b\nz: 1\n---\n\nbody\n";
+    assert_eq!(
+        entries_of(src),
+        [
+            ("desc".into(), str_("a: b c")),
+            ("list".into(), str_("- a - b")),
+            ("z".into(), str_("1")),
+        ]
+    );
+}

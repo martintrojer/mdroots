@@ -797,7 +797,15 @@ fn parse_at(src: &str, kind: FmKind, depth: usize) -> Parsed {
         }
     };
     let (entries, error) = match real {
-        Ok(real) => (combine(real, scanned, src, kind), None),
+        Ok(real) => (
+            combine(
+                real.into_iter().map(|(k, v)| (k, one_line(v))).collect(),
+                scanned,
+                src,
+                kind,
+            ),
+            None,
+        ),
         Err(e) => (scanned, Some(e)),
     };
     let parsed = !entries.is_empty() || src.trim().is_empty();
@@ -884,6 +892,31 @@ fn combine(
             }
         })
         .collect()
+}
+
+/// Parser text on one line: line breaks and other control characters
+/// become spaces, runs of whitespace one space, ends trimmed (map
+/// children too).
+fn one_line(v: FmValue) -> FmValue {
+    let flat = |t: String| {
+        t.split(|c: char| c.is_whitespace() || c.is_control())
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    match v {
+        FmValue::Scalar(t) => FmValue::Scalar(flat(t)),
+        FmValue::List(items) => FmValue::List(items.into_iter().map(flat).collect()),
+        FmValue::Map(children) => FmValue::Map(
+            children
+                .into_iter()
+                .map(|mut c| {
+                    c.value = one_line(c.value);
+                    c
+                })
+                .collect(),
+        ),
+    }
 }
 
 /// An unquoted YAML key as the parser reads it (`1.10` -> `1.1`, `~` ->
@@ -1010,12 +1043,16 @@ struct Building {
     parts: Vec<String>,
     items: Vec<String>,
     map: bool,
+    /// After a `|` / `>` header: every more-indented line is text.
+    block: bool,
     src: Range<usize>,
 }
 
 impl Building {
     fn finish(self) -> FmEntry {
-        let value = if self.map {
+        let value = if self.block {
+            FmValue::Scalar(self.parts.join(" "))
+        } else if self.map {
             FmValue::Map(Vec::new())
         } else if !self.items.is_empty() {
             FmValue::List(self.items)
@@ -1064,16 +1101,20 @@ fn scan(src: &str) -> Vec<FmEntry> {
     let quoted = quoted_continuations(&lines, base);
     let mut out = Vec::new();
     let mut cur: Option<Building> = None;
-    let start = |at: usize, t: &str, (k, v): (String, String)| Building {
-        key: k,
-        parts: if v.is_empty() || is_block_indicator(&v) {
-            Vec::new()
-        } else {
-            vec![v]
-        },
-        items: Vec::new(),
-        map: false,
-        src: at..at + t.len(),
+    let start = |at: usize, t: &str, (k, v): (String, String)| {
+        let block = is_block_indicator(&v);
+        Building {
+            key: k,
+            parts: if v.is_empty() || block {
+                Vec::new()
+            } else {
+                vec![v]
+            },
+            items: Vec::new(),
+            map: false,
+            block,
+            src: at..at + t.len(),
+        }
     };
     for (n, &(at, line)) in lines.iter().enumerate() {
         if quoted.contains(&n)
@@ -1105,7 +1146,9 @@ fn scan(src: &str) -> Vec<FmEntry> {
             continue;
         }
         let Some(c) = &mut cur else { continue };
-        if is_item(t) {
+        if c.block {
+            c.parts.push(t.to_string());
+        } else if is_item(t) {
             c.items.push(unquote(t[1..].trim()).to_string());
         } else if let Some(kv) = split_entry(t).filter(|_| !c.parts.is_empty() && !c.map) {
             // Bad indentation: a key under a scalar starts its own entry.
@@ -1780,6 +1823,63 @@ mod tests {
             ]
         );
         assert_eq!(map_keys(&fm.entries[2].value), Some(vec!["k"]));
+    }
+
+    #[test]
+    fn block_scalars_are_text_even_when_lines_look_like_keys_or_items() {
+        for h in ["|", ">", "|-", ">+"] {
+            let src = format!("desc: {h}\n  a: b\n  c\nlist: {h}\n  - a\n  - b\nz: 1\n");
+            let fm = parse(&src, FmKind::Yaml);
+            assert_eq!(
+                kv(&fm),
+                [("desc", s("a: b c")), ("list", s("- a - b")), ("z", s("1"))],
+                "{h}"
+            );
+            assert_eq!(
+                &src[fm.entries[0].src.clone()],
+                "desc: |\n  a: b\n  c".replace('|', h)
+            );
+            // Scan only (a tab elsewhere makes the YAML invalid).
+            let fm = parse(&format!("{src}\tbad\n"), FmKind::Yaml);
+            assert_eq!(
+                kv(&fm)[..2],
+                [("desc", s("a: b c")), ("list", s("- a - b"))],
+                "{h}"
+            );
+        }
+        // Text that looks like a flow list or map, or is quoted, stays text.
+        let fm = parse(
+            "a: |\n  [x, y]\nb: >\n  {k: v}\nc: |\n  \"q\"\nd: [\n",
+            FmKind::Yaml,
+        );
+        assert_eq!(
+            kv(&fm),
+            [
+                ("a", s("[x, y]")),
+                ("b", s("{k: v}")),
+                ("c", s("\"q\"")),
+                ("d", s("["))
+            ]
+        );
+    }
+
+    #[test]
+    fn parser_scalar_text_never_has_line_breaks() {
+        // The parser's text is used when the scan can't place the key.
+        let fm = parse("{a: \"x\\ny\", b: 1}\n", FmKind::Yaml);
+        assert_eq!(kv(&fm), [("a", s("x y")), ("b", s("1"))]);
+        let fm = parse("a.b = \"x\\ny\"\n[t]\nk = \"p\\tq\"\n", FmKind::Toml);
+        assert_eq!(map_keys(&fm.entries[0].value), Some(vec!["b"]));
+        let FmValue::Map(a) = &fm.entries[0].value else {
+            unreachable!()
+        };
+        assert_eq!(a[0].value, s("x y"));
+        let FmValue::Map(t) = &fm.entries[1].value else {
+            unreachable!()
+        };
+        assert_eq!(t[0].value, s("p q"));
+        let fm = parse("x = \"\"\"\nl1\nl2\n\"\"\"\ny.z = 1\n", FmKind::Toml);
+        assert_eq!(kv(&fm)[0], ("x", s("l1 l2")));
     }
 
     #[test]
