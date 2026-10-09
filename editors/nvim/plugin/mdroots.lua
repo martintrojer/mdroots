@@ -68,14 +68,13 @@ vim.api.nvim_create_autocmd('LspAttach', {
       vim.lsp.completion.enable(true, client.id, buf, { autotrigger = true })
     end
 
-    -- "N references" lenses above headings, once the server offers code
-    -- lenses (not yet).
+    -- "N backlinks" lens above the note's title and "N links" lenses above
+    -- headings other notes link to by anchor.
     if client:supports_method('textDocument/codeLens') then
       vim.lsp.codelens.enable(true, { bufnr = buf })
     end
 
-    -- Fold by heading sections, once the server offers folding ranges (not
-    -- yet).
+    -- Fold by heading sections and the frontmatter block.
     if client:supports_method('textDocument/foldingRange') then
       local win = vim.api.nvim_get_current_win()
       vim.wo[win][0].foldmethod = 'expr'

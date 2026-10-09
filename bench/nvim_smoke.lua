@@ -211,7 +211,29 @@ vim.lsp.handlers['window/showMessage'] = show
 vim.notify = notify
 check(':MdrootsInfo shows root', info_ok, (msgs[1] or 'no message'):gsub('\n.*', ''))
 
--- 12. Rename (last): mdroots.renameFile on the scratch note. The server sends
+-- 12. Folding and code lenses: the loose note folds through the LSP, and
+--     vault A's gardening note gets a "6 backlinks" lens (from the README,
+--     composting, a journal week, both meeting notes and an org file).
+local fold_win = vim.api.nvim_get_current_win()
+local prev_buf = vim.api.nvim_win_get_buf(fold_win)
+vim.api.nvim_win_set_buf(fold_win, b)
+check('foldexpr set', vim.wo[fold_win].foldexpr == 'v:lua.vim.lsp.foldexpr()', vim.wo[fold_win].foldexpr)
+vim.cmd('edit ' .. vault_a .. '/reference/gardening.md')
+local g = vim.api.nvim_get_current_buf()
+vim.wait(5000, function() local cl = client_of(g); return cl ~= nil and cl.initialized end, 20)
+local lens_title
+vim.wait(5000, function()
+  for _, item in ipairs(vim.lsp.codelens.get({ bufnr = g })) do
+    local t = item.lens.command and item.lens.command.title or ''
+    if t:match('^%d+ backlinks?$') then lens_title = t; return true end
+  end
+  return false
+end, 50)
+check('codelens backlinks', lens_title == '6 backlinks', lens_title or 'none')
+vim.api.nvim_win_set_buf(fold_win, prev_buf)
+vim.api.nvim_buf_delete(g, {})
+
+-- 13. Rename (last): mdroots.renameFile on the scratch note. The server sends
 --     workspace/applyEdit; the client fixes linker.md and moves the file.
 vim.api.nvim_set_current_buf(b)
 local renamed = dir .. '/renamed-note.md'
