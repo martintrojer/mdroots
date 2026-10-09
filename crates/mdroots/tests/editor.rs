@@ -343,3 +343,30 @@ fn workspaces_single_file_serves_only_its_file() {
     assert!(wb.text(Path::new("/h/a.md")).is_err());
     assert_eq!(wss.all().len(), 2);
 }
+
+#[test]
+fn frontmatter_range_and_anchor_backlinks() {
+    let ws = open(
+        &[
+            ("/v/.mdroots", ""),
+            (
+                "/v/t.md",
+                "---\ntitle: T\n---\n# T\n\n## Set Up\n\n## Other {#oth}\n\n## Lonely\n\nSee [[#Lonely]].\n",
+            ),
+            (
+                "/v/a.md",
+                "[[t#Set Up]] [x](t.md#set-up) [[t#oth]] [[t#Set%20Up]] [[t]] [[t#nope]]\n",
+            ),
+        ],
+        "/v/t.md",
+    );
+    let t = Path::new("/v/t.md");
+    assert_eq!(ws.frontmatter_range(t).unwrap(), Some(0..16));
+    assert_eq!(ws.frontmatter_range(Path::new("/v/a.md")).unwrap(), None);
+    // Headings: 0 "T", 1 "Set Up", 2 "Other", 3 "Lonely" (self-links only).
+    assert_eq!(ws.anchor_backlinks(t).unwrap(), [(1, 3), (2, 1)]);
+    let b = ws.heading_backlinks(t, 2).unwrap();
+    assert_eq!(b.len(), 1);
+    assert_eq!(b[0].from, p("/v/a.md"));
+    assert!(ws.heading_backlinks(t, 3).unwrap().is_empty());
+}

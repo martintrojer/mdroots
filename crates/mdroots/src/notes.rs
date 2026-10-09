@@ -1,12 +1,15 @@
 //! Read-only note queries for editors: outline, fuzzy note search, preview
 //! and current text.
 
+use std::collections::BTreeMap;
+use std::ops::Range;
 use std::path::Path;
 
 use mdroots_core::{Error, ErrorKind};
 use mdroots_syntax::{Document, Heading, Value};
 
-use crate::workspace::{NoteSummary, Workspace, title};
+use crate::goto::heading_index;
+use crate::workspace::{Backlink, NoteSummary, Workspace, title};
 
 /// What a hover or picker shows for a note.
 #[non_exhaustive]
@@ -88,6 +91,60 @@ impl Workspace {
             frontmatter,
             excerpt,
         })
+    }
+
+    /// Byte range of the note's frontmatter block, from its opening
+    /// delimiter to the end of its closing one (overlay wins). `None` when
+    /// it has none or is not indexed.
+    pub fn frontmatter_range(&self, path: &Path) -> Result<Option<Range<usize>>, Error> {
+        let rel = self.rel(path)?;
+        let store = self.store();
+        Ok(store
+            .document(&rel)
+            .and_then(|d| d.frontmatter())
+            .map(|f| f.range.clone()))
+    }
+
+    /// For each heading of the note (by index in [`outline`](Self::outline))
+    /// that links from other notes name by anchor, the number of such
+    /// links; headings without any are left out. A link names the first
+    /// heading its anchor matches, as in [`goto`](Self::goto).
+    pub fn anchor_backlinks(&self, path: &Path) -> Result<Vec<(usize, usize)>, Error> {
+        let mut counts: BTreeMap<usize, usize> = BTreeMap::new();
+        for (i, _) in self.anchored(path)? {
+            *counts.entry(i).or_default() += 1;
+        }
+        Ok(counts.into_iter().collect())
+    }
+
+    /// The links from other notes naming heading `heading` (an index in
+    /// [`outline`](Self::outline)) by anchor, sorted by source path.
+    pub fn heading_backlinks(&self, path: &Path, heading: usize) -> Result<Vec<Backlink>, Error> {
+        Ok(self
+            .anchored(path)?
+            .into_iter()
+            .filter(|(i, _)| *i == heading)
+            .map(|(_, b)| b)
+            .collect())
+    }
+
+    /// Backlinks from other notes with an anchor naming a heading of the
+    /// note, with that heading's index.
+    fn anchored(&self, path: &Path) -> Result<Vec<(usize, Backlink)>, Error> {
+        let rel = self.rel(path)?;
+        let store = self.store();
+        let Some(doc) = store.document(&rel) else {
+            return Ok(Vec::new());
+        };
+        Ok(store
+            .backlinks(&rel)
+            .into_iter()
+            .filter(|(from, _)| *from != rel)
+            .filter_map(|(from, l)| {
+                let i = heading_index(doc, l.target.anchor.as_ref()?)?;
+                Some((i, self.backlink(&store, from, &l)?))
+            })
+            .collect())
     }
 
     /// The note's current text (the overlay wins). `Unsupported` for a note

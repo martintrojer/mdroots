@@ -14,7 +14,7 @@ use mdroots_roots::discover::{DiscoverOptions, Enumerator, discover};
 use mdroots_roots::probe::Probe;
 use mdroots_roots::registry::{DiscoverLock, Registry};
 use mdroots_roots::{MemRegistry, RootMode};
-use mdroots_syntax::{Context, Dialect, Document, LinkKind, PositionEncoding, parse};
+use mdroots_syntax::{Context, Dialect, Document, Link, LinkKind, PositionEncoding, parse};
 
 use crate::indexing::{self, CacheCtx, IndexState, Listing};
 use crate::watch;
@@ -874,20 +874,23 @@ impl Workspace {
         Ok(store
             .backlinks(&rel)
             .into_iter()
-            .filter_map(|(from, l)| {
-                let doc = store.document(&from)?;
-                let (line, _) =
-                    doc.line_index()
-                        .line_col(doc.source(), l.range.start, PositionEncoding::Utf8);
-                Some(Backlink {
-                    from: self.abs(&from),
-                    from_title: title(&from, doc),
-                    range: l.range,
-                    line,
-                    in_code: matches!(l.context, Context::CodeBlock | Context::InlineCode),
-                })
-            })
+            .filter_map(|(from, l)| self.backlink(&store, from, &l))
             .collect())
+    }
+
+    /// `l`, a link in `from` (root-relative), as a [`Backlink`].
+    pub(crate) fn backlink(&self, store: &MemStore, from: String, l: &Link) -> Option<Backlink> {
+        let doc = store.document(&from)?;
+        let (line, _) =
+            doc.line_index()
+                .line_col(doc.source(), l.range.start, PositionEncoding::Utf8);
+        Some(Backlink {
+            from: self.abs(&from),
+            from_title: title(&from, doc),
+            range: l.range.clone(),
+            line,
+            in_code: matches!(l.context, Context::CodeBlock | Context::InlineCode),
+        })
     }
 
     /// The note's diagnostics under the root's
