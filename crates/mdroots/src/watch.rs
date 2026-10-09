@@ -132,6 +132,14 @@ fn apply(ws: &Workspace, root: &Path, batch: Batch) {
         }
         return;
     }
+    // An event on the root itself (a backend may coalesce to the watched
+    // dir) says only "something changed here": re-list the whole root.
+    if batch.paths.iter().any(|p| p == root) {
+        if ws.refresh(&cancel).is_ok() {
+            ws.notify_subscribers(ws.files());
+        }
+        return;
+    }
     let mut paths: Vec<PathBuf> = batch
         .paths
         .into_iter()
@@ -236,11 +244,44 @@ mod tests {
         assert!(yes("/t/.tmp1/v/removed-dir"));
         assert!(yes("/t/.tmp1/v/new.org"));
         assert!(!yes("/t/.tmp1/v/x.txt"));
+        // The root itself is handled by `apply` (a full refresh), not here.
         assert!(!yes("/t/.tmp1/v"));
         assert!(!yes("/t/.tmp1/other/a.md"));
         assert!(!yes("/t/.tmp1/v/.git/HEAD"));
         assert!(!yes("/t/.tmp1/v/.hidden.md"));
         assert!(!yes("/t/.tmp1/v/node_modules/a.md"));
         assert!(!yes("/t/.tmp1/v/sub/target/a.md"));
+    }
+}
+
+#[cfg(test)]
+mod apply_tests {
+    use super::*;
+    use crate::{IndexMode, NoEnumerator, Options, StdFs, StdProbe};
+    use std::sync::Arc;
+
+    /// A batch holding only the root path (a coalesced backend event)
+    /// re-lists the root, so a note added at the top level appears.
+    #[test]
+    fn a_root_only_event_relists_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap().join("v");
+        std::fs::create_dir_all(root.join(".zk")).unwrap();
+        std::fs::write(root.join("a.md"), "# A\n").unwrap();
+        let opts = Options::default()
+            .fs(Arc::new(StdFs))
+            .probe(Arc::new(StdProbe))
+            .enumerator(Arc::new(NoEnumerator))
+            .index(IndexMode::Memory);
+        let ws = Workspace::open_for(&root.join("a.md"), opts).unwrap();
+        std::fs::write(root.join("b.md"), "# B\n").unwrap();
+        let rx = ws.subscribe();
+        let batch = Batch {
+            paths: vec![root.clone()],
+            rescan: false,
+        };
+        apply(&ws, &root, batch);
+        assert!(ws.files().contains(&root.join("b.md")), "{:?}", ws.files());
+        assert!(rx.try_recv().is_ok(), "subscribers notified");
     }
 }
