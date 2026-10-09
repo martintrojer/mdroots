@@ -4,7 +4,7 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
-## Unreleased
+## 0.2.4
 
 - `mdroots lsp` answers `textDocument/documentLink` (and advertises
   `documentLinkProvider`, no resolve): one link per link with a target

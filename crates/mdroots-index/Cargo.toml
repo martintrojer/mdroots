@@ -13,8 +13,8 @@ keywords = ["markdown", "notes", "sqlite", "cache"]
 categories = ["database", "caching"]
 
 [dependencies]
-mdroots-core = { path = "../mdroots-core", version = "=0.2.3" }
-mdroots-roots = { path = "../mdroots-roots", version = "=0.2.3" }
+mdroots-core = { path = "../mdroots-core", version = "=0.2.4" }
+mdroots-roots = { path = "../mdroots-roots", version = "=0.2.4" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(unix)'.dependencies]
