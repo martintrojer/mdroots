@@ -1677,3 +1677,77 @@ fn a_document_closed_during_the_open_gets_nothing_after_it() {
     );
     assert_eq!(pubs.count(), 0, "{seen:?}");
 }
+
+// ---- document links ----
+
+/// (range, target) of each document link.
+fn doc_links(v: &Value) -> Vec<(Value, String)> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|l| (l["range"].clone(), l["target"].as_str().unwrap().to_owned()))
+        .collect()
+}
+
+#[test]
+fn document_links_carry_ranges_and_target_uris() {
+    // Line 2: "é" is 2 bytes and 1 UTF-16 unit; line 3: "😀" is 4 bytes
+    // and 2 units. The broken link and the URL get no document link; the
+    // code mention's range is inside the backticks.
+    let text = "# Links\n\né [[b]] and [A](a#note-a).\n😀 [gone](missing-note) <https://example.com>\nSee `src/main.rs:12`.\n";
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = fs::canonicalize(tmp.path()).unwrap().join("proj");
+    fs::create_dir_all(proj.join("src")).unwrap();
+    fs::write(proj.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let file = |p: &Path| format!("file://{}", p.display());
+    for (caps, wiki, md) in [
+        (UTF8, range(2, 3, 2, 8), range(2, 13, 2, 26)),
+        ("{}", range(2, 2, 2, 7), range(2, 12, 2, 25)),
+    ] {
+        let v = Vault::corpus("zk-min");
+        v.write("links.md", text);
+        let mut c = Client::new();
+        c.spawn_with(
+            Options::default()
+                .index(IndexMode::Memory)
+                .code_dirs(vec![proj.clone()]),
+        );
+        c.initialize(serde_json::from_str(caps).unwrap());
+        let uri = v.uri("links.md");
+        c.open(&uri, text);
+        c.ready(&uri);
+        let r = ok(c.request(
+            "textDocument/documentLink",
+            json!({ "textDocument": { "uri": uri } }),
+        ));
+        assert_eq!(
+            doc_links(&r),
+            [
+                (wiki, v.uri("b.md")),
+                (md, format!("{}#note-a", v.uri("a.md"))),
+                (
+                    range(4, 5, 4, 19),
+                    format!("{}#L12", file(&proj.join("src/main.rs")))
+                ),
+            ],
+            "{caps}"
+        );
+        c.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn document_links_are_advertised_and_null_for_unknown_files() {
+    let mut c = Client::start();
+    let r = c.initialize(json!({}));
+    assert_eq!(
+        r["capabilities"]["documentLinkProvider"],
+        json!({ "resolveProvider": false })
+    );
+    let r = ok(c.request(
+        "textDocument/documentLink",
+        json!({ "textDocument": { "uri": "untitled:Untitled-1" } }),
+    ));
+    assert_eq!(r, Value::Null);
+    c.shutdown().unwrap();
+}

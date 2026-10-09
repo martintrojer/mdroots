@@ -57,8 +57,8 @@ Editor features of `mdroots lsp`: goto definition (links, anchors, code
 mentions), references and backlinks, hover previews, document and
 workspace symbols, completion of notes, headings, paths and tags, rename
 of a note with its links, diagnostics for broken links and anchors,
-folding ranges, code lenses, extract note, and live updates from a file
-watcher.
+folding ranges, code lenses, document links, extract note, and live
+updates from a file watcher.
 
 ```sh
 cargo run -p mdroots-cli -- check tests/corpus/zkvault    # path:line:col: severity: message

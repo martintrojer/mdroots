@@ -203,6 +203,12 @@ check('cross-file goto vault B', res_path ~= nil and vim.fn.filereadable(res_pat
   and vim.startswith(res_path, vim.fn.fnamemodify(vault_b, ':p')),
   res_path and vim.fn.fnamemodify(res_path, ':.') or 'unresolved')
 
+-- 10b. Document links on vault B's README: at least one, with a file:// target.
+local dl = c:request_sync('textDocument/documentLink', { textDocument = { uri = vim.uri_from_bufnr(b_b) } }, 3000, b_b)
+local dlinks = dl and dl.result or {}
+local dfile = vim.tbl_filter(function(l) return vim.startswith(l.target or '', 'file://') end, dlinks)
+check('documentLink vault B README', #dfile >= 1, #dfile .. ' of ' .. #dlinks .. ' with file:// targets')
+
 -- 11. :MdrootsInfo reports vault B's root via window/showMessage.
 local msgs = {}
 local show = vim.lsp.handlers['window/showMessage']

@@ -11,11 +11,12 @@ use lsp_types::{
     CompletionOptions, DidChangeConfigurationParams, DidChangeTextDocumentParams,
     DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-    ExecuteCommandOptions, ExecuteCommandParams, FileSystemWatcher, FoldingRangeProviderCapability,
-    GlobPattern, MessageType, NumberOrString, OneOf, Position, PositionEncodingKind,
-    PublishDiagnosticsParams, Registration, RegistrationParams, RenameOptions, SaveOptions,
-    ServerCapabilities, ShowMessageParams, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Uri, WorkDoneProgressOptions,
+    DocumentLinkOptions, ExecuteCommandOptions, ExecuteCommandParams, FileSystemWatcher,
+    FoldingRangeProviderCapability, GlobPattern, MessageType, NumberOrString, OneOf, Position,
+    PositionEncodingKind, PublishDiagnosticsParams, Registration, RegistrationParams,
+    RenameOptions, SaveOptions, ServerCapabilities, ShowMessageParams, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Uri,
+    WorkDoneProgressOptions,
 };
 use mdroots::syntax::{LineIndex, PositionEncoding};
 use mdroots::{Cancel, ErrorKind, Options, Workspace, Workspaces, names};
@@ -439,6 +440,12 @@ impl Server {
                 let uri = p.pointer("/textDocument/uri").and_then(Value::as_str);
                 self.with_doc(uri, cancel, |c| {
                     features::folding_ranges(c).map(|v| json!(v))
+                })
+            }
+            "textDocument/documentLink" => {
+                let uri = p.pointer("/textDocument/uri").and_then(Value::as_str);
+                self.with_doc(uri, cancel, |c| {
+                    features::document_links(c, cancel).map(|v| json!(v))
                 })
             }
             "textDocument/codeAction" => {
@@ -1079,6 +1086,10 @@ fn capabilities(enc: PositionEncoding) -> ServerCapabilities {
         })),
         code_lens_provider: Some(CodeLensOptions {
             resolve_provider: Some(false),
+        }),
+        document_link_provider: Some(DocumentLinkOptions {
+            resolve_provider: Some(false),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
         }),
         execute_command_provider: Some(ExecuteCommandOptions {
             commands: COMMANDS.map(str::to_owned).to_vec(),

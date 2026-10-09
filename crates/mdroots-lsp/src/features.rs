@@ -1,5 +1,5 @@
-//! The request handlers: goto, references, hover, symbols, completion,
-//! rename, folding ranges, code lenses and the extract-note code action
+//! The request handlers: goto, references, hover, symbols, document links,
+//! completion, rename, folding ranges, code lenses and the extract-note code action
 //! (docs/specs/library.md §3.6). Each works on one document's
 //! current text (the overlay wins) and returns LSP types; the server
 //! serializes them.
@@ -11,9 +11,10 @@ use std::path::{Component, Path, PathBuf};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeLens, Command, CompletionItem, CompletionItemKind,
     CompletionList, CompletionTextEdit, CreateFile, CreateFileOptions, DocumentChangeOperation,
-    DocumentChanges, DocumentSymbol, FoldingRange, FoldingRangeKind, Hover, HoverContents,
-    Location, MarkupContent, MarkupKind, OneOf, OptionalVersionedTextDocumentIdentifier, Position,
-    PrepareRenameResponse, RenameFile, ResourceOp, SymbolInformation, SymbolKind, TextDocumentEdit,
+    DocumentChanges, DocumentLink, DocumentSymbol, FoldingRange, FoldingRangeKind, Hover,
+    HoverContents, Location, MarkupContent, MarkupKind, OneOf,
+    OptionalVersionedTextDocumentIdentifier, Position, PrepareRenameResponse, RenameFile,
+    ResourceOp, SymbolInformation, SymbolKind, TextDocumentEdit,
 };
 use mdroots::syntax::{Heading, LineIndex, PositionEncoding};
 use mdroots::{Cancel, ErrorKind, LinkStatus, Workspace};
@@ -309,6 +310,34 @@ pub(crate) fn hover(c: &Ctx, pos: Position) -> Result<Option<Hover>, Fail> {
         }),
         range: Some(c.range(link.range)),
     }))
+}
+
+/// One link per link of the note with a target path (resolved,
+/// ambiguous: the best target, unindexed): its whole range, and the
+/// target's `file:` URI with `#anchor` as written, or `#L<line>` for a code
+/// mention with a line (the [VS Code](https://code.visualstudio.com)
+/// convention). Broken links (diagnostics report them) and external URLs
+/// have no target path, so no link.
+pub(crate) fn document_links(c: &Ctx, cancel: &Cancel) -> Result<Vec<DocumentLink>, Fail> {
+    let mut out = Vec::new();
+    for l in c.ws.document_links(&c.path)? {
+        cancel.check()?;
+        let Some(t) = &l.target else { continue };
+        let fragment = match l.line {
+            Some(n) => Some(format!("L{n}")),
+            None => l.anchor.clone(),
+        };
+        let Some(target) = uri::with_fragment(t, fragment.as_deref()) else {
+            continue;
+        };
+        out.push(DocumentLink {
+            range: c.range(l.range),
+            target: Some(target),
+            tooltip: None,
+            data: None,
+        });
+    }
+    Ok(out)
 }
 
 /// Headings nested by level; a heading's range runs to the next heading

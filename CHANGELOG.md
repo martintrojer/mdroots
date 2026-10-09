@@ -4,6 +4,15 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
+## Unreleased
+
+- `mdroots lsp` answers `textDocument/documentLink` (and advertises
+  `documentLinkProvider`, no resolve): one link per link with a target
+  path, covering the whole link, targeting the file's URI with `#anchor`
+  as written, or `#L<line>` for a code mention with a line. Broken links
+  and external URLs get none. For clients that take link targets from
+  document links rather than goto.
+
 ## 0.2.3
 
 - `Workspace::notes_with_tag(tag)`: the notes carrying a tag, compared
