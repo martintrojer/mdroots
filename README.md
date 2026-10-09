@@ -47,7 +47,7 @@ Obsidian config or voted from the notes), and a background open in
 discovered and indexed, with a progress notification for opens over a
 second.
 
-0.2.1 is on crates.io (`cargo install mdroots-cli`, `cargo add mdroots`).
+0.2.2 is on crates.io (`cargo install mdroots-cli`, `cargo add mdroots`).
 What is left (Linux CI, real-vault validation, known limitations, deferred
 work and open questions): [docs/ROADMAP.md](docs/ROADMAP.md).
 

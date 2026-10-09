@@ -4,7 +4,7 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
-## Unreleased
+## 0.2.2
 
 - `Frontmatter::fields()`: the top-level front matter entries as written,
   each with its byte range in the document and nested maps as a tree
