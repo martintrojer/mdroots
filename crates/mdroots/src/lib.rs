@@ -32,9 +32,9 @@ pub use mdroots_resolve::dialect::LinkStyle;
 pub use mdroots_resolve::{ResolveStep, ladder::LinkStatus};
 pub use mdroots_roots::RootMode;
 pub use mdroots_roots::discover::{Enumerator, NoEnumerator};
-pub use mdroots_roots::probe::Probe;
 #[cfg(unix)]
 pub use mdroots_roots::probe::StdProbe;
+pub use mdroots_roots::probe::{FsStat, MountInfo, Probe};
 pub use mdroots_syntax as syntax;
 
 pub use goto::Goto;

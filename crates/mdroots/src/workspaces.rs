@@ -70,6 +70,11 @@ impl Workspaces {
         self.lookup(&file)
     }
 
+    /// The options every workspace is opened with (sharing the cache).
+    pub fn options(&self) -> Options {
+        self.opts.clone()
+    }
+
     /// Every cached workspace, sorted by root path.
     pub fn all(&self) -> Vec<Workspace> {
         let mut v = self.lock().clone();
