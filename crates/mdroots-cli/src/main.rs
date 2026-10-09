@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mdroots::syntax::PositionEncoding;
 use mdroots::{Cancel, Diagnostic, Error, ErrorKind, Options, Role, Severity, Workspace, names};
@@ -81,10 +81,23 @@ fn run(args: &[String]) -> Result<Outcome, Error> {
             Some((query, path)) => search(&out, query, path),
             None => Ok(Outcome::Usage),
         },
-        ("__open", [path, flag, ms]) if flag == "--hold-ms" && !is_flag(path) => match ms.parse() {
-            Ok(ms) => open_and_hold(path, ms),
-            Err(_) => Ok(Outcome::Usage),
-        },
+        ("__open", [path, flag, ms, rest @ ..]) if flag == "--hold-ms" && !is_flag(path) => {
+            let every = match rest {
+                [] => Some(None),
+                [f, ms] if f == "--refresh-every" => ms.parse().ok().map(Some),
+                _ => None,
+            };
+            match (ms.parse(), every) {
+                (Ok(ms), Some(every)) => open_and_hold(path, ms, every),
+                _ => Ok(Outcome::Usage),
+            }
+        }
+        ("__gc", [flag, ms, force]) if flag == "--now-ms" && force == "--force" => {
+            match ms.parse() {
+                Ok(ms) => run_gc(ms),
+                Err(_) => Ok(Outcome::Usage),
+            }
+        }
         ("lsp", rest) => match lsp_args(rest) {
             Some(log) => lsp::run(log.map(String::as_str)),
             None => Ok(Outcome::Usage),
@@ -126,16 +139,64 @@ fn role_name(role: Option<Role>) -> &'static str {
     }
 }
 
-/// Hidden test command (`__open PATH --hold-ms N`): open the workspace of
-/// PATH, print its role and file count, then keep it (and its locks) open
-/// for N ms. The many-process tests run several at once.
-fn open_and_hold(path: &str, hold_ms: u64) -> Result<Outcome, Error> {
+/// Hidden test command (`__open PATH --hold-ms N [--refresh-every MS]`):
+/// open the workspace of PATH, print its role, file count and DB file, then
+/// keep it (and its locks) open for N ms, refreshing every MS ms and
+/// printing `files:` and `db:` again after each refresh. The many-process
+/// tests run several at once.
+fn open_and_hold(path: &str, hold_ms: u64, every: Option<u64>) -> Result<Outcome, Error> {
     let ws = Workspace::open_for(Path::new(path), options())?;
     println!("role: {}", role_name(ws.role()));
+    print_state(&ws);
+    let end = Instant::now() + Duration::from_millis(hold_ms);
+    let Some(every) = every.filter(|e| *e > 0) else {
+        std::thread::sleep(end.saturating_duration_since(Instant::now()));
+        return Ok(Outcome::Ok);
+    };
+    let cancel = Cancel::new();
+    loop {
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        std::thread::sleep(left.min(Duration::from_millis(every)));
+        ws.refresh(&cancel)?;
+        print_state(&ws);
+    }
+    Ok(Outcome::Ok)
+}
+
+fn print_state(ws: &Workspace) {
     println!("files: {}", ws.files().len());
+    match ws.cache() {
+        Some(db) => println!("db: {}", db.display()),
+        None => println!("db: memory"),
+    }
     let _ = std::io::stdout().flush();
-    std::thread::sleep(Duration::from_millis(hold_ms));
-    drop(ws);
+}
+
+/// Hidden test command (`__gc --now-ms N --force`): run cache GC on
+/// `MDROOTS_CACHE_DIR` (required, so it never touches the user's cache) as
+/// of N ms, ignoring the daily gate, and print `deleted: PATH` and
+/// `skipped: PATH` lines.
+fn run_gc(now_ms: u64) -> Result<Outcome, Error> {
+    let Some(dir) = std::env::var_os("MDROOTS_CACHE_DIR").filter(|d| !d.is_empty()) else {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "MDROOTS_CACHE_DIR is not set",
+        ));
+    };
+    let opts = mdroots::index::GcOptions {
+        force: true,
+        ..Default::default()
+    };
+    let report = mdroots::index::gc(Path::new(&dir), now_ms, opts)?.unwrap_or_default();
+    for p in &report.deleted {
+        println!("deleted: {}", p.display());
+    }
+    for p in &report.skipped_busy {
+        println!("skipped: {}", p.display());
+    }
     Ok(Outcome::Ok)
 }
 

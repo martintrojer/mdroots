@@ -1,19 +1,21 @@
-//! Many-process fixtures of docs/specs/roots.md §7 (12, 13, 16, 17, 18),
-//! adapted to M4 (no native watcher): real `mdroots` processes on a copy of
-//! tests/corpus/zk-min in a temp dir, with `MDROOTS_CACHE_DIR` (and `HOME`,
-//! `XDG_CACHE_HOME`) pointed into it, so the real cache dir is never used.
+//! Many-process fixtures of docs/specs/roots.md §7 (12–18): real `mdroots`
+//! processes on a copy of tests/corpus/zk-min in a temp dir, with
+//! `MDROOTS_CACHE_DIR` (and `HOME`, `XDG_CACHE_HOME`) pointed into it, so
+//! the real cache dir is never used.
 //!
-//! The hidden `mdroots __open PATH --hold-ms N` opens a workspace, prints
-//! `role: ...` and `files: N`, and keeps it open for N ms.
+//! The hidden `mdroots __open PATH --hold-ms N [--refresh-every MS]` opens
+//! a workspace, prints `role: ...`, `files: N` and `db: PATH`, keeps it
+//! open for N ms, and prints `files:` and `db:` again after each refresh.
+//! The hidden `mdroots __gc --now-ms N --force` runs cache GC and prints
+//! `deleted: PATH` / `skipped: PATH` lines.
 //!
-//! Not here, M6: 14 (GC with peers holding an aged DB), 15 (corruption
-//! rebuild under peers) and 19 (FSEvents replay / takeover diff after the
-//! reconciler dies) need GC, corruption handling and a native watcher.
+//! Not here: 19 (FSEvents replay / takeover diff after the reconciler
+//! dies) needs FSEvents replay, deferred.
 
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Lines};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, ChildStdout, Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 use tempfile::TempDir;
@@ -106,11 +108,11 @@ impl Opened {
     }
 }
 
-/// Read a held child's two lines (it then sleeps).
+/// Read a held child's three lines (it then sleeps).
 fn read_opened(child: &mut Child) -> Opened {
     let mut r = BufReader::new(child.stdout.take().unwrap());
     let mut s = String::new();
-    for _ in 0..2 {
+    for _ in 0..3 {
         assert!(r.read_line(&mut s).unwrap() > 0, "early EOF: {s:?}");
     }
     Opened::parse(&s)
@@ -249,4 +251,233 @@ fn fixture_18_stopped_then_killed_reconciler() {
     let third = env.open_now();
     assert_eq!(third.role, "reconciler");
     assert_eq!(third.files, peer.files);
+}
+
+const DAY_MS: u64 = 24 * 3_600_000;
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+/// A process refreshing every 100 ms: its stdout as `files:`/`db:` lines.
+struct Refresher {
+    child: Child,
+    lines: Lines<BufReader<ChildStdout>>,
+    role: String,
+    files: usize,
+    db: String,
+}
+
+impl Refresher {
+    fn spawn(env: &Env, hold_ms: u64) -> Refresher {
+        let note = env.note();
+        let mut child = env
+            .cmd(&[
+                "__open",
+                note.to_str().unwrap(),
+                "--hold-ms",
+                &hold_ms.to_string(),
+                "--refresh-every",
+                "100",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut next = || lines.next().expect("early EOF").unwrap();
+        let role = next().strip_prefix("role: ").unwrap().to_owned();
+        let files = next().strip_prefix("files: ").unwrap().parse().unwrap();
+        let db = next().strip_prefix("db: ").unwrap().to_owned();
+        Refresher {
+            child,
+            lines,
+            role,
+            files,
+            db,
+        }
+    }
+
+    /// The next refresh's file count and DB file.
+    fn next_refresh(&mut self) -> (usize, String) {
+        let mut next = || self.lines.next().expect("early EOF").unwrap();
+        let files = next().strip_prefix("files: ").unwrap().parse().unwrap();
+        let db = next().strip_prefix("db: ").unwrap().to_owned();
+        (files, db)
+    }
+
+    /// Wait for exit; it must succeed.
+    fn finish(mut self) {
+        // Drain stdout so the child never blocks on a full pipe.
+        for l in self.lines.by_ref() {
+            l.unwrap();
+        }
+        let out = self.child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{:?}\n{stderr}", out.status);
+    }
+}
+
+/// `__gc --now-ms N --force`: its deleted and skipped paths.
+fn run_gc(env: &Env, now_ms: u64) -> (Vec<String>, Vec<String>) {
+    let out = env
+        .cmd(&["__gc", "--now-ms", &now_ms.to_string(), "--force"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let pick = |k: &str| {
+        stdout
+            .lines()
+            .filter_map(|l| l.strip_prefix(k).map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    (pick("deleted: "), pick("skipped: "))
+}
+
+fn integrity_ok(db: &Path) {
+    let conn = rusqlite::Connection::open(db).unwrap();
+    let r: String = conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(r, "ok");
+}
+
+/// The registry's `db_file` for the single root.
+fn recorded_db(env: &Env) -> String {
+    let reg = rusqlite::Connection::open(env.cache().join("roots.v1.db")).unwrap();
+    reg.query_row("SELECT db_file FROM roots", [], |r| r.get(0))
+        .unwrap()
+}
+
+/// 14: forced GC while 3 processes hold an aged root open skips it, and
+/// they keep answering from an intact DB; once they exit, GC deletes it.
+#[test]
+fn fixture_14_gc_skips_an_aged_root_held_by_three_processes() {
+    let env = Env::new();
+    let first = env.open_now();
+    assert_eq!(first.role, "reconciler");
+    let mut held: Vec<Refresher> = (0..3).map(|_| Refresher::spawn(&env, HOLD_MS)).collect();
+    let db = PathBuf::from(&held[0].db);
+    assert!(held.iter().all(|h| h.db == held[0].db), "one DB file");
+    assert!(held.iter().all(|h| h.role != "memory"));
+    // Age the root: last seen at the epoch. The holders' refreshes stamp
+    // it again with the real time, so GC runs 40 days in the future.
+    let reg = rusqlite::Connection::open(env.cache().join("roots.v1.db")).unwrap();
+    reg.execute("UPDATE roots SET last_seen_ms = 1", [])
+        .unwrap();
+    let now = now_ms() + 40 * DAY_MS;
+
+    let (deleted, skipped) = run_gc(&env, now);
+    assert!(deleted.is_empty(), "{deleted:?}");
+    assert!(skipped.contains(&db.display().to_string()), "{skipped:?}");
+    for h in &mut held {
+        let (files, at) = h.next_refresh();
+        assert_eq!((files, at.as_str()), (first.files, db.to_str().unwrap()));
+    }
+    integrity_ok(&db);
+
+    for h in held {
+        h.finish();
+    }
+    reg.execute("UPDATE roots SET last_seen_ms = 1", [])
+        .unwrap();
+    let (deleted, skipped) = run_gc(&env, now);
+    assert!(skipped.is_empty(), "{skipped:?}");
+    assert!(deleted.contains(&db.display().to_string()), "{deleted:?}");
+    assert!(!db.exists());
+    let rows: i64 = reg
+        .query_row("SELECT COUNT(*) FROM roots", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 0, "the aged root's registry row goes with it");
+}
+
+/// 15: stop all processes, corrupt the DB, start 3 new ones: one rebuilds
+/// into a new generation file and all answer; the corrupt file stays while
+/// they run and is deleted by a GC after they exit.
+#[test]
+fn fixture_15_corrupt_db_is_rebuilt_under_three_processes() {
+    let env = Env::new();
+    let first: Vec<Child> = (0..3).map(|_| env.spawn_open(60_000)).collect();
+    let old = {
+        let mut c = env.spawn_open(0);
+        let o = read_opened_db(&mut c);
+        c.wait().unwrap();
+        o
+    };
+    for mut c in first {
+        c.kill().unwrap();
+        c.wait().unwrap();
+    }
+    {
+        let conn = rusqlite::Connection::open(&old).unwrap();
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+            .unwrap();
+    }
+    let mut bytes = fs::read(&old).unwrap();
+    bytes[..100].fill(0xa5);
+    fs::write(&old, bytes).unwrap();
+
+    let mut herd: Vec<Refresher> = (0..3).map(|_| Refresher::spawn(&env, HOLD_MS)).collect();
+    let reconcilers = herd.iter().filter(|h| h.role == "reconciler").count();
+    assert_eq!(
+        reconcilers,
+        1,
+        "{:?}",
+        herd.iter().map(|h| &h.role).collect::<Vec<_>>()
+    );
+    let rec = herd.iter().find(|h| h.role == "reconciler").unwrap();
+    let new = PathBuf::from(&rec.db);
+    let files = rec.files;
+    assert!(files > 0);
+    let stem = old.file_stem().unwrap().to_str().unwrap().to_owned();
+    let new_name = new.file_name().unwrap().to_str().unwrap().to_owned();
+    assert!(
+        new_name.starts_with(&format!("{stem}-")) && new_name.len() == stem.len() + 12,
+        "{new_name}"
+    );
+    // Every process answers; peers that opened before the rebuild was
+    // recorded reopen it on a refresh.
+    for h in &mut herd {
+        assert_eq!(h.files, files, "{}", h.role);
+        let start = Instant::now();
+        while Path::new(&h.db) != new {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "{} never reopened",
+                h.db
+            );
+            let (f, db) = h.next_refresh();
+            assert_eq!(f, files);
+            h.db = db;
+        }
+    }
+    assert_eq!(recorded_db(&env), new_name);
+    assert!(old.exists(), "never unlinked while open");
+    integrity_ok(&new);
+
+    for h in herd {
+        h.finish();
+    }
+    let (deleted, skipped) = run_gc(&env, now_ms());
+    assert!(skipped.is_empty(), "{skipped:?}");
+    assert!(deleted.contains(&old.display().to_string()), "{deleted:?}");
+    assert!(!old.exists() && new.exists());
+}
+
+/// A held child's `db:` line (its third).
+fn read_opened_db(child: &mut Child) -> PathBuf {
+    let mut r = BufReader::new(child.stdout.take().unwrap());
+    let mut s = String::new();
+    for _ in 0..3 {
+        assert!(r.read_line(&mut s).unwrap() > 0, "early EOF: {s:?}");
+    }
+    PathBuf::from(s.lines().find_map(|l| l.strip_prefix("db: ")).unwrap())
 }
