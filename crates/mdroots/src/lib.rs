@@ -17,6 +17,7 @@ pub mod names;
 mod notes;
 mod rename;
 mod search;
+mod watch;
 mod workspace;
 mod workspaces;
 

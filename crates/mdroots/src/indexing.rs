@@ -2,9 +2,10 @@
 //! dir, the shared root registry, the per-root DB and its reconciler lock
 //! (docs/specs/index.md §1.5–§1.7, docs/specs/roots.md §5).
 //!
-//! Everything here is synchronous: M4 runs no background thread, so a
-//! short-lived process (`nvim +wq`, CI, a commit-message editor) does its
-//! reconcile inside `open_for` and `refresh` and leaves nothing running.
+//! Everything here is synchronous: a short-lived process (`nvim +wq`, CI, a
+//! commit-message editor) does its reconcile inside `open_for` and `refresh`
+//! and leaves nothing running. The only background thread is the opt-in
+//! watcher (`watch.rs`), which calls the same code.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

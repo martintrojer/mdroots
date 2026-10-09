@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,6 +17,7 @@ use mdroots_roots::{MemRegistry, RootMode};
 use mdroots_syntax::{Context, Dialect, Document, LinkKind, PositionEncoding, parse};
 
 use crate::indexing::{self, CacheCtx, IndexState, Listing};
+use crate::watch;
 
 /// Most entries a lazy working set takes from the opened file's directory.
 const WORKING_SET_CAP: usize = 2_000;
@@ -46,6 +48,7 @@ pub struct Options {
     probe: Option<Arc<dyn Probe>>,
     index: IndexMode,
     cache_dir: Option<PathBuf>,
+    watch: bool,
     /// The cache a [`Workspaces`](crate::Workspaces) shares with its
     /// workspaces: `Some(None)` is a resolved in-memory index.
     shared: Option<Option<CacheCtx>>,
@@ -93,6 +96,16 @@ impl Options {
     /// Created if missing. Ignored with [`IndexMode::Memory`].
     pub fn cache_dir(mut self, p: PathBuf) -> Self {
         self.cache_dir = Some(p);
+        self
+    }
+
+    /// Watch the root for changes on disk (default off). Only a workspace
+    /// that is the reconciler of a DB-backed marker, VCS or loose root on a
+    /// local filesystem watches; see [`Workspace::watching`]. The
+    /// [notify](https://crates.io/crates/notify) watcher and its thread
+    /// stop when the last clone of the workspace drops.
+    pub fn watch(mut self, on: bool) -> Self {
+        self.watch = on;
         self
     }
 
@@ -236,7 +249,7 @@ pub struct DocLink {
     pub status: LinkStatus,
 }
 
-struct Inner {
+pub(crate) struct Inner {
     fs: Arc<dyn FileSystem>,
     probe: Arc<dyn Probe>,
     enumerator: Arc<dyn Enumerator>,
@@ -256,6 +269,12 @@ struct Inner {
     /// rebuilds the store.
     overlays: Mutex<BTreeMap<String, String>>,
     store: RwLock<MemStore>,
+    /// [`Options::watch`] was set.
+    want_watch: bool,
+    /// The running watcher; dropping it closes the watch thread's channel.
+    watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    /// Receivers of [`Workspace::subscribe`].
+    subscribers: Mutex<Vec<Sender<Vec<PathBuf>>>>,
 }
 
 /// What [`Workspace::new`] assembles.
@@ -270,15 +289,17 @@ struct Parts {
     opened: String,
     index: Option<IndexState>,
     store: MemStore,
+    watch: bool,
 }
 
 /// One root, served from memory and, unless in memory mode, cached in a
 /// per-root DB that one process (the reconciler) writes and the others
 /// (peers) read. Cheap to clone; `Send + Sync`.
 ///
-/// All work is synchronous: there is no background thread, so a
-/// short-lived process leaves nothing running (docs/specs/index.md §1.5).
-/// Changes on disk are picked up by [`Workspace::refresh`].
+/// All work is synchronous: unless [`Options::watch`] is set there is no
+/// background thread, so a short-lived process leaves nothing running
+/// (docs/specs/index.md §1.5). Changes on disk are picked up by
+/// [`Workspace::refresh`], [`Workspace::refresh_paths`], or the watcher.
 #[derive(Clone)]
 pub struct Workspace {
     inner: Arc<Inner>,
@@ -408,7 +429,7 @@ impl Workspace {
             reason: d.reason,
             nested_roots: d.nested_roots,
         };
-        Ok(Workspace::new(Parts {
+        let ws = Workspace::new(Parts {
             fs,
             probe,
             enumerator,
@@ -419,7 +440,10 @@ impl Workspace {
             opened,
             index,
             store,
-        }))
+            watch: opts.watch,
+        });
+        ws.maybe_watch();
+        Ok(ws)
     }
 
     /// Index the directory `root` as a root, without discovery. Always in
@@ -446,6 +470,7 @@ impl Workspace {
             opened: String::new(),
             index: None,
             store,
+            watch: false,
         }))
     }
 
@@ -463,8 +488,76 @@ impl Workspace {
                 index: Mutex::new(p.index),
                 overlays: Mutex::default(),
                 store: RwLock::new(p.store),
+                want_watch: p.watch,
+                watcher: Mutex::default(),
+                subscribers: Mutex::default(),
             }),
         }
+    }
+
+    pub(crate) fn from_inner(inner: Arc<Inner>) -> Self {
+        Workspace { inner }
+    }
+
+    /// Start the watcher if [`Options::watch`] asked for it, it is not
+    /// running, and [`watch::watch_eligible`] holds now. A root notify
+    /// cannot watch is simply not watched.
+    fn maybe_watch(&self) {
+        let i = &*self.inner;
+        if !i.want_watch || !matches!(i.listing, Listing::Root(_)) {
+            return;
+        }
+        let mut watcher = i.watcher.lock().unwrap_or_else(|e| e.into_inner());
+        if watcher.is_some() {
+            return;
+        }
+        let (role, has_db) = {
+            let index = self.index();
+            (index.as_ref().map(|ix| ix.locks.role()), index.is_some())
+        };
+        let root = i.root.path.as_path();
+        let Some(class) = watch::fs_class(&*i.probe, root) else {
+            return;
+        };
+        if watch::watch_eligible(i.root.mode, role, has_db, &class) {
+            *watcher = watch::start(Arc::downgrade(&self.inner), root);
+        }
+    }
+
+    /// Whether a native watcher is running for the root (see
+    /// [`Options::watch`]).
+    pub fn watching(&self) -> bool {
+        self.inner
+            .watcher
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
+    /// A channel of the absolute paths each watcher-driven refresh changed
+    /// (a lost-events rescan sends every indexed note). Explicit
+    /// [`refresh`](Self::refresh) and [`refresh_paths`](Self::refresh_paths)
+    /// calls send nothing: their caller already knows.
+    pub fn subscribe(&self) -> Receiver<Vec<PathBuf>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.subscribers().push(tx);
+        rx
+    }
+
+    /// Send `paths` to every subscriber, dropping closed ones.
+    pub(crate) fn notify_subscribers(&self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        self.subscribers()
+            .retain(|tx| tx.send(paths.clone()).is_ok());
+    }
+
+    fn subscribers(&self) -> MutexGuard<'_, Vec<Sender<Vec<PathBuf>>>> {
+        self.inner
+            .subscribers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// This process's role for the root's DB; `None` in memory mode.
@@ -493,8 +586,10 @@ impl Workspace {
             enumerator: &*i.enumerator,
             root,
         };
+        // Lock order: index, overlays, store; the index is held until the
+        // new store is in place, so point refreshes cannot interleave.
+        let mut index = self.index();
         let mut store = {
-            let mut index = self.index();
             match index.as_mut() {
                 Some(ix) => {
                     ix.locks.try_promote()?;
@@ -525,7 +620,130 @@ impl Workspace {
             store.set_overlay(rel, text);
         }
         *self.store_mut() = store;
+        drop(overlays);
+        drop(index);
+        // A peer that was promoted may watch now.
+        self.maybe_watch();
         Ok(())
+    }
+
+    /// Pick up changes to just `paths` (absolute; outside the root they are
+    /// ignored), synchronously: a note is re-read, added or dropped; an
+    /// existing directory adds the notes under it (hidden and pruned dirs
+    /// skipped) and re-checks the indexed ones; a gone path drops every
+    /// indexed note at or under it. The reconciler writes the changes to
+    /// the DB (a peer first tries to become it, as in
+    /// [`refresh`](Self::refresh)). The store is updated in place, overlays
+    /// survive. A single-file workspace only re-checks its file, a lazy one
+    /// its working-set directory and indexed notes. Returns the absolute
+    /// paths whose content changed, sorted.
+    pub fn refresh_paths(&self, paths: &[PathBuf], cancel: &Cancel) -> Result<Vec<PathBuf>, Error> {
+        cancel.check()?;
+        let i = &*self.inner;
+        let root = i.root.path.as_path();
+        let mut index = self.index();
+        let candidates = self.candidates(paths, cancel)?;
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let listed: Vec<String> = candidates.iter().cloned().collect();
+        let contents = match index.as_mut() {
+            Some(ix) => {
+                ix.locks.try_promote()?;
+                let rows: Vec<_> = ix
+                    .db
+                    .rows()?
+                    .into_iter()
+                    .filter(|r| candidates.contains(&r.path))
+                    .collect();
+                let db = match ix.locks.role() {
+                    mdroots_index::Role::Reconciler => Some(&mut ix.db),
+                    mdroots_index::Role::Peer => None,
+                };
+                mdroots_index::reconcile(db, &rows, &*i.fs, root, Some(&listed), &[], cancel)?.0
+            }
+            None => {
+                mdroots_index::reconcile(None, &[], &*i.fs, root, Some(&listed), &[], cancel)?.0
+            }
+        };
+        let mut found: BTreeMap<String, Arc<[u8]>> = contents.into_iter().collect();
+        let changes: Vec<(String, Option<Arc<[u8]>>)> = listed
+            .into_iter()
+            .filter_map(|rel| match found.remove(&rel) {
+                Some(bytes) => Some((rel, Some(bytes))),
+                // Still a file (dataless, unreadable): leave it as it is.
+                None if i.fs.stat(&root.join(&rel)).is_ok_and(|m| m.is_file) => None,
+                None => Some((rel, None)),
+            })
+            .collect();
+        // Overlays live in the store's entries and survive apply_contents.
+        let changed = self.store_mut().apply_contents(changes);
+        Ok(changed.iter().map(|rel| self.abs(rel)).collect())
+    }
+
+    /// The root-relative notes `paths` ask [`refresh_paths`](Self::refresh_paths)
+    /// to re-check.
+    fn candidates(&self, paths: &[PathBuf], cancel: &Cancel) -> Result<BTreeSet<String>, Error> {
+        let i = &*self.inner;
+        let root = i.root.path.as_path();
+        let store = self.store();
+        let mut out = BTreeSet::new();
+        for p in paths {
+            cancel.check()?;
+            let Ok(rel) = p.strip_prefix(root) else {
+                continue;
+            };
+            if i.root.nested_roots.iter().any(|n| p.starts_with(n)) {
+                continue;
+            }
+            // The root itself is a directory like any other.
+            let rel = slash(rel);
+            let prefix = match rel.is_empty() {
+                true => String::new(),
+                false => format!("{rel}/"),
+            };
+            let indexed_under = || {
+                store
+                    .files()
+                    .filter(|f| *f == rel || f.starts_with(&prefix))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            };
+            match i.fs.stat(p) {
+                Ok(m) if m.is_dir => {
+                    let found = mdroots_core::walk_md(&*i.fs, p, cancel).unwrap_or_default();
+                    out.extend(found.into_iter().map(|f| format!("{prefix}{f}")));
+                    out.extend(indexed_under());
+                }
+                Ok(m) if m.is_file => {
+                    let name = rel.rsplit('/').next().unwrap_or_default();
+                    if is_note(name) {
+                        out.insert(rel);
+                    }
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => out.extend(indexed_under()),
+                Err(_) => {}
+            }
+        }
+        out.retain(|rel| {
+            !rel.split('/')
+                .any(|c| c.starts_with('.') || mdroots_roots::pruned_dir(c))
+                && !i
+                    .root
+                    .nested_roots
+                    .iter()
+                    .any(|n| root.join(rel).starts_with(n))
+                && match &i.listing {
+                    Listing::Single => *rel == i.opened,
+                    Listing::WorkingSet { dir, .. } => {
+                        store.document(rel).is_some()
+                            || root.join(rel).parent() == Some(dir.as_path())
+                    }
+                    Listing::Root(_) | Listing::Walk => true,
+                }
+        });
+        Ok(out)
     }
 
     pub fn root(&self) -> RootInfo {
@@ -724,7 +942,7 @@ impl Workspace {
         self.inner.index.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Lock order: overlays, then the store.
+    /// Lock order: the index (when taken), overlays, then the store.
     pub(crate) fn overlays(&self) -> MutexGuard<'_, BTreeMap<String, String>> {
         self.inner
             .overlays
