@@ -83,6 +83,7 @@ Ordered by expected value. Each has a reason it is not built yet.
 | Item | Why not yet |
 |---|---|
 | CI on Linux and macOS | §1.1; the gate already passes on both by hand |
+| Library heading sections (`Workspace::sections(path)`) and per-heading backlink counts for embedders | ramble, a read-only TUI, can use the library parts behind the editor features: `frontmatter_range` for its frontmatter fold (instead of its own detection), `anchor_backlinks`/`heading_backlinks` for link counts next to headings. Heading-section folding is computed inside `mdroots-lsp` today; moving it into the library would let ramble fold by section too |
 | Port two front matter fixes from ramble (nested list items from the parser; block-scalar list items as text) | blocks ramble deleting its own front matter parser ([research/ramble](research/ramble.md), Still to port) |
 | "New note" command and the filename scheme vote | the link style exists (`Workspace::link_style`); the filename scheme (slug, id prefix, date) is not voted yet |
 | `workspace/willRenameFiles`, a full-text LSP request, semantic tokens | small server additions; no client asked yet ([Neovim](https://neovim.io) 0.12 never sends `willRenameFiles`) |
