@@ -53,6 +53,8 @@ pub struct RootConventions {
     pub multiword_tags: Option<bool>,
     /// zk `[format.markdown] link-format`.
     pub wiki_link_format: Option<String>,
+    /// zk `[format.markdown] link-drop-extension`.
+    pub link_drop_extension: Option<bool>,
     /// zk `[lsp.diagnostics] dead-link`.
     pub dead_link_severity: Option<Severity>,
     /// zk `dead-link = "none"`: broken-link diagnostics are switched off.
@@ -159,6 +161,7 @@ fn read_zk(text: &str, conv: &mut RootConventions) {
             .get("link-format")
             .and_then(|v| v.as_str())
             .map(str::to_owned);
+        conv.link_drop_extension = b("link-drop-extension");
     }
     let dead = t
         .get("lsp")
@@ -372,5 +375,72 @@ pub fn link_severity(conv: &RootConventions, vote: &VoteResult) -> Severity {
         Severity::Hint
     } else {
         Severity::Warning
+    }
+}
+
+/// How a new link to a note is written in a root (§3.2).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkStyle {
+    /// `[[stem]]`: the target's file name without extension.
+    WikiStem,
+    /// `[[dir/stem]]`: root-relative, without extension.
+    WikiPath,
+    /// `[label](../dir/note.md)`: relative to the linking file.
+    MarkdownRelative { md_suffix: bool },
+    /// `[label](dir/note.md)`: relative to the root.
+    MarkdownRootRelative { md_suffix: bool },
+}
+
+/// The style for inserted links. An existing tool config wins over the
+/// vote; when a root has both, [zk](https://github.com/zk-org/zk) wins over
+/// [Obsidian](https://obsidian.md).
+///
+/// - zk (a `.zk` marker): `link-format` "wiki" gives [`LinkStyle::WikiPath`]
+///   (zk's wiki links are root-relative); "markdown" or absent (zk's
+///   default) gives [`LinkStyle::MarkdownRelative`]; a custom template with
+///   `[[` gives `WikiStem` when it uses `{{filename}}`, else `WikiPath`,
+///   and one without `[[` gives `MarkdownRelative`. The `.md` suffix is
+///   kept only with `link-drop-extension = false`.
+/// - Obsidian (a `.obsidian` marker): wiki unless `useMarkdownLinks`; for
+///   wiki, `newLinkFormat` "shortest" (the default) gives `WikiStem` and
+///   "relative"/"absolute" give `WikiPath`; for Markdown, "absolute" gives
+///   `MarkdownRootRelative`, anything else `MarkdownRelative`; the suffix
+///   is kept.
+/// - Otherwise the vote: wiki when at least half the explicit links are
+///   wiki, root-relative when the insert style is
+///   [`ResolveStep::RootRelative`], and the `.md` suffix when at least half
+///   the Markdown links carry it. A root without explicit links gets
+///   `MarkdownRelative { md_suffix: true }`.
+pub fn link_style(conv: &RootConventions, vote: &VoteResult) -> LinkStyle {
+    if conv.markers.contains(&DialectMarker::Zk) {
+        let md_suffix = conv.link_drop_extension == Some(false);
+        return match conv.wiki_link_format.as_deref() {
+            Some("wiki") => LinkStyle::WikiPath,
+            None | Some("markdown") => LinkStyle::MarkdownRelative { md_suffix },
+            Some(t) if t.contains("[[") && t.contains("{{filename}}") => LinkStyle::WikiStem,
+            Some(t) if t.contains("[[") => LinkStyle::WikiPath,
+            Some(_) => LinkStyle::MarkdownRelative { md_suffix },
+        };
+    }
+    if conv.markers.contains(&DialectMarker::Obsidian) {
+        let format = conv.new_link_format.as_deref();
+        return match (conv.use_markdown_links.unwrap_or(false), format) {
+            (false, Some("relative" | "absolute")) => LinkStyle::WikiPath,
+            (false, _) => LinkStyle::WikiStem,
+            (true, Some("absolute")) => LinkStyle::MarkdownRootRelative { md_suffix: true },
+            (true, _) => LinkStyle::MarkdownRelative { md_suffix: true },
+        };
+    }
+    if vote.explicit_links == 0 {
+        return LinkStyle::MarkdownRelative { md_suffix: true };
+    }
+    let rooted = vote.insert_style == Some(ResolveStep::RootRelative);
+    let md_suffix = vote.md_suffix_share >= 0.5;
+    match (vote.wiki_share >= 0.5, rooted) {
+        (true, true) => LinkStyle::WikiPath,
+        (true, false) => LinkStyle::WikiStem,
+        (false, true) => LinkStyle::MarkdownRootRelative { md_suffix },
+        (false, false) => LinkStyle::MarkdownRelative { md_suffix },
     }
 }

@@ -6,7 +6,8 @@ use std::path::Path;
 use mdroots_resolve::ResolveEnv;
 use mdroots_resolve::ResolveStep;
 use mdroots_resolve::dialect::{
-    DialectMarker, RootConventions, Severity, Vote, VoteResult, detect, link_severity,
+    DialectMarker, LinkStyle, RootConventions, Severity, Vote, VoteResult, detect, link_severity,
+    link_style,
 };
 use mdroots_syntax::{Dialect, Link, parse};
 
@@ -370,4 +371,135 @@ fn insert_style_tie_goes_to_root_relative() {
     vote.record_link(&ls[1], Some(ResolveStep::RootRelative));
     assert_eq!(vote.result().insert_style, Some(ResolveStep::RootRelative));
     assert_eq!(Vote::new().result().insert_style, None);
+}
+
+// --- link_style --------------------------------------------------------
+
+/// A vote that says Markdown, file-relative, with the suffix: what a config
+/// must override.
+fn md_vote() -> VoteResult {
+    let mut v = VoteResult::default();
+    v.explicit_links = 10;
+    v.wiki_share = 0.0;
+    v.md_suffix_share = 1.0;
+    v.insert_style = Some(ResolveStep::FileRelative);
+    v
+}
+
+fn zk_style(config: &str) -> LinkStyle {
+    let env = FakeEnv::new(&[(".zk/config.toml", config)]);
+    link_style(&detect(&env), &md_vote())
+}
+
+#[test]
+fn zk_link_format_wins_over_the_vote() {
+    let md = |s| format!("[format.markdown]\n{s}\n");
+    let no_suffix = LinkStyle::MarkdownRelative { md_suffix: false };
+    assert_eq!(zk_style(&md("link-format = \"wiki\"")), LinkStyle::WikiPath);
+    assert_eq!(zk_style(&md("link-format = \"markdown\"")), no_suffix);
+    // zk's defaults: markdown links without the extension.
+    assert_eq!(zk_style(""), no_suffix);
+    assert_eq!(
+        zk_style(&md(
+            "link-format = \"markdown\"\nlink-drop-extension = false"
+        )),
+        LinkStyle::MarkdownRelative { md_suffix: true }
+    );
+    assert_eq!(
+        zk_style(&md("link-format = \"[[{{filename}}]]\"")),
+        LinkStyle::WikiStem
+    );
+    assert_eq!(
+        zk_style(&md("link-format = \"[[{{path}}]]\"")),
+        LinkStyle::WikiPath
+    );
+    assert_eq!(
+        zk_style(&md("link-format = \"[{{title}}]({{path}})\"")),
+        no_suffix
+    );
+}
+
+fn obsidian_style(app: &str) -> LinkStyle {
+    let env = FakeEnv::new(&[(".obsidian/app.json", app)]);
+    link_style(&detect(&env), &md_vote())
+}
+
+#[test]
+fn obsidian_app_json_wins_over_the_vote() {
+    let md = LinkStyle::MarkdownRelative { md_suffix: true };
+    assert_eq!(obsidian_style("{}"), LinkStyle::WikiStem);
+    assert_eq!(
+        obsidian_style(r#"{"newLinkFormat": "shortest"}"#),
+        LinkStyle::WikiStem
+    );
+    assert_eq!(
+        obsidian_style(r#"{"newLinkFormat": "relative"}"#),
+        LinkStyle::WikiPath
+    );
+    assert_eq!(
+        obsidian_style(r#"{"useMarkdownLinks": false, "newLinkFormat": "absolute"}"#),
+        LinkStyle::WikiPath
+    );
+    assert_eq!(obsidian_style(r#"{"useMarkdownLinks": true}"#), md);
+    assert_eq!(
+        obsidian_style(r#"{"useMarkdownLinks": true, "newLinkFormat": "relative"}"#),
+        md
+    );
+    assert_eq!(
+        obsidian_style(r#"{"useMarkdownLinks": true, "newLinkFormat": "absolute"}"#),
+        LinkStyle::MarkdownRootRelative { md_suffix: true }
+    );
+}
+
+#[test]
+fn zk_wins_over_obsidian() {
+    let env = FakeEnv::new(&[
+        (
+            ".zk/config.toml",
+            "[format.markdown]\nlink-format = \"wiki\"\n",
+        ),
+        (".obsidian/app.json", r#"{"useMarkdownLinks": true}"#),
+    ]);
+    assert_eq!(link_style(&detect(&env), &md_vote()), LinkStyle::WikiPath);
+}
+
+fn voted(wiki: f32, step: Option<ResolveStep>, suffix: f32) -> LinkStyle {
+    let mut v = VoteResult::default();
+    v.explicit_links = 10;
+    v.wiki_share = wiki;
+    v.insert_style = step;
+    v.md_suffix_share = suffix;
+    link_style(&RootConventions::default(), &v)
+}
+
+#[test]
+fn vote_decides_without_tool_config() {
+    use ResolveStep::*;
+    assert_eq!(voted(0.5, Some(RootRelative), 0.0), LinkStyle::WikiPath);
+    assert_eq!(voted(0.9, Some(Stem), 0.0), LinkStyle::WikiStem);
+    assert_eq!(voted(0.9, Some(Title), 0.0), LinkStyle::WikiStem);
+    assert_eq!(voted(0.9, Some(FileRelative), 0.0), LinkStyle::WikiStem);
+    assert_eq!(voted(0.9, None, 0.0), LinkStyle::WikiStem);
+    assert_eq!(
+        voted(0.49, Some(RootRelative), 0.5),
+        LinkStyle::MarkdownRootRelative { md_suffix: true }
+    );
+    assert_eq!(
+        voted(0.0, Some(FileRelative), 0.49),
+        LinkStyle::MarkdownRelative { md_suffix: false }
+    );
+    assert_eq!(
+        voted(0.0, Some(Stem), 1.0),
+        LinkStyle::MarkdownRelative { md_suffix: true }
+    );
+}
+
+#[test]
+fn empty_root_defaults_to_markdown_with_suffix() {
+    // Markers without a link config do not count as config.
+    let env = FakeEnv::new(&[(".marksman.toml", "")]);
+    assert_eq!(
+        link_style(&detect(&env), &Vote::new().result()),
+        LinkStyle::MarkdownRelative { md_suffix: true }
+    );
 }
