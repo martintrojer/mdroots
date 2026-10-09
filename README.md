@@ -38,9 +38,24 @@ or remote filesystems), full-text search over an
 [FTS5](https://sqlite.org/fts5.html) table (`Workspace::full_text`,
 `mdroots search`), cache GC, and a rebuild of a corrupt cache DB.
 
-Next is M7: FSEvents replay, derived SQL tables, cross-root links, a
-non-blocking open and [Watchman](https://facebook.github.io/watchman/)
-clocks.
+M7 is done: the editor features the Neovim plugin advertised (folding
+by heading sections and frontmatter, "N backlinks" and "N links" code
+lenses, and an extract-note code action that moves a selection into a new
+note and links it in the root's style, read from an existing zk or
+Obsidian config or voted from the notes), and a background open in
+`mdroots lsp`: a file is served alone at once while its root is
+discovered and indexed, with a progress notification for opens over a
+second.
+
+Next is M8: FSEvents replay, derived SQL tables, cross-root links and
+[Watchman](https://facebook.github.io/watchman/) clocks.
+
+Editor features of `mdroots lsp`: goto definition (links, anchors, code
+mentions), references and backlinks, hover previews, document and
+workspace symbols, completion of notes, headings, paths and tags, rename
+of a note with its links, diagnostics for broken links and anchors,
+folding ranges, code lenses, extract note, and live updates from a file
+watcher.
 
 ```sh
 cargo run -p mdroots-cli -- check tests/corpus/zkvault    # path:line:col: severity: message

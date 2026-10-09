@@ -1,4 +1,4 @@
--- ~/.config/nvim/lsp/mdroots.lua          (Neovim 0.12+)
+-- ~/.config/nvim/lsp/mdroots.lua          (Neovim 0.12+, https://neovim.io)
 --
 -- The whole config. mdroots finds roots by itself, so no root_markers or
 -- root_dir are set here: Neovim starts the server even outside any project
@@ -8,6 +8,9 @@
 -- Filetypes: markdown and org. mdx, quarto and rmd are excluded for now.
 -- Position encoding: Neovim offers utf-8 first and mdroots picks it, so no
 -- UTF-16 conversion happens on either side.
+-- Large or cold roots: the server answers for an opened note at once and
+-- indexes its root in the background; an open over a second shows LSP
+-- progress ("mdroots: indexing <dir>").
 
 ---@type vim.lsp.Config
 return {

@@ -1,4 +1,4 @@
--- ~/.config/nvim/plugin/mdroots.lua        (Neovim 0.12+)
+-- ~/.config/nvim/plugin/mdroots.lua        (Neovim 0.12+, https://neovim.io)
 --
 -- Optional extras on top of `vim.lsp.enable('mdroots')`. Everything below works
 -- with the built-in client; no plugins are needed. Delete what you don't want.
@@ -8,6 +8,7 @@
 --   grr    references / backlinks           (file and links to it)
 --   ]d [d  next/prev broken link       <C-]> goto via tagfunc (follows [[links]])
 --                                      <C-x><C-o> completion via omnifunc
+--   gra    code actions (on a visual selection: extract to a new note)
 -- gO is NOT among them for markdown: the markdown ftplugin maps it to a
 -- treesitter outline. The LspAttach handler below remaps it to LSP symbols.
 --
@@ -111,9 +112,14 @@ vim.api.nvim_create_autocmd('LspAttach', {
       end
     end, 'rename this note')
 
-    -- Create a note from the visual selection and replace it with a link,
-    -- using the root's inferred link style and filename scheme. Needs the
-    -- server's extract-note code action, which is not built yet.
+    -- Create a note from the visual selection and replace it with a link in
+    -- the root's link style (from an existing zk, https://github.com/zk-org/zk,
+    -- or Obsidian, https://obsidian.md, config, else voted from the notes).
+    -- The file is named from the selection's heading or first line, next to
+    -- the current note. The server only returns the edit (create file, insert
+    -- text, link); Neovim applies it, which creates an empty file and leaves
+    -- the text in a loaded, unsaved buffer for it (`:wa` writes both notes).
+    -- `gra` on a visual selection offers the same action.
     map('<leader>nn', function()
       vim.lsp.buf.code_action({
         filter = function(a)
