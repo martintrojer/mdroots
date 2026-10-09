@@ -17,7 +17,7 @@ Each one ends as a spec change or a decision in [DECISIONS.md](DECISIONS.md).
    again on `Workspace::refresh`. Open: is 500 ms the right budget, the
    EdenFS glob API instead of a child process, and whether `git ls-files`
    should do the same for other lazy roots.
-3. **FSEvents replay cost** (deferred to M7, D9). After a day offline, replay
+3. **FSEvents replay cost** (deferred to M8, D9). After a day offline, replay
    from `sinceWhen` may report directories only (`MustScanSubDirs`, dropped
    events, `EventIdsWrapped`) and fall back to the `dir_state` diff. How long
    does it take to reach `HistoryDone` on a busy volume, how often does it
@@ -51,7 +51,7 @@ Each one ends as a spec change or a decision in [DECISIONS.md](DECISIONS.md).
    with indexed lookups ([specs/index.md](specs/index.md) §1.2) would let a
    process answer from [SQLite](https://sqlite.org) without holding every note in memory, at the
    cost of a second query layer kept in sync with the parser (and a parser
-   version to re-index on). Deferred to M7 (D9). Open: add them for every
+   version to re-index on). Deferred to M8 (D9). Open: add them for every
    root or only above a vault size, and which queries move first (completion
    and full-text for peers scan every note; backlinks and the diagnostics
    share are cached per store since M6).

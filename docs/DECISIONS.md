@@ -27,9 +27,9 @@ Measurements below come from two testbed vaults: a ~730-note [zk](https://github
 **Decision**
 - mdroots is a Rust library; `mdroots lsp`, the CLI and other embedders (TUIs, SSGs, MCP servers, other language servers) call the same API (`mdroots::Workspaces`) directly. The CLI is the first embedder.
 - Synchronous core, no async runtime. By default no background thread: nothing polls, and the embedder calls `Workspace::refresh` or `refresh_paths` to pick up changes on disk. The only background thread is the opt-in native watcher (`Options::watch(true)`, set by `mdroots lsp`), which calls the same `refresh_paths`.
-- Slow calls (`refresh`, `refresh_paths`, `full_text`, `diagnostics`, `rename_note`) take `&Cancel`. The LSP answers requests one at a time, in order; a `$/cancelRequest` drops a queued request, and a `didChange` drops the queued requests on that document.
+- Slow calls (`refresh`, `refresh_paths`, `full_text`, `diagnostics`, `rename_note`, `extract_note`) take `&Cancel`. The LSP answers requests one at a time, in order; a `$/cancelRequest` drops a queued request, and a `didChange` drops the queued requests on that document.
 - Each query sees one consistent state: the process's in-memory index (D9) with overlays applied at call time. A refresh builds a new index and swaps it in, so a concurrent change is never seen halfway.
-- Planned: a non-blocking open that returns a `Lazy` workspace at once and finishes discovery in the background, so an editor never blocks on a slow filesystem. Today `open_for` is synchronous and discovery is bounded by its budgets.
+- `open_for` is synchronous and discovery is bounded by its budgets. An embedder that must not block serves the file alone with `Workspace::open_single` (no discovery, cache or registry) and runs `open_for` on its own thread; `mdroots lsp` does this on one opener thread, so the editor never waits on a cold or slow root (first diagnostics in 9 ms on a cold 3,000-note root, the root's in 2.8 s).
 - The library never writes user files. Refactors return a `WorkspaceEdit`.
 - Extension traits (`FileSystem`, `Probe`, `Enumerator`, `ResolveEnv`) are `Send + Sync`. A workspace holds its root's DB connection behind a mutex, because `rusqlite::Connection` is `!Sync`; queries never touch it (D9).
 - A feature that can't be tested without JSON-RPC is in the wrong crate.
@@ -207,15 +207,16 @@ Each crate may also use any crate to its left directly (`mdroots-cli` uses `mdro
 
 **Rejected**
 - Diagnosing everything that looks like a link: false errors in code, templates and generated folders.
-- A per-root link-format setting (marksman `completion.wiki.style`, zk `link-format`): replaced by the vote in D8.
+- An mdroots link-format setting (like marksman `completion.wiki.style`): an existing tool config (zk `link-format`, [Obsidian](https://obsidian.md) `useMarkdownLinks`/`newLinkFormat`) is read and wins for inserted links; otherwise the vote decides (D8).
 
 ## D8. Zero config: conventions are detected and voted, existing tool configs are read, never written
 
 **Decision**
 - No config file and no init step. Roots are discovered from markers ([specs/roots.md](specs/roots.md)).
 - Dialects are detected from markers (`.zk/`, `.obsidian/`, `.marksman.toml`, `.foam/`, `dendron.yml`, `logseq/`, org files, mkdocs/Hugo/Docusaurus/Jekyll/mdBook configs, ...). Several markers in one tree are merged, not ranked.
-- Existing tool configs are **read** for hints (zk link format, tag syntaxes and `dead-link` severity; [Obsidian](https://obsidian.md) link style and attachment folder; marksman title settings). mdroots never writes them, and never reads or writes zk's `notebook.db`.
-- A corpus vote, stored in `meta` and recomputed after each full reconcile, decides: completion insert style (share of links per ladder step), piped-wiki order, wiki vs md, `.md` suffix, tag syntaxes (≥ 3 distinct tags in ≥ 2 files), H1-as-title (≥ 70% of docs have exactly one H1), filename scheme.
+- Existing tool configs are **read** for hints (zk link format, tag syntaxes and `dead-link` severity; Obsidian link style and attachment folder; marksman title settings). mdroots never writes them, and never reads or writes zk's `notebook.db`.
+- A corpus vote over the in-memory index, computed per process on first use and dropped on any content change, measures: insert style (share of resolved links per ladder step), wiki vs md, `.md` suffix, `#tag` use (≥ 3 distinct tags in ≥ 2 files), H1-as-title (≥ 70% of docs have exactly one H1). Planned: piped-wiki order and the filename scheme.
+- Inserted links (`Workspace::link_to`, extract-note) follow the root: an existing zk config wins (over Obsidian too), then an Obsidian config, then the vote; a root without explicit links gets file-relative Markdown links with `.md` ([specs/index.md](specs/index.md) §3.2).
 
 **Why**
 - Goal: install and forget. zk needs `zk init`; marksman needs a VCS marker or `.marksman.toml` and offers config to pick a style.
@@ -245,10 +246,10 @@ Each crate may also use any crate to its left directly (`mdroots-cli` uses `mdro
 - Every process holds every note's bytes and parse in memory, so memory grows with the vault. The 3,000-note notebook stays under the 35 MB per-process target (D3), with little margin; see [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).
 - Hydrating parses every note at start; a peer sees another process's writes only on its next `refresh`.
 
-**Deferred to M7** (decided in M6, with these numbers):
+**Deferred to M8** (decided in M6, with these numbers; M7 did not change them):
 - **Derived tables** (`keys`, `links`, `frontmatter` with indexed lookups, [specs/index.md](specs/index.md) §1.2). Before M6 opening the 3,000-note notebook peaked at 37 MB with or without the DB, against the 35 MB target. M6 cached whole-root results and stopped copying each note's text into its line index (28.3 → 24.1 MB on the whole-root bench); every measured path now peaks at 23–31 MB. The target vaults (~730 and ~210 notes) are far below that size, so a second query layer kept in sync with the parser is not worth it yet.
 - **FSEvents replay** (`sinceWhen`). [notify](https://crates.io/crates/notify) cannot set it, and the alternatives (`fsevent-sys`, direct FFI) need unsafe code, which the workspace forbids (`unsafe_code = "forbid"`). Offline changes are already caught by the re-list and re-stat on open.
-- **Cross-root `ATTACH`, a background open, [Watchman](https://facebook.github.io/watchman/) clocks**: no measured need yet.
+- **Cross-root `ATTACH`, [Watchman](https://facebook.github.io/watchman/) clocks**: no measured need yet. (The background open is built in `mdroots lsp`, M7; see D2.)
 
 **Rejected**
 - Building the derived tables in M4: a second query layer before the first one was measured.

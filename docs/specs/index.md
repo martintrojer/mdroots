@@ -5,8 +5,10 @@ Related: [roots](roots.md) (discovery, nesting, flock roles), [library](library.
 Goal: the user never thinks about the index. No init or reindex command; a
 `kill -9` loses at most ~50 ms of work; ten editors starting at once answer
 within milliseconds from the cache. (Background catch-up while serving is
-planned for M7; today the index is brought up to date synchronously on open,
-on `refresh`, and by the opt-in watcher, §1.3.)
+planned for M8; the index is brought up to date synchronously on open, on
+`refresh`, and by the opt-in watcher, §1.3. `mdroots lsp` runs that open on a
+background thread and serves the opened file alone meanwhile, [library](library.md)
+§3.6.)
 
 ## 0. Testbed
 
@@ -104,7 +106,7 @@ Content equality replaces a hash, since the bytes are stored anyway. There is
 no `parser_ver`: every process parses the stored bytes, so a parser upgrade
 needs no re-index.
 
-**Planned (M7): derived tables.** So that a process no longer needs every
+**Planned (M8): derived tables.** So that a process no longer needs every
 note in memory, the schema gains tables built from the parse, with indexed
 lookups. Deferred because the measured gap is small and the target vaults
 (~730 and ~210 notes) are far below it; the numbers are in D9 and
@@ -197,7 +199,7 @@ re-publishes the diagnostics of open documents from it, and ignores
 Measured: a note changed on disk by another program republishes in about
 226 ms, with no save.
 
-**Planned (M7)**, all reconciler-only:
+**Planned (M8)**, all reconciler-only:
 
 | Source | Cost | Acted on by |
 |---|---|---|
@@ -205,7 +207,7 @@ Measured: a note changed on disk by another program republishes in about
 | [Watchman](https://facebook.github.io/watchman/) `since` clock, if it already watches the root | ~ms | reconciler; never start a watch ourselves on a virtual FS |
 | `dir_state` diff + file `stat` | ~1 µs/file, ~10 ms at 10k | reconciler fallback: readdir only dirs whose mtime changed |
 
-**FSEvents replay** (M7). `notify` hard-codes `kFSEventStreamEventIdSinceNow`,
+**FSEvents replay** (M8). `notify` hard-codes `kFSEventStreamEventIdSinceNow`,
 so replay needs `sinceWhen = fsevents_last_id` through `fsevent-sys` or
 direct FFI, and the workspace forbids unsafe code; until then the re-list on
 open covers offline changes. Replay may report only directories. On
@@ -214,7 +216,7 @@ different volume UUID, or purged history, fall back to the `dir_state` diff
 for that subtree (or the root). The new event ID is committed only after
 `HistoryDone`, in the same transaction as the batch it covers.
 
-With a background thread (M7), reconcile becomes a priority queue: the open
+With a background thread (M8), reconcile becomes a priority queue: the open
 file and its directory; link targets of open buffers (`QOS_CLASS_UTILITY`);
 files newer than `reconciled_at`; rows with an old `parser_ver`; a throttled
 verification sweep at most once a day. Background work runs at
@@ -227,7 +229,7 @@ verification sweep at most once a day. Background work runs at
   §3.2). A peer learns of the reconciler's writes on its next `refresh`, which
   re-reads the DB rows. `change_log` is written (add/mod/del per path,
   trimmed to ~10k) but no reader follows it yet.
-- **Planned (M7), with derived tables.** Queries become indexed lookups
+- **Planned (M8), with derived tables.** Queries become indexed lookups
   (`links WHERE target_kind=? AND target_key=?`, `keys WHERE kind=? AND key=?`,
   FTS); zk-style `LIKE '%x%'` stays off the diagnostics path. Each process
   keeps a capped **hot cache** (`stem/title/id/alias → file_id`) for
@@ -252,8 +254,11 @@ Common: `nvim file.md` then `:q` after 2 s, CI, commit-message editors.
   cache). An 11-note vault: 0.32 s cold, under 0.01 s warm.
 - A dead reconciler's flock is dropped by the kernel; its committed batches persist (WAL).
 - `mdroots lsp` replies to `initialize` before opening any workspace; a
-  workspace opens on the first `didOpen` (or request) for a file in it.
-- Planned (M7): background sweeps of an existing DB only after ~300 ms alive;
+  root starts opening on a background thread on the first `didOpen` of a file
+  in it, and the file is served alone until then ([library](library.md) §3.6).
+  Measured on a cold 3,000-note root: first diagnostics after 9 ms, the
+  root's after 2.8 s.
+- Planned (M8): background sweeps of an existing DB only after ~300 ms alive;
   on exit, `wal_checkpoint(PASSIVE)` only if the WAL exceeds 4 MB. Never
   VACUUM, optimize, or block on other processes.
 
@@ -426,12 +431,49 @@ Against zk, every zk-resolved link in both vaults agrees ([m1-differential](../r
 
 Several markers (vault A: `.zk`, `.obsidian`) are merged, not ranked; the ladder accepts every style.
 
-### 3.2 Vote (computed per process from the in-memory index; stored in `meta` once derived tables exist)
-- share of links resolved per ladder step → completion insert style (vault A: root-relative; vault B: stem)
-- piped order; wiki vs md links; `.md` suffix or not
-- tag syntaxes in prose; `#tag` needs ≥ 3 distinct tags in ≥ 2 files (to beat `#include`)
-- H1-as-title if ≥ 70% of docs have exactly one H1
-- filename scheme (slug, id prefix, date), for a future `mdroots.new`
+### 3.2 Vote and link style
+
+**As built.** `MemStore::vote` runs the `mdroots_resolve::dialect::Vote` over
+the current notes (overlays win; a lazy working set votes over what it holds):
+every note's headings and tags, and its links in referencing contexts (not code
+or comments) that are not External, each with the ladder step that resolved it.
+Only explicit links count. The result is computed on first use and cached with
+the other whole-root caches (diagnostics policy, backlink index), so any content
+change (overlay, refresh, watcher update) drops it. It is per process, not
+stored. It yields:
+- the insert style: the most common step among file-relative, root-relative,
+  stem and title over resolved explicit links, ties to root-relative
+  (vault A: root-relative; vault B: stem);
+- wiki vs Markdown share; `.md` suffix share among Markdown links;
+- `#tag` seen: ≥ 3 distinct tags in ≥ 2 files (to beat `#include`);
+- H1-as-title if ≥ 70% of docs have exactly one H1;
+- the resolved share.
+
+**Link style for inserted links** (`link_style`, used by `Workspace::link_to`
+and extract-note, [library](library.md) §3.2). Precedence:
+1. A zk config (`.zk` marker) wins, also over an
+   Obsidian one in the same root. `[format.markdown]
+   link-format = "wiki"` gives `[[dir/stem]]` (zk's wiki links are
+   root-relative); `"markdown"` or absent (zk's default) gives Markdown links
+   relative to the file; a custom template with `[[` gives `[[stem]]` when it
+   uses `{{filename}}`, else `[[dir/stem]]`, and one without `[[` gives
+   relative Markdown links. The `.md` suffix is kept only with
+   `link-drop-extension = false`.
+2. Else an Obsidian config (`.obsidian/app.json`): wiki unless
+   `useMarkdownLinks`; for wiki, `newLinkFormat` `"shortest"` (the default)
+   gives `[[stem]]`, `"relative"` or `"absolute"` give `[[dir/stem]]`; for
+   Markdown, `"absolute"` gives root-relative links, anything else
+   file-relative; the suffix is kept.
+3. Else the vote: wiki when at least half the explicit links are wiki,
+   root-relative when the insert style is root-relative (else `[[stem]]` or
+   file-relative), and the `.md` suffix when at least half the Markdown links
+   carry it.
+4. A root without explicit links: Markdown links relative to the file, with
+   `.md`.
+
+Planned: piped-wiki order, tag syntaxes beyond `#tag`, and the filename
+scheme (slug, id prefix, date) for a future "new note" command; extract-note
+names files by the GitHub slug of the title today.
 
 ### 3.3 Diagnostics
 | Broken explicit links | Severity |
@@ -520,9 +562,9 @@ capability check (it waits 30 s on unimplemented methods), and `phys_footprint`.
 3. **Feature smoke**: symbols, hover, reference counts on the 10 most-linked notes vs marksman; differences explained by context rules.
 4. **Timing and memory**: cold (cache wiped), warm, warm after checkout of 50 files, 10 parallel instances; `phys_footprint` at N=10.
 5. **Kill loop**: `kill -9` the reconciler at random batch boundaries; DB converges to a clean index. Rename/edit storms with 3 peers.
-6. **Freshness rule**, each checked against a clean index: `cp -p`/`rsync -a`/`tar x` of an older version replaces indexed content; `touch` updates stat columns only; a file changing between stat and read is re-read. Built: `crates/mdroots-index/tests/reconcile.rs` and [roots](roots.md) fixture 17. With derived tables (M7): a `parser_ver` bump re-parses each row once and an older reconciler does not undo it.
+6. **Freshness rule**, each checked against a clean index: `cp -p`/`rsync -a`/`tar x` of an older version replaces indexed content; `touch` updates stat columns only; a file changing between stat and read is re-read. Built: `crates/mdroots-index/tests/reconcile.rs` and [roots](roots.md) fixture 17. With derived tables (M8): a `parser_ver` bump re-parses each row once and an older reconciler does not undo it.
 7. **GC while peers run**: with 3 peers open, schema cleanup, GC and forced rebuild unlink nothing while `<id>.open` is shared; peers detect the new generation and reopen. Built: [roots](roots.md) fixtures 14 and 15, plus `crates/mdroots-index/tests/gc.rs` and `crates/mdroots/tests/gc.rs`. Not built: the repeat with the cache dir deleted.
-8. **Single writer**: 3 editors on one root. No peer writes (built: a peer's `refresh` leaves `PRAGMA data_version` unchanged, `crates/mdroots/tests/workspace.rs`). One peer save = one overlay parse + one reconciler parse/write. Cross-editor visibility p99 within the ~100–500 ms budget. FSEvents replay after offline edits, including a forced `MustScanSubDirs` (M7). The native watcher is covered by `crates/mdroots/tests/watch.rs` and the server's republish test.
+8. **Single writer**: 3 editors on one root. No peer writes (built: a peer's `refresh` leaves `PRAGMA data_version` unchanged, `crates/mdroots/tests/workspace.rs`). One peer save = one overlay parse + one reconciler parse/write. Cross-editor visibility p99 within the ~100–500 ms budget. FSEvents replay after offline edits, including a forced `MustScanSubDirs` (M8). The native watcher is covered by `crates/mdroots/tests/watch.rs` and the server's republish test.
 9. **Org**: vault A's 11 `#+LINK` files give zero diagnostics and hover shows expanded URLs; fixtures for `[[t][d]]` in `.md` and multi-line `[[…]]`.
 10. **Code context**: fenced `[[…]]` in a README, a zk template, Lean `[[]]` → zero diagnostics, goto still works; 44 gitignored targets quiet; `.m-reflow-*` never indexed.
 11. **Frontmatter**: `"—"` makes no links; 39 comma-joined values give two links each; a `Title`/`title` collision resolves to `title` with an info diagnostic.
@@ -533,9 +575,9 @@ capability check (it waits 30 s on unimplemented methods), and `phys_footprint`.
 | > 98% → error, < 80% → hint | §3.3 | vaults 94.7% / 93.5%: both get warnings without their zk config |
 | missing-key hint at ≥ 95% | §4.3 | 7 / 3 hints, mostly generated dirs |
 | batch ≤ 200 files / ≤ 50 ms | §1.1 | — |
-| ~300 ms before sweeps of an existing DB (M7) | §1.5 | — |
+| ~300 ms before sweeps of an existing DB (M8) | §1.5 | — |
 | cold < 250 ms with background QoS | §0, §1.3 | walk + parse 104–129 ms on vault A without QoS limits |
-| `change_log` 10k entries (M7: hot-cache cap) | §1.2, §1.4 | — |
+| `change_log` 10k entries (M8: hot-cache cap) | §1.2, §1.4 | — |
 | WAL > 4 MB exit checkpoint; periodic interval and cap | §1.5, §1.6 | — |
 | `busy_timeout=2s` | §1.6 | 10 processes at once on one root: no `SQLITE_BUSY` reached a caller ([roots](roots.md) fixture 12) |
 | tag vote ≥ 3 in ≥ 2 files; H1-as-title 70% | §3.2 | — |
