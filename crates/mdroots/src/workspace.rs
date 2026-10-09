@@ -385,7 +385,7 @@ impl Workspace {
             (mode, Some((root, rel))) => (root, Listing::Root(mode), rel, Freshness::Fresh, false),
         };
         let index = match (&cache, root_id) {
-            (Some(c), Some(id)) if !single => Some(c.open_index(&id)?),
+            (Some(c), Some(id)) if !single => Some(c.open_index(&id, dopts.now_ms)?),
             _ => None,
         };
         let (index, store) = match index {
@@ -443,6 +443,12 @@ impl Workspace {
             watch: opts.watch,
         });
         ws.maybe_watch();
+        // Housekeeping on this thread, after the workspace is ready; a cheap
+        // registry read when GC is not due. Only over the real filesystem:
+        // GC checks root paths on disk, which an explicit fs may not mirror.
+        if let Some(c) = cache.as_ref().filter(|_| !opts.has_explicit_io()) {
+            c.maybe_gc(now_ms());
+        }
         Ok(ws)
     }
 
@@ -575,7 +581,9 @@ impl Workspace {
     /// re-lists the root (or the lazy working set) and writes what changed
     /// to the DB; a peer re-reads the DB and re-reads changed files without
     /// writing. In memory mode the root is re-listed and re-read. Overlays
-    /// survive.
+    /// survive. The root is stamped as seen (at most hourly), and a process
+    /// whose DB file the registry no longer names (another process rebuilt
+    /// a corrupt one) reopens the new file first.
     pub fn refresh(&self, cancel: &Cancel) -> Result<(), Error> {
         cancel.check()?;
         let i = &*self.inner;
@@ -592,7 +600,7 @@ impl Workspace {
         let mut store = {
             match index.as_mut() {
                 Some(ix) => {
-                    ix.locks.try_promote()?;
+                    ix.revalidate(now_ms())?;
                     let current: Vec<String> = self.store().files().map(str::to_owned).collect();
                     let found =
                         indexing::sync(&io, ix, &i.listing, &i.opened, None, &current, cancel)?;
@@ -636,7 +644,9 @@ impl Workspace {
     /// [`refresh`](Self::refresh)). The store is updated in place, overlays
     /// survive. A single-file workspace only re-checks its file, a lazy one
     /// its working-set directory and indexed notes. Returns the absolute
-    /// paths whose content changed, sorted.
+    /// paths whose content changed, sorted; when the root's DB file was
+    /// replaced (a corruption rebuild), a full [`refresh`](Self::refresh)
+    /// runs instead and every indexed note is returned.
     pub fn refresh_paths(&self, paths: &[PathBuf], cancel: &Cancel) -> Result<Vec<PathBuf>, Error> {
         cancel.check()?;
         let i = &*self.inner;
@@ -646,10 +656,18 @@ impl Workspace {
         if candidates.is_empty() {
             return Ok(Vec::new());
         }
+        if let Some(ix) = index.as_mut()
+            && ix.revalidate(now_ms())?
+        {
+            // A new DB file (a rebuild, or a peer following one): patching
+            // a few paths is not enough, re-read everything.
+            drop(index);
+            self.refresh(cancel)?;
+            return Ok(self.files());
+        }
         let listed: Vec<String> = candidates.iter().cloned().collect();
         let contents = match index.as_mut() {
             Some(ix) => {
-                ix.locks.try_promote()?;
                 let rows: Vec<_> = ix
                     .db
                     .rows()?
