@@ -12,7 +12,8 @@ on are internal and pinned to the exact version.
   `Frontmatter::parsed()` (false when a non-blank block has no key) and
   `Frontmatter::inner()` (the text between the fences).
 - `ParseOptions::unfenced_frontmatter` (default true): set it to false to
-  leave Logseq, MultiMarkdown and JSON headers as prose.
+  leave [Logseq](https://logseq.com), [MultiMarkdown](https://fletcherpenney.net/multimarkdown/)
+  and JSON headers as prose.
 - TOML front matter values that only the parser reads (in tables, dotted
   keys) are written as TOML writes them, in `entries()` too: `1.0` stays
   `1.0` (was `1`), and a nested array is one item `[1, 2]` (was `1, 2`).

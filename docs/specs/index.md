@@ -399,7 +399,7 @@ normalisation produces `keys` and `links.target_key`, so steps 1–8 are indexed
 5. frontmatter `id`, org `:ID:`, id prefix of filename (`202101011200 title.md`)
 6. frontmatter `title`, then H1, by slug
 7. frontmatter `aliases`
-8. dialect transforms: Logseq `a/b` → `a___b.md` / `a%2Fb.md` (Dendron `a.b.c` is covered by stem)
+8. dialect transforms: [Logseq](https://logseq.com) `a/b` → `a___b.md` / `a%2Fb.md` (Dendron `a.b.c` is covered by stem)
 9. zk partial match (filename/path contains): not indexable, so goto, hover and completion only, never diagnostics; a hint, not rewritten on rename
 
 **Ties** at the stopping step: pick the closest by path distance (Obsidian), flag `ambiguous`, emit an info diagnostic with related locations, list all in goto. Vault A's 39 duplicate stems never tie because its links stop at step 2.
@@ -523,7 +523,7 @@ documents (by following `change_log`) is planned. In lazy roots ([roots](roots.m
 ## 4. Frontmatter
 
 ### 4.1 Formats and parsing
-- YAML `---…---` (or `...` close), TOML `+++…+++`, JSON `{…}`; org `#+KEY:` and `:PROPERTIES:`; Logseq `key:: value` at the top; MultiMarkdown `Key: value` only with no other frontmatter and a matching first line.
+- YAML `---…---` (or `...` close), TOML `+++…+++`, JSON `{…}`; org `#+KEY:` and `:PROPERTIES:`; Logseq `key:: value` at the top; [MultiMarkdown](https://fletcherpenney.net/multimarkdown/) `Key: value` only with no other frontmatter and a matching first line.
 - Tolerant: unparsable YAML → info diagnostic, the rest still indexed. Scalars and string lists kept; nested maps flattened (`a.b`).
 - **Key case**: stored as written; mapping to a standard meaning is case-insensitive. On collision (`Title`/`title`, `title`/`linkTitle`) the exact lowercase standard name wins, else first in document order; the other gets an info diagnostic.
 - **Placeholders** `—`, `–`, `-`, `n/a`, `N/A`, `TBD`, `none`, `""`, `~`, `null` mean no value: stored, but not links, ids or titles, and not offered in completion (vault B: 51 values).
