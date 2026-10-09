@@ -720,12 +720,12 @@ impl Workspace {
         self.inner.store.write().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn index(&self) -> MutexGuard<'_, Option<IndexState>> {
+    pub(crate) fn index(&self) -> MutexGuard<'_, Option<IndexState>> {
         self.inner.index.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Lock order: overlays, then the store.
-    fn overlays(&self) -> MutexGuard<'_, BTreeMap<String, String>> {
+    pub(crate) fn overlays(&self) -> MutexGuard<'_, BTreeMap<String, String>> {
         self.inner
             .overlays
             .lock()

@@ -16,6 +16,7 @@ mod indexing;
 pub mod names;
 mod notes;
 mod rename;
+mod search;
 mod workspace;
 mod workspaces;
 
@@ -35,6 +36,7 @@ pub use mdroots_syntax as syntax;
 pub use goto::Goto;
 pub use notes::Preview;
 pub use rename::{TextEdit, WorkspaceEdit};
+pub use search::Hit;
 pub use workspace::{
     Backlink, DocLink, Freshness, IndexMode, NoteSummary, Options, Resolution, RootInfo, Workspace,
 };
