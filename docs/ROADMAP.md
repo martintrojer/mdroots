@@ -83,6 +83,7 @@ Ordered by expected value. Each has a reason it is not built yet.
 | Item | Why not yet |
 |---|---|
 | CI on Linux and macOS | §1.1; the gate already passes on both by hand |
+| Port two front matter fixes from ramble (nested list items from the parser; block-scalar list items as text) | blocks ramble deleting its own front matter parser ([research/ramble](research/ramble.md), Still to port) |
 | "New note" command and the filename scheme vote | the link style exists (`Workspace::link_style`); the filename scheme (slug, id prefix, date) is not voted yet |
 | `workspace/willRenameFiles`, a full-text LSP request, semantic tokens | small server additions; no client asked yet ([Neovim](https://neovim.io) 0.12 never sends `willRenameFiles`) |
 | Embedder API: typed `subscribe` events, `notes_with_tag`, `NoteSummary.modified`, `Preview.summary`, code-mention search dirs in `Options`, a server builder that shares an embedder's `Workspaces` | driven by ramble, a separate TUI markdown reader by the same author ([research/ramble](research/ramble.md)) |

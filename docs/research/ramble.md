@@ -26,49 +26,55 @@ frontmatter comes from an unmerged ramble branch at `5f6e7ed2b798`.
 
 ## Still to port
 
-The earlier in-repo snapshots are gone; fetch the code from the ramble repo
-at the named commit when the milestone starts.
+Fetch from the ramble repo at the named commit.
 
-| Milestone | ramble code (`75b8285`) | Use |
+| ramble code (commit) | Use | Status |
 |---|---|---|
-| M3 | `src/app/codepath.rs` `code_path_dirs` | extra code-mention search dirs in `Options` (page dir, VCS root, tree root, deduped); dedup in `Options` or the caller |
-| M5 | `src/lsp/uri.rs` `uri_to_path`, `canonical_uri` | URI ↔ path in `mdroots-lsp`; zk sends UTF-32 columns without advertising it |
-| M5 | `tests/support/fake_lsp.rs`, `src/lsp/framing.rs` | script format (expect/reply/send/sleep/exit, JSONL log) and framing for a scripted test *client*; the server half does not carry over |
-| M4 | `src/app/watch.rs` + `tests/watch.rs` | lessons, not code: FSEvents replays pre-watch writes, editors replace by rename, compare content hashes not events, kick once after `watch()` so a write between load and watch is seen |
-| M2 | `src/notebook.rs` `walk_notes`, `src/app/launch.rs` `vcs_root` | reference only: the `ignore::WalkBuilder` flags and the VCS marker list |
+| `src/frontmatter.rs` nested list items from the parser (`065bdf7`) + `nested_list_items_take_the_parser_items` | `l:\n  - a\n  - - b\n    - c` is `["a", "b, c"]`; mdroots 0.2.0 gives `["a", "- b", "c"]` | **to port** before ramble deletes `frontmatter.rs` |
+| `src/frontmatter.rs` block-scalar list items (`01e1ef6`) + `block_scalar_list_items_are_their_text` | `- \|` with indented text is that text; mdroots 0.2.0 gives the literal `\|` | **to port**, same |
+| `src/app/codepath.rs` `code_path_dirs` (`75b8285`) | extra code-mention search dirs (page dir, VCS root, tree root, deduped) as an `Options` field | **to port** ([ROADMAP](../ROADMAP.md) §3, embedder API) |
+| `src/app/watch.rs` + `tests/watch.rs` (`75b8285`) | lessons for the watcher: editors replace by rename, compare content not events, kick once after `watch()` so a write between load and watch is seen | built in M6 without porting (`crates/mdroots/src/watch.rs` reconciles by stat and content); the FSEvents replay lesson waits for replay ([ROADMAP](../ROADMAP.md) §3) |
+| `src/lsp/uri.rs` `uri_to_path`, `canonical_uri` (`75b8285`) | URI ↔ path in `mdroots-lsp` | not ported: `mdroots-lsp` decodes `file:` URIs with lsp-types' `fluent-uri`; zk's undeclared UTF-32 columns matter only to ramble's optional zk backend |
+| `tests/support/fake_lsp.rs`, `src/lsp/framing.rs` (`75b8285`) | a scripted test client | not needed: `mdroots-lsp` tests use `lsp_server::Connection::memory()` and the CLI tests drive the real binary |
+| `src/notebook.rs` `walk_notes`, `src/app/launch.rs` `vcs_root` (`75b8285`) | the `ignore::WalkBuilder` flags and the VCS marker list | used as reference for the M2 walk and marker table |
+
+Fixes already carried over from ramble's later front matter commits:
+block scalars whose lines look like keys or items are text (`04f915b`), and
+parsing is linear in the number of keys (`d5ff6fb`; 20k keys parse in about
+0.6 s in a release build).
 
 ## What ramble deletes once it embeds mdroots
 
-Counts at ramble `75b8285`. Phases from ramble's migration plan: 1 = mdroots
-behind a flag, 2 = mdroots default, 3 = link and frontmatter data from
-mdroots, 4 = LSP client deleted.
+Counts at ramble `75b8285` (unchanged at `cf0dcb8`). Steps are those of
+ramble's plan (`docs/specs/2026-10-08-mdroots-migration.md` in the ramble
+repo): S1 = syntax from mdroots, S2 = mdroots as the backend, S3 = mdroots
+by default, S4 = the LSP client kept as an optional backend for third-party
+servers (moved, not deleted).
 
-| ramble code | Lines | Phase | Replaced by |
+| ramble code | Lines | Step | Replaced by |
 |---|---|---|---|
-| `src/lsp/mod.rs`, `framing.rs`, `position.rs`, `uri.rs` | 604 + 60 + 93 + 53 | 4 | in-process `mdroots::Workspaces`; byte offsets and paths end to end |
-| `src/app/lsp_glue.rs` | 702 | 4 | ~150-line `mdroots_glue.rs` (`document_links`, `preview`, `subscribe`, backend label) |
-| `src/notebook.rs` | 276 | 4 | `notes`, `full_text`, `tags`, `notes_with_tag`, `backlinks`; picker types (`Item`, `Op`, `link_items`, ~60) stay |
-| `src/nav.rs` resolve body, `scheme`, `percent_decode`, `hex` | ~70 | 3 | `DocLink.target`/`anchor`/`status`; anchor/URL dispatch stays |
-| `src/app/codepath.rs` pure half + `code_path_dirs`, `add_code_path_links` | 101 + ~48 | 3 | `DocLink{kind: CodeMention, target, line}`, dirs from `Options`; `follow_code_path` stays |
-| `src/doc.rs` link and code-span collection | ~100 | 3 | `document_links`; `code_content` stays for rendering |
-| `src/config.rs` LSP config + default `[[lsp.server]]` | ~76 | 4 | one optional `[mdroots]` table |
-| `src/app/picker.rs` LSP/zk paths, backlink landing | ~175 | 4 | synchronous mdroots calls; `Backlink.range` makes the "first link back" workaround obsolete |
-| `follow.rs`, `mod.rs`, `run.rs` LSP glue | ~20 | 4 | `AppEvent::Mdroots(Event)` |
-| tests: `lsp.rs`, `lsp_zk_e2e.rs`, `marksman_e2e.rs`, `fake_lsp.rs`, `notebook.rs` | 806 + 322 + 126 + 147 + 239 | 4 | position/URI cases already in mdroots; the rest go |
-| tests: LSP and fake-LSP parts of `app.rs`, `codepath.rs`, `nav.rs`, `config.rs` | ~582 + 318 + 47 + 108 + 77 + 35 | 3–4 | cases move to mdroots `scan`/`ladder`/`normalize` tests; app tests rewired to mdroots |
-| frontmatter branch: `src/frontmatter.rs`, `doc.rs` detection, parser half of `tests/frontmatter.rs` (421) | 807 + ~60 | 3 | `Document::frontmatter()`; the fold UI stays |
-| deps | — | 3–4 | `lsp-types`, `url` drop; `saphyr` drops in 3; `serde_json`, `ignore`, `toml` stay |
+| `src/lsp/mod.rs`, `framing.rs`, `position.rs`, `uri.rs` | 604 + 60 + 93 + 53 | S4 | moved behind the optional backend; the main path is in-process `mdroots::Workspaces` with byte offsets and paths end to end |
+| `src/app/lsp_glue.rs` | 702 | S2, S4 | ~150-line `mdroots_glue.rs` (`document_links`, `goto`, `preview`, `refresh_paths`, backend label); the rest moves into the optional backend |
+| `src/notebook.rs` | 276 | S2 | `notes`, `full_text`, `tags`, `backlinks` (notes by tag filtered from `notes()`); picker types (`Item`, `Op`, `link_items`, ~60) stay |
+| `src/nav.rs` resolve body, `scheme`, `percent_decode`, `hex` | ~70 | S2 | `DocLink.target`/`anchor`/`status`, `goto`; anchor/URL dispatch stays |
+| `src/app/codepath.rs` pure half + `code_path_dirs`, `add_code_path_links` | 101 + ~48 | S2 | `DocLink{kind: CodeMention, target, line}`, dirs from `Options` once ported; `follow_code_path` stays |
+| `src/doc.rs` link and code-span collection | ~100 | S1 | `mdroots::syntax` links and code spans; `code_content` stays for rendering |
+| `src/config.rs` LSP config + default `[[lsp.server]]` | ~76 | S3 | no config by default; `[[lsp.server]]` only for the optional backend |
+| `src/app/picker.rs` LSP/zk paths, backlink landing | ~175 | S2 | mdroots calls on the worker thread; `Backlink.range` makes the "first link back" workaround obsolete |
+| `follow.rs`, `mod.rs`, `run.rs` LSP glue | ~20 | S2 | an mdroots event on the existing channel |
+| tests: `lsp.rs`, `lsp_zk_e2e.rs`, `marksman_e2e.rs`, `fake_lsp.rs`, `notebook.rs` | 806 + 322 + 126 + 147 + 239 | S4 | kept as tests of the optional backend; `notebook.rs` tests rewired to mdroots |
+| tests: LSP and fake-LSP parts of `app.rs`, `codepath.rs`, `nav.rs`, `config.rs` | ~582 + 318 + 47 + 108 + 77 + 35 | S1–S2 | cases move to mdroots `scan`/`ladder`/`normalize` tests; app tests rewired to mdroots |
+| frontmatter branch: `src/frontmatter.rs`, `doc.rs` detection, parser half of `tests/frontmatter.rs` (421) | 807 + ~60 | S1 | `Document::frontmatter()` once the two front matter fixes above are ported; the fold UI stays |
+| deps | — | S1–S4 | `saphyr` drops in S1; `lsp-types`, `url` stay with the optional backend; `serde_json`, `ignore`, `toml` stay |
 
-Totals on main: about **2,380 lines of `src/`** (1,788 whole files + ~590
-partial) and **2,810 lines of tests** go, against ~150 lines of glue and the
-`[mdroots]` config. The frontmatter branch adds ~870 `src/` lines more.
+ramble's plan estimates about −3,000 lines on its main path against ~200
+lines of mdroots glue, with about 1,000 lines of LSP client kept behind the
+optional backend.
 
-## Corrections for ramble's migration plan
+## Notes for ramble's migration
 
-- "About 1.8–2k lines removed" counts whole `src/` files only; it misses `picker.rs`, `doc.rs` link collection, the partial removals and ~2,810 test lines.
 - Heading slugs are optional to drop: ramble needs them to jump to `#anchor` on the page it renders (keep its own or call `mdroots::syntax::slug::github`).
-- `mask` (keeping empty-frontmatter fences out of the render pass) stays until mdroots exposes the frontmatter region to renderers.
+- `mask` (keeping empty-frontmatter fences out of the render pass) can use `Workspace::frontmatter_range` or `Document::frontmatter().range` instead of its own detection.
 - The hover popup (`src/ui/hover.rs`) stays, fed by `preview()`; only the LSP markdown flattening goes.
 - `serde_json` stays (`review.rs`), `ignore` stays (sidebar), `toml` stays (config).
-- ramble's `cli.rs` `tree_root` lacks `.hg` while `launch.rs` `vcs_root` has it; fix before both become one call.
-- The embedder API ramble needs is in [specs/library.md](../specs/library.md): `document_links` with `text_range` and `status`, `preview`, unranked `notes`, `notes_with_tag`, `full_text` with snippet and line, backlinks with `from_title`, `line`, `in_code`, and `touched`.
+- The embedder API ramble needs is in [specs/library.md](../specs/library.md) §3.2–§3.3. Built by 0.2.0: `document_links` (with `text_range`, `anchor`, `line`, `status`), `goto`, `preview`, unranked `notes`, `full_text` with snippet and line, backlinks with `from_title`, `line`, `in_code`, `refresh_paths` (instead of `touched`), `subscribe` (changed paths), `open_single` and `Workspaces::get` for a non-blocking first open. Still gaps ([ROADMAP](../ROADMAP.md) §3): `notes_with_tag`, `NoteSummary.modified`, `Preview.summary`, typed `subscribe` events, and code-mention search dirs in `Options`. ramble's plan: `docs/specs/2026-10-08-mdroots-migration.md` in the ramble repo.
