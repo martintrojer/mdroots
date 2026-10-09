@@ -1,10 +1,16 @@
 [package]
 name = "mdroots-syntax"
-version = "0.0.0"
+version.workspace = true
 description = "Parse one markdown or org document into structure and liberal link candidates."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["markdown", "org-mode", "parser", "wiki-links", "frontmatter"]
+categories = ["parser-implementations", "text-processing"]
 
 [lints]
 workspace = true

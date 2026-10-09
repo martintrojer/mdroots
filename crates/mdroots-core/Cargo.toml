@@ -1,14 +1,20 @@
 [package]
 name = "mdroots-core"
-version = "0.0.0"
+version.workspace = true
 description = "Core traits, MemStore and reconcile logic for mdroots."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["markdown", "notes", "index"]
+categories = ["text-processing"]
 
 [dependencies]
-mdroots-syntax = { path = "../mdroots-syntax", version = "0.0.0" }
-mdroots-resolve = { path = "../mdroots-resolve", version = "0.0.0" }
+mdroots-syntax = { path = "../mdroots-syntax", version = "=0.1.0" }
+mdroots-resolve = { path = "../mdroots-resolve", version = "=0.1.0" }
 
 [dev-dependencies]
 tempfile = "3"

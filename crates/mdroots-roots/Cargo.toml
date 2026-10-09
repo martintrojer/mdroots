@@ -1,13 +1,19 @@
 [package]
 name = "mdroots-roots"
-version = "0.0.0"
+version.workspace = true
 description = "Safe, zero-config root discovery for mdroots: never lists a tree before it is known to be local and bounded."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["markdown", "notes", "project-root", "discovery"]
+categories = ["filesystem"]
 
 [dependencies]
-mdroots-core = { path = "../mdroots-core", version = "0.0.0" }
+mdroots-core = { path = "../mdroots-core", version = "=0.1.0" }
 ignore = "0.4"
 
 [target.'cfg(unix)'.dependencies]

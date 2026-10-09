@@ -1,13 +1,19 @@
 [package]
 name = "mdroots-resolve"
-version = "0.0.0"
+version.workspace = true
 description = "Link resolution ladder, dialect detection and convention vote for mdroots."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["markdown", "notes", "links", "zettelkasten"]
+categories = ["text-processing"]
 
 [dependencies]
-mdroots-syntax = { path = "../mdroots-syntax", version = "0.0.0" }
+mdroots-syntax = { path = "../mdroots-syntax", version = "=0.1.0" }
 serde_json = "1"
 toml = { version = "1", default-features = false, features = ["parse", "serde"] }
 unicode-normalization = "0.1"

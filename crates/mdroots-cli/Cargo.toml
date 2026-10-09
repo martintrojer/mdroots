@@ -1,10 +1,16 @@
 [package]
 name = "mdroots-cli"
-version = "0.0.0"
+version.workspace = true
 description = "The mdroots command line: check, roots, resolve and backlinks over a notes root, and the language server."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["markdown", "notes", "lsp", "language-server", "zettelkasten"]
+categories = ["command-line-utilities", "text-editors", "development-tools"]
 
 # The binary shares its name with the `mdroots` library, so `cargo doc`
 # warns about an output filename collision
@@ -16,8 +22,8 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-mdroots = { path = "../mdroots", version = "0.0.0" }
-mdroots-lsp = { path = "../mdroots-lsp", version = "0.0.0" }
+mdroots = { path = "../mdroots", version = "=0.1.0" }
+mdroots-lsp = { path = "../mdroots-lsp", version = "=0.1.0" }
 lsp-server = "0.7"
 
 [dev-dependencies]
