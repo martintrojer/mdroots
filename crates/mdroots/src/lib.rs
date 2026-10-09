@@ -13,6 +13,7 @@
 
 mod goto;
 mod indexing;
+mod links;
 pub mod names;
 mod notes;
 mod rename;
@@ -26,6 +27,7 @@ pub use mdroots_core::StdFs;
 pub use mdroots_core::{Cancel, DiagCode, Diagnostic, Error, ErrorKind, FileSystem, Severity};
 pub use mdroots_index as index;
 pub use mdroots_index::lock::Role;
+pub use mdroots_resolve::dialect::LinkStyle;
 pub use mdroots_resolve::{ResolveStep, ladder::LinkStatus};
 pub use mdroots_roots::RootMode;
 pub use mdroots_roots::discover::{Enumerator, NoEnumerator};

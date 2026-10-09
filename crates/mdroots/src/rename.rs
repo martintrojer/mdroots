@@ -345,7 +345,7 @@ fn parent(rel: &str) -> &str {
 }
 
 /// `to` relative to the directory `from`, `/`-separated, both absolute.
-fn relative(from: &Path, to: &Path) -> String {
+pub(crate) fn relative(from: &Path, to: &Path) -> String {
     let norm = |p: &Path| -> Vec<String> {
         let mut v: Vec<String> = Vec::new();
         for c in p.components() {

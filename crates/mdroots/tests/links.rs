@@ -1,0 +1,166 @@
+//! `Workspace::link_style` and `Workspace::link_to` on in-memory roots
+//! (`MemFs` with a `FakeProbe` holding the same files). Tool configs are
+//! those of [zk](https://github.com/zk-org/zk) and
+//! [Obsidian](https://obsidian.md).
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use mdroots::{ErrorKind, LinkStyle, NoEnumerator, Options, Workspace};
+use mdroots_core::MemFs;
+use mdroots_roots::probe::FakeProbe;
+
+const NOTES: &[(&str, &str)] = &[
+    ("/v/a.md", "# Alpha\n"),
+    ("/v/sub/deep/b.md", "---\ntitle: Bee note\n---\n"),
+    ("/v/my notes/c (1).md", ""),
+    ("/v/one/dup.md", ""),
+    ("/v/two/dup.md", ""),
+];
+
+/// A root at `/v` holding `NOTES` plus `extra` (configs or a marker).
+fn ws(extra: &[(&str, &str)]) -> Workspace {
+    let mut fs = MemFs::new();
+    let mut probe = FakeProbe::new().home("/h");
+    for (path, text) in NOTES.iter().chain(extra) {
+        fs = fs.with_file(path, text);
+        probe = probe.file(path, text);
+    }
+    let opts = Options::default()
+        .fs(Arc::new(fs))
+        .probe(Arc::new(probe))
+        .enumerator(Arc::new(NoEnumerator));
+    Workspace::open_for(Path::new("/v/a.md"), opts).unwrap()
+}
+
+fn p(s: &str) -> PathBuf {
+    PathBuf::from(s)
+}
+
+fn link(w: &Workspace, from: &str, to: &str, label: Option<&str>) -> String {
+    w.link_to(&p(from), &p(to), label).unwrap()
+}
+
+const ZK_WIKI: &str = "[format.markdown]\nlink-format = \"wiki\"\n";
+
+#[test]
+fn wiki_path_from_zk_config() {
+    let w = ws(&[("/v/.zk/config.toml", ZK_WIKI)]);
+    assert_eq!(w.link_style(), LinkStyle::WikiPath);
+    assert_eq!(
+        link(&w, "/v/a.md", "/v/sub/deep/b.md", None),
+        "[[sub/deep/b]]"
+    );
+    assert_eq!(
+        link(&w, "/v/sub/deep/b.md", "/v/a.md", Some("the A")),
+        "[[a|the A]]"
+    );
+    assert_eq!(
+        link(&w, "/v/a.md", "/v/my notes/c (1).md", None),
+        "[[my notes/c (1)]]"
+    );
+}
+
+#[test]
+fn wiki_stem_from_obsidian_falls_back_to_path_for_shared_stems() {
+    let w = ws(&[("/v/.obsidian/app.json", "{}")]);
+    assert_eq!(w.link_style(), LinkStyle::WikiStem);
+    assert_eq!(link(&w, "/v/a.md", "/v/sub/deep/b.md", None), "[[b]]");
+    assert_eq!(link(&w, "/v/a.md", "/v/one/dup.md", None), "[[one/dup]]");
+    // A new note whose stem is taken.
+    assert_eq!(link(&w, "/v/a.md", "/v/new/b.md", None), "[[new/b]]");
+}
+
+#[test]
+fn markdown_relative_with_suffix_and_encoding() {
+    let w = ws(&[("/v/.obsidian/app.json", r#"{"useMarkdownLinks": true}"#)]);
+    assert_eq!(
+        w.link_style(),
+        LinkStyle::MarkdownRelative { md_suffix: true }
+    );
+    // Default label: the frontmatter title, else H1, else stem.
+    assert_eq!(
+        link(&w, "/v/a.md", "/v/sub/deep/b.md", None),
+        "[Bee note](sub/deep/b.md)"
+    );
+    assert_eq!(
+        link(&w, "/v/sub/deep/b.md", "/v/a.md", None),
+        "[Alpha](../../a.md)"
+    );
+    assert_eq!(
+        link(&w, "/v/sub/deep/b.md", "/v/my notes/c (1).md", None),
+        "[c (1)](../../my%20notes/c%20%281%29.md)"
+    );
+    assert_eq!(
+        link(&w, "/v/one/dup.md", "/v/two/dup.md", Some("[x]")),
+        "[\\[x\\]](../two/dup.md)"
+    );
+}
+
+#[test]
+fn markdown_root_relative_from_obsidian_absolute() {
+    let w = ws(&[(
+        "/v/.obsidian/app.json",
+        r#"{"useMarkdownLinks": true, "newLinkFormat": "absolute"}"#,
+    )]);
+    assert_eq!(
+        w.link_style(),
+        LinkStyle::MarkdownRootRelative { md_suffix: true }
+    );
+    assert_eq!(
+        link(&w, "/v/sub/deep/b.md", "/v/my notes/c (1).md", Some("C")),
+        "[C](my%20notes/c%20%281%29.md)"
+    );
+}
+
+#[test]
+fn zk_default_drops_the_extension() {
+    let w = ws(&[("/v/.zk/config.toml", "")]);
+    assert_eq!(
+        w.link_style(),
+        LinkStyle::MarkdownRelative { md_suffix: false }
+    );
+    assert_eq!(
+        link(&w, "/v/a.md", "/v/sub/deep/b.md", None),
+        "[Bee note](sub/deep/b)"
+    );
+}
+
+#[test]
+fn non_existent_target_uses_its_stem() {
+    let w = ws(&[("/v/.obsidian/app.json", r#"{"useMarkdownLinks": true}"#)]);
+    assert_eq!(
+        link(&w, "/v/sub/deep/b.md", "/v/sub/fresh idea.md", None),
+        "[fresh idea](../fresh%20idea.md)"
+    );
+    let w = ws(&[("/v/.zk/config.toml", ZK_WIKI)]);
+    assert_eq!(
+        link(&w, "/v/a.md", "/v/sub/fresh.md", None),
+        "[[sub/fresh]]"
+    );
+}
+
+#[test]
+fn vote_decides_without_config_and_follows_overlays() {
+    let w = ws(&[("/v/.mdroots", "")]);
+    // No explicit links yet.
+    assert_eq!(
+        w.link_style(),
+        LinkStyle::MarkdownRelative { md_suffix: true }
+    );
+    w.set_overlay(&p("/v/a.md"), "# Alpha\n\n[[b]] and [[dup]] [[one/dup]]\n")
+        .unwrap();
+    assert_eq!(w.link_style(), LinkStyle::WikiStem);
+    assert_eq!(link(&w, "/v/sub/deep/b.md", "/v/a.md", None), "[[a]]");
+}
+
+#[test]
+fn unwritable_wiki_targets_and_outside_paths_are_unsupported() {
+    let w = ws(&[("/v/.zk/config.toml", ZK_WIKI)]);
+    let err =
+        |to: &str, label: Option<&str>| w.link_to(&p("/v/a.md"), &p(to), label).unwrap_err().kind();
+    assert_eq!(err("/v/a|b.md", None), ErrorKind::Unsupported);
+    assert_eq!(err("/v/a]b.md", None), ErrorKind::Unsupported);
+    assert_eq!(err("/v/ok.md", Some("x]]y")), ErrorKind::Unsupported);
+    assert_eq!(err("/elsewhere/x.md", None), ErrorKind::Unsupported);
+}
