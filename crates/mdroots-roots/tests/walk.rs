@@ -525,3 +525,14 @@ fn hgignore_glob_section_keeps_lines_with_colons() {
     let (out, _) = run_default(fake);
     assert_eq!(out.md, strs(&["k.md", "p.md", "r1.md"]));
 }
+
+#[test]
+fn pruned_dir_matches_the_prune_list() {
+    use mdroots_roots::pruned_dir;
+    for name in ["node_modules", "target", "buck-out", ".venv", "vendor"] {
+        assert!(pruned_dir(name), "{name}");
+    }
+    for name in ["notes", "src", "Target", ""] {
+        assert!(!pruned_dir(name), "{name}");
+    }
+}

@@ -143,6 +143,12 @@ const PRUNE_DIRS: &[&str] = &[
     "vendor",
 ];
 
+/// Whether the walk never descends a directory named `name` (the prune
+/// list; hidden names are skipped separately).
+pub fn pruned_dir(name: &str) -> bool {
+    PRUNE_DIRS.contains(&name)
+}
+
 const NOTE_EXTS: &[&str] = &["md", "markdown", "org"];
 const IGNORE_CAP: usize = 256 * 1024;
 const MDROOTSIGNORE: &str = ".mdrootsignore";
