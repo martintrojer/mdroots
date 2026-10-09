@@ -537,3 +537,32 @@ fn block_scalars_are_one_line_of_text() {
         ]
     );
 }
+
+#[test]
+fn nested_list_items_are_the_parser_items() {
+    let src =
+        "---\nresources:\n- src: a.jpg\n  title: A\nl:\n  - a\n  - - b\n    - c\n---\n\nbody\n";
+    assert_eq!(
+        entries_of(src),
+        [
+            ("resources".into(), list(&["{…}"])),
+            ("l".into(), list(&["a", "b, c"])),
+        ]
+    );
+}
+
+#[test]
+fn map_list_items_are_placeholders() {
+    let doc = md("---\ntags:\n- name: x\n- b\naliases:\n- k: v\n- A\n---\n");
+    let f = fm(&doc);
+    assert_eq!(f.tags(), ["b"]);
+    assert_eq!(f.aliases(), ["A"]);
+    assert_eq!(tag_names(&doc), ["b"]);
+    // Only map items: no value at all.
+    let doc = md("---\ntitle:\n- k: v\nfiles:\n- p: a.md\n---\n");
+    assert_eq!(fm(&doc).title(), None);
+    assert!(fm_links(&doc).is_empty());
+    // A nested list item is a normal item.
+    let doc = md("---\ntags:\n- - b\n  - c\n- d\n---\n");
+    assert_eq!(fm(&doc).tags(), ["b, c", "d"]);
+}
