@@ -1,5 +1,6 @@
 //! The request handlers: goto, references, hover, symbols, completion,
-//! rename, folding ranges and code lenses (docs/specs/library.md §3.6). Each works on one document's
+//! rename, folding ranges, code lenses and the extract-note code action
+//! (docs/specs/library.md §3.6). Each works on one document's
 //! current text (the overlay wins) and returns LSP types; the server
 //! serializes them.
 
@@ -8,14 +9,14 @@ use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 
 use lsp_types::{
-    CodeLens, Command, CompletionItem, CompletionItemKind, CompletionList, CompletionTextEdit,
-    DocumentChangeOperation, DocumentChanges, DocumentSymbol, FoldingRange, FoldingRangeKind,
-    Hover, HoverContents, Location, MarkupContent, MarkupKind, OneOf,
-    OptionalVersionedTextDocumentIdentifier, Position, PrepareRenameResponse, RenameFile,
-    ResourceOp, SymbolInformation, SymbolKind, TextDocumentEdit,
+    CodeAction, CodeActionKind, CodeLens, Command, CompletionItem, CompletionItemKind,
+    CompletionList, CompletionTextEdit, CreateFile, CreateFileOptions, DocumentChangeOperation,
+    DocumentChanges, DocumentSymbol, FoldingRange, FoldingRangeKind, Hover, HoverContents,
+    Location, MarkupContent, MarkupKind, OneOf, OptionalVersionedTextDocumentIdentifier, Position,
+    PrepareRenameResponse, RenameFile, ResourceOp, SymbolInformation, SymbolKind, TextDocumentEdit,
 };
 use mdroots::syntax::{Heading, LineIndex, PositionEncoding};
-use mdroots::{Cancel, LinkStatus, Workspace};
+use mdroots::{Cancel, ErrorKind, LinkStatus, Workspace};
 
 use crate::{position, uri};
 
@@ -654,6 +655,86 @@ pub(crate) fn rename_file(
         document_changes: Some(DocumentChanges::Operations(ops)),
         ..Default::default()
     })
+}
+
+/// The code action kind of extract-note.
+pub(crate) const EXTRACT_KIND: CodeActionKind = CodeActionKind::new("refactor.extract.note");
+
+/// `textDocument/codeAction`: for a non-empty selection in a Markdown note,
+/// one action moving it to a new note (see `Workspace::extract_note`):
+/// create the file, insert its content, replace the selection with the
+/// link. Nothing is written here. The name is checked against the disk on
+/// every request, because [Neovim](https://neovim.io) truncates an existing
+/// file when it applies a `CreateFile`, whatever its options say.
+pub(crate) fn code_actions(
+    c: &Ctx,
+    range: lsp_types::Range,
+    cancel: &Cancel,
+) -> Result<Vec<CodeAction>, Fail> {
+    let (start, end) = (c.offset(range.start), c.offset(range.end));
+    if start >= end {
+        return Ok(Vec::new());
+    }
+    let e = match c.ws.extract_note(&c.path, start..end, cancel) {
+        Ok(e) => e,
+        Err(e) if e.kind() == ErrorKind::Unsupported => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut ops = Vec::new();
+    let mut name = String::new();
+    for (path, content) in &e.create {
+        let Some(uri) = uri::from_path(path) else {
+            return Ok(Vec::new());
+        };
+        name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        ops.push(DocumentChangeOperation::Op(ResourceOp::Create(
+            CreateFile {
+                uri: uri.clone(),
+                options: Some(CreateFileOptions {
+                    overwrite: Some(false),
+                    ignore_if_exists: Some(false),
+                }),
+                annotation_id: None,
+            },
+        )));
+        ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
+            edits: vec![OneOf::Left(lsp_types::TextEdit {
+                range: lsp_types::Range::default(),
+                new_text: content.clone(),
+            })],
+        }));
+    }
+    for (path, edits) in &e.edits {
+        let Some(uri) = uri::from_path(path) else {
+            return Ok(Vec::new());
+        };
+        let edits = edits
+            .iter()
+            .map(|t| {
+                OneOf::Left(lsp_types::TextEdit {
+                    range: c.range(t.range.clone()),
+                    new_text: t.new_text.clone(),
+                })
+            })
+            .collect();
+        ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
+            edits,
+        }));
+    }
+    Ok(vec![CodeAction {
+        title: format!("Extract to new note: {name}"),
+        kind: Some(EXTRACT_KIND),
+        edit: Some(lsp_types::WorkspaceEdit {
+            document_changes: Some(DocumentChanges::Operations(ops)),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }])
 }
 
 #[cfg(test)]

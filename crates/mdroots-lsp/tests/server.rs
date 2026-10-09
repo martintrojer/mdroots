@@ -206,6 +206,10 @@ fn falls_back_to_utf16() {
     );
     assert_eq!(caps["foldingRangeProvider"], true);
     assert_eq!(caps["codeLensProvider"]["resolveProvider"], false);
+    assert_eq!(
+        caps["codeActionProvider"]["codeActionKinds"],
+        json!(["refactor.extract.note"])
+    );
     for p in [
         "definitionProvider",
         "referencesProvider",
@@ -1241,5 +1245,79 @@ fn a_watching_server_asks_for_code_lenses_after_a_change_on_disk() {
             break;
         }
     }
+    c.shutdown().unwrap();
+}
+
+// ---- extract-note code action ----
+
+fn code_action(c: &mut Client, uri: &str, range: Value, only: Option<&str>) -> Value {
+    let mut context = json!({ "diagnostics": [] });
+    if let Some(k) = only {
+        context["only"] = json!([k]);
+    }
+    ok(c.request(
+        "textDocument/codeAction",
+        json!({ "textDocument": { "uri": uri }, "range": range, "context": context }),
+    ))
+}
+
+#[test]
+fn extract_note_creates_fills_then_links_without_writing() {
+    let v = Vault::corpus("zk-min");
+    v.write("x.md", "# X\n\n## Big idea\n\nDetails here.\n\nEnd.\n");
+    let before = snapshot(&v);
+    let mut c = session(&v, UTF8, &["x.md"]);
+    let uri = v.uri("x.md");
+    let new_uri = v.uri("big-idea.md");
+    // Lines 2-4, the end at the last character (as a linewise selection
+    // arrives from Neovim).
+    let r = code_action(&mut c, &uri, range(2, 0, 4, 13), Some("refactor"));
+    assert_eq!(
+        r,
+        json!([{
+            "title": "Extract to new note: big-idea.md",
+            "kind": "refactor.extract.note",
+            "edit": { "documentChanges": [
+                { "kind": "create", "uri": new_uri,
+                  "options": { "overwrite": false, "ignoreIfExists": false } },
+                { "textDocument": { "uri": new_uri, "version": null },
+                  "edits": [{ "range": range(0, 0, 0, 0),
+                              "newText": "## Big idea\n\nDetails here.\n" }] },
+                { "textDocument": { "uri": uri, "version": null },
+                  "edits": [{ "range": range(2, 0, 4, 13),
+                              "newText": "[big-idea](big-idea)" }] },
+            ] },
+        }])
+    );
+    // The name exists on disk now: the next offer avoids it.
+    v.write("big-idea.md", "");
+    let r = code_action(&mut c, &uri, range(2, 0, 4, 13), None);
+    assert_eq!(r[0]["title"], "Extract to new note: big-idea-2.md");
+    let mut after = snapshot(&v);
+    after.retain(|(p, _)| !p.ends_with("big-idea.md"));
+    assert_eq!(after, before, "the server wrote files");
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn no_extract_for_empty_selections_other_kinds_or_unknown_files() {
+    let v = Vault::corpus("zk-min");
+    let before = snapshot(&v);
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let uri = v.uri("a.md");
+    assert_eq!(
+        code_action(&mut c, &uri, range(2, 3, 2, 3), None),
+        json!([])
+    );
+    assert_eq!(
+        code_action(&mut c, &uri, range(0, 0, 2, 3), Some("quickfix")),
+        json!([])
+    );
+    let none = format!("file://{}/nowhere/x.md", v.dir.display());
+    assert_eq!(
+        code_action(&mut c, &none, range(0, 0, 0, 1), None),
+        json!([])
+    );
+    assert_eq!(snapshot(&v), before);
     c.shutdown().unwrap();
 }

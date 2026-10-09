@@ -7,15 +7,15 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvError, Sender, TryRecvError, select};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
-    CancelParams, CodeLensOptions, CompletionOptions, DidChangeConfigurationParams,
-    DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
-    DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, ExecuteCommandOptions,
-    ExecuteCommandParams, FileSystemWatcher, FoldingRangeProviderCapability, GlobPattern,
-    MessageType, NumberOrString, OneOf, Position, PositionEncodingKind, PublishDiagnosticsParams,
-    Registration, RegistrationParams, RenameOptions, SaveOptions, ServerCapabilities,
-    ShowMessageParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, Uri, WorkDoneProgressOptions,
+    CancelParams, CodeActionOptions, CodeActionProviderCapability, CodeLensOptions,
+    CompletionOptions, DidChangeConfigurationParams, DidChangeTextDocumentParams,
+    DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    ExecuteCommandOptions, ExecuteCommandParams, FileSystemWatcher, FoldingRangeProviderCapability,
+    GlobPattern, MessageType, NumberOrString, OneOf, Position, PositionEncodingKind,
+    PublishDiagnosticsParams, Registration, RegistrationParams, RenameOptions, SaveOptions,
+    ServerCapabilities, ShowMessageParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Uri, WorkDoneProgressOptions,
 };
 use mdroots::syntax::{LineIndex, PositionEncoding};
 use mdroots::{Cancel, ErrorKind, Options, Workspace, Workspaces, names};
@@ -373,6 +373,32 @@ impl Server {
                 let uri = p.pointer("/textDocument/uri").and_then(Value::as_str);
                 self.with_doc(uri, cancel, |c| {
                     features::folding_ranges(c).map(|v| json!(v))
+                })
+            }
+            "textDocument/codeAction" => {
+                let uri = p.pointer("/textDocument/uri").and_then(Value::as_str);
+                // `context.only`: kinds the client asked for; ours matches a
+                // prefix of it ("refactor", "refactor.extract", ...).
+                let wanted = p
+                    .pointer("/context/only")
+                    .and_then(Value::as_array)
+                    .is_none_or(|only| {
+                        only.iter().filter_map(Value::as_str).any(|k| {
+                            let ours = features::EXTRACT_KIND;
+                            let ours = ours.as_str();
+                            ours == k || ours.starts_with(&format!("{k}."))
+                        })
+                    });
+                match p.get("range").cloned().map(serde_json::from_value) {
+                    _ if !wanted => Ok(json!([])),
+                    Some(Ok(range)) => self.with_doc(uri, cancel, |c| {
+                        features::code_actions(c, range, cancel).map(|v| json!(v))
+                    }),
+                    _ => Ok(json!([])),
+                }
+                .map(|v| match v {
+                    Value::Null => json!([]),
+                    v => v,
                 })
             }
             "textDocument/codeLens" => {
@@ -808,6 +834,11 @@ fn capabilities(enc: PositionEncoding) -> ServerCapabilities {
             work_done_progress_options: WorkDoneProgressOptions::default(),
         })),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+        code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
+            code_action_kinds: Some(vec![features::EXTRACT_KIND]),
+            resolve_provider: Some(false),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        })),
         code_lens_provider: Some(CodeLensOptions {
             resolve_provider: Some(false),
         }),
