@@ -1,7 +1,9 @@
 //! mdroots-lsp: a synchronous language server over [`mdroots::Workspaces`]
 //! (docs/specs/library.md §3.6, §4). One thread runs the message loop:
 //! requests are answered in arrival order, so each sees the edits before
-//! it; no async runtime.
+//! it; no async runtime. Roots open on one background thread: until a
+//! document's root is open it is served alone (single-file), and its
+//! diagnostics are published again when the open finishes.
 //!
 //! The binary entry point is `mdroots lsp` in mdroots-cli:
 //!

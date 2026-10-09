@@ -39,14 +39,38 @@ const COMMANDS: [&str; 4] = [
     "mdroots.renameFile",
 ];
 
+/// How long a background open runs before the client is told about it.
+const PROGRESS_AFTER: Duration = Duration::from_secs(1);
+
 /// An open document. `ws` is `None` when the file is not on disk (an
-/// unsaved new buffer): such a document gets no diagnostics.
+/// unsaved new buffer): such a document gets no diagnostics. Until its
+/// root's workspace is open (`ready`), `ws` is a single-file workspace
+/// ([`Workspace::open_single`]) that only this document holds.
 struct Doc {
     uri: Uri,
     path: PathBuf,
     version: i32,
     text: String,
     ws: Option<Workspace>,
+    ready: bool,
+}
+
+/// What the background opener thread reports.
+enum Opening {
+    /// It started opening the workspace of this file.
+    Started(PathBuf),
+    /// It finished; the workspace is now cached in [`Workspaces`].
+    Done(PathBuf, Result<Workspace, mdroots::Error>),
+}
+
+/// The background open in progress.
+struct Running {
+    file: PathBuf,
+    since: Instant,
+    /// The client was told (progress begun or a message shown).
+    announced: bool,
+    /// The work-done progress token, if a progress was begun.
+    token: Option<String>,
 }
 
 pub(crate) struct Server {
@@ -83,6 +107,20 @@ pub(crate) struct Server {
     /// The forwarding threads send a watching workspace's root here when
     /// its watcher changed notes; the message loop selects on it.
     changes: (Sender<PathBuf>, Receiver<PathBuf>),
+    /// Files to open on the background opener thread, started on first
+    /// use; one open at a time, in order.
+    jobs: Option<Sender<PathBuf>>,
+    /// Files submitted to the opener and not done yet (de-duplicates).
+    queued: HashSet<PathBuf>,
+    /// The opener thread reports here; the message loop selects on it.
+    opened: (Sender<Opening>, Receiver<Opening>),
+    running: Option<Running>,
+    /// The client shows work-done progress (`window.workDoneProgress`).
+    progress: bool,
+    /// Ids of the progress tokens created.
+    progress_seq: u64,
+    /// The "indexing" message was shown (clients without progress).
+    indexing_shown: bool,
 }
 
 /// What the message loop waits for.
@@ -90,6 +128,7 @@ enum Event {
     Message(Message),
     /// A watching workspace (by root) changed on disk.
     Changed(PathBuf),
+    Opened(Opening),
 }
 
 impl Server {
@@ -130,7 +169,12 @@ impl Server {
             .pointer("/capabilities/workspace/codeLens/refreshSupport")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let progress = params
+            .pointer("/capabilities/window/workDoneProgress")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let mut server = Server::closed(conn, opts);
+        server.progress = progress;
         server.enc = enc;
         server.watch_dynamic = watch_dynamic;
         server.lens_refresh = lens_refresh;
@@ -164,6 +208,13 @@ impl Server {
             lens_seq: 0,
             watched: HashSet::new(),
             changes: crossbeam_channel::unbounded(),
+            jobs: None,
+            queued: HashSet::new(),
+            opened: crossbeam_channel::unbounded(),
+            running: None,
+            progress: false,
+            progress_seq: 0,
+            indexing_shown: false,
         }
     }
 
@@ -179,6 +230,11 @@ impl Server {
             // Drain before popping, so a cancel or a didChange behind the
             // next request is seen before it runs.
             self.drain();
+            // A busy queue must not hold back finished opens or progress.
+            while let Ok(ev) = self.opened.1.try_recv() {
+                self.on_opening(ev);
+            }
+            self.announce_due();
             let Some(msg) = self.queue.pop_front() else {
                 continue;
             };
@@ -208,17 +264,23 @@ impl Server {
                 .values()
                 .min()
                 .map(|at| at.saturating_duration_since(Instant::now()));
+            let announce = self
+                .announce_at()
+                .map(|at| at.saturating_duration_since(Instant::now()));
             let got: Option<Result<Event, RecvError>> = {
                 let (conn, changes) = (&self.conn.receiver, &self.changes.1);
-                let never = crossbeam_channel::never();
-                let deadline = match timeout {
+                let opened = &self.opened.1;
+                let after = |t: Option<Duration>| match t {
                     Some(t) => crossbeam_channel::after(t),
-                    None => never.clone(),
+                    None => crossbeam_channel::never(),
                 };
+                let (deadline, announce) = (after(timeout), after(announce));
                 select! {
                     recv(conn) -> m => Some(m.map(Event::Message)),
                     recv(changes) -> r => Some(r.map(Event::Changed)),
+                    recv(opened) -> r => Some(r.map(Event::Opened)),
                     recv(deadline) -> _ => None,
+                    recv(announce) -> _ => None,
                 }
             };
             match got {
@@ -228,10 +290,14 @@ impl Server {
                         self.republish(&[root]);
                     }
                 }
-                // The changes channel never closes (the server holds a
-                // sender), so this is the client going away.
+                Some(Ok(Event::Opened(ev))) => self.on_opening(ev),
+                // The changes and opened channels never close (the server
+                // holds a sender), so this is the client going away.
                 Some(Err(RecvError)) => return None,
-                None => self.publish_due(),
+                None => {
+                    self.publish_due();
+                    self.announce_due();
+                }
             }
         }
     }
@@ -437,8 +503,8 @@ impl Server {
     }
 
     /// Runs `f` on the note `uri` names: its workspace is the open
-    /// document's, else the one serving the file. `null` when the URI is
-    /// not a note mdroots indexes.
+    /// document's, else the open workspace serving the file, else the file
+    /// alone. `null` when the URI is not a note mdroots indexes.
     fn with_doc(
         &self,
         uri: Option<&str>,
@@ -463,7 +529,11 @@ impl Server {
             return Some((d.ws.clone()?, d.path.clone()));
         }
         let path = uri::to_path(&uri.parse().ok()?)?;
-        let ws = self.workspaces.for_path(&path).ok()?;
+        // Never opens a root here: that would block the loop.
+        let ws = match self.workspaces.get(&path) {
+            Some(ws) => ws,
+            None => Workspace::open_single(&path, self.workspaces.options()).ok()?,
+        };
         Some((ws, path))
     }
 
@@ -543,9 +613,13 @@ impl Server {
                 if let Ok(p) = serde_json::from_value::<DidSaveTextDocumentParams>(n.params) {
                     let key = p.text_document.uri.as_str().to_owned();
                     self.due.remove(&key);
-                    match self.docs.get(&key).and_then(|d| d.ws.clone()) {
-                        Some(ws) => self.refresh(&[ws]),
-                        None => self.publish(&key),
+                    match self.docs.get(&key).map(|d| (d.ws.clone(), d.ready)) {
+                        Some((Some(ws), true)) => self.refresh(&[ws]),
+                        Some((Some(ws), false)) => {
+                            log_err("refresh", ws.refresh(&Cancel::new()));
+                            self.publish(&key);
+                        }
+                        _ => self.publish(&key),
                     }
                 }
             }
@@ -633,15 +707,18 @@ impl Server {
     }
 
     /// Republishes the diagnostics of the open documents in the
-    /// workspaces with these roots, then asks the client to re-request
-    /// code lenses (backlink counts may have changed).
+    /// workspaces with these roots (not those still served single-file),
+    /// then asks the client to re-request code lenses (backlink counts may
+    /// have changed).
     fn republish(&mut self, roots: &[PathBuf]) {
         let mut keys: Vec<String> = self
             .docs
             .iter()
             .filter(|(_, d)| {
-                d.ws.as_ref()
-                    .is_some_and(|w| roots.contains(&w.root().path))
+                d.ready
+                    && d.ws
+                        .as_ref()
+                        .is_some_and(|w| roots.contains(&w.root().path))
             })
             .map(|(k, _)| k.clone())
             .collect();
@@ -667,29 +744,39 @@ impl Server {
     }
 
     /// Records the document's new text and sets it as the workspace
-    /// overlay. Returns whether the document is tracked (a `file:` URI).
+    /// overlay. A new document whose root is not open yet gets a
+    /// single-file workspace at once and its root is opened in the
+    /// background. Returns whether the document is tracked (a `file:` URI).
     fn update(&mut self, uri: Uri, version: i32, text: String) -> bool {
         let Some(path) = uri::to_path(&uri) else {
             return false;
         };
         let key = uri.as_str().to_owned();
-        let ws = match self.docs.get(&key).and_then(|d| d.ws.clone()) {
-            Some(ws) => Some(ws),
-            None => match self.workspaces.for_path(&path) {
-                Ok(ws) => Some(ws),
-                Err(e) => {
-                    eprintln!(
-                        "mdroots-lsp: {}: no workspace: {}",
-                        path.display(),
-                        e.message()
-                    );
-                    None
-                }
+        let (ws, ready) = match self.docs.get(&key) {
+            Some(d) => (d.ws.clone(), d.ready),
+            None => match self.workspaces.get(&path) {
+                Some(ws) => (Some(ws), true),
+                None => match Workspace::open_single(&path, self.workspaces.options()) {
+                    Ok(ws) => {
+                        self.submit(&path);
+                        (Some(ws), false)
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "mdroots-lsp: {}: no workspace: {}",
+                            path.display(),
+                            e.message()
+                        );
+                        (None, false)
+                    }
+                },
             },
         };
         if let Some(ws) = &ws {
             log_err("overlay", ws.set_overlay(&path, &text));
-            self.follow(ws);
+            if ready {
+                self.follow(ws);
+            }
         }
         let doc = Doc {
             uri,
@@ -697,9 +784,160 @@ impl Server {
             version,
             text,
             ws,
+            ready,
         };
         self.docs.insert(key, doc);
         true
+    }
+
+    /// Queues the opening of `file`'s workspace on the opener thread
+    /// (started on first use), once per file until it is done.
+    fn submit(&mut self, file: &std::path::Path) {
+        if !self.queued.insert(file.to_path_buf()) {
+            return;
+        }
+        if self.jobs.is_none() {
+            let (tx, rx) = crossbeam_channel::unbounded::<PathBuf>();
+            let (wss, out) = (self.workspaces.clone(), self.opened.0.clone());
+            let spawned = std::thread::Builder::new()
+                .name("mdroots-lsp-open".to_owned())
+                .spawn(move || {
+                    for file in rx {
+                        // Opened meanwhile (another file of the root): no
+                        // discovery, no progress.
+                        let res = match wss.get(&file) {
+                            Some(ws) => Ok(ws),
+                            None => {
+                                if out.send(Opening::Started(file.clone())).is_err() {
+                                    return;
+                                }
+                                wss.for_path(&file)
+                            }
+                        };
+                        if out.send(Opening::Done(file, res)).is_err() {
+                            return;
+                        }
+                    }
+                });
+            match spawned {
+                Ok(_) => self.jobs = Some(tx),
+                Err(e) => {
+                    // The document stays single-file.
+                    eprintln!("mdroots-lsp: opener: {e}");
+                    self.queued.remove(file);
+                    return;
+                }
+            }
+        }
+        if let Some(jobs) = &self.jobs {
+            let _ = jobs.send(file.to_path_buf());
+        }
+    }
+
+    fn on_opening(&mut self, ev: Opening) {
+        match ev {
+            Opening::Started(file) => {
+                self.running = Some(Running {
+                    file,
+                    since: Instant::now(),
+                    announced: false,
+                    token: None,
+                });
+            }
+            Opening::Done(file, res) => {
+                self.queued.remove(&file);
+                if let Some(token) = self.running.take().and_then(|r| r.token) {
+                    self.send_progress(&token, json!({ "kind": "end" }));
+                }
+                match res {
+                    Ok(_) => self.adopt(),
+                    // The document stays on its single-file workspace.
+                    Err(e) => eprintln!(
+                        "mdroots-lsp: {}: open failed: {}",
+                        file.display(),
+                        e.message()
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Moves every document still served single-file whose workspace is
+    /// now open onto it, then republishes the diagnostics of the open
+    /// documents of those roots.
+    fn adopt(&mut self) {
+        let mut keys: Vec<String> = self
+            .docs
+            .iter()
+            .filter(|(_, d)| !d.ready && d.ws.is_some())
+            .map(|(k, _)| k.clone())
+            .collect();
+        keys.sort();
+        let mut roots = Vec::new();
+        for k in keys {
+            let Some(d) = self.docs.get_mut(&k) else {
+                continue;
+            };
+            let Some(real) = self.workspaces.get(&d.path) else {
+                continue;
+            };
+            if let Some(single) = d.ws.replace(real.clone()) {
+                log_err("overlay", single.clear_overlay(&d.path));
+            }
+            d.ready = true;
+            log_err("overlay", real.set_overlay(&d.path, &d.text));
+            let root = real.root().path;
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+            self.follow(&real);
+        }
+        if !self.shutdown {
+            self.republish(&roots);
+        }
+    }
+
+    /// When the running open should be announced, if it has not been.
+    fn announce_at(&self) -> Option<Instant> {
+        let r = self.running.as_ref().filter(|r| !r.announced)?;
+        Some(r.since + PROGRESS_AFTER)
+    }
+
+    /// Tells the client about an open that has run for [`PROGRESS_AFTER`]:
+    /// a work-done progress if it supports one, else one message per
+    /// session.
+    fn announce_due(&mut self) {
+        if self.shutdown || self.announce_at().is_none_or(|at| at > Instant::now()) {
+            return;
+        }
+        let Some(r) = self.running.as_mut() else {
+            return;
+        };
+        r.announced = true;
+        let dir = r.file.parent().unwrap_or(&r.file).display().to_string();
+        let title = format!("mdroots: indexing {dir}");
+        if self.progress {
+            self.progress_seq += 1;
+            let token = format!("mdroots/index/{}", self.progress_seq);
+            r.token = Some(token.clone());
+            let id: RequestId = format!("mdroots/progressCreate/{}", self.progress_seq).into();
+            let params = json!({ "token": token });
+            self.send(Request::new(id, "window/workDoneProgress/create".to_owned(), params).into());
+            let begin = json!({ "kind": "begin", "title": title, "cancellable": false });
+            self.send_progress(&token, begin);
+        } else if !self.indexing_shown {
+            self.indexing_shown = true;
+            let params = ShowMessageParams {
+                typ: MessageType::INFO,
+                message: format!("{title}\u{2026}"),
+            };
+            self.send(Notification::new("window/showMessage".to_owned(), params).into());
+        }
+    }
+
+    fn send_progress(&self, token: &str, value: Value) {
+        let params = json!({ "token": token, "value": value });
+        self.send(Notification::new("$/progress".to_owned(), params).into());
     }
 
     /// Subscribes to a watching workspace once: a thread forwards its

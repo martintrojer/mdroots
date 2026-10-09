@@ -1,6 +1,8 @@
 //! The server in-process over `Connection::memory()`, on copies of
 //! tests/corpus in temp dirs.
 
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
@@ -19,6 +21,8 @@ struct Client {
     server: Option<JoinHandle<ServeResult>>,
     server_conn: Option<Connection>,
     next_id: i32,
+    /// Messages read ahead by [`Client::ready`], handed out first.
+    backlog: RefCell<VecDeque<Message>>,
 }
 
 impl Client {
@@ -37,6 +41,7 @@ impl Client {
             server: None,
             server_conn: Some(server),
             next_id: 1,
+            backlog: RefCell::default(),
         }
     }
 
@@ -90,6 +95,9 @@ impl Client {
     }
 
     fn recv(&self) -> Message {
+        if let Some(m) = self.backlog.borrow_mut().pop_front() {
+            return m;
+        }
         self.conn
             .receiver
             .recv_timeout(Duration::from_secs(10))
@@ -105,6 +113,47 @@ impl Client {
             {
                 return n.params["diagnostics"].as_array().unwrap().clone();
             }
+        }
+    }
+
+    /// Waits until the open document `uri` is served by its root's
+    /// workspace (the background open finished), polling `mdroots.info`
+    /// (no fixed sleep). Its publishes before the post-open one are
+    /// dropped, so the next [`Client::diagnostics`] for `uri` returns the
+    /// root's diagnostics, as are the open's code lens refreshes; other
+    /// messages stay queued in order.
+    fn ready(&mut self, uri: &str) {
+        let mut seen = Vec::new();
+        let start = Instant::now();
+        loop {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "{uri}: root not open within 10 s"
+            );
+            let args = json!({ "command": "mdroots.info", "arguments": [uri] });
+            let (r, more) = self.request_seeing("workspace/executeCommand", args);
+            seen.extend(more);
+            let info = r.result.unwrap_or(Value::Null);
+            let info = info.as_str().unwrap_or_default();
+            if !info.is_empty() && !info.contains(SINGLE_REASON) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let is_pub = |m: &Message| {
+            matches!(m, Message::Notification(n)
+                if n.method == "textDocument/publishDiagnostics" && n.params["uri"] == uri)
+        };
+        let last = seen.iter().rposition(is_pub);
+        let mut backlog = self.backlog.borrow_mut();
+        for (i, m) in seen.into_iter().enumerate() {
+            let info_msg = matches!(&m, Message::Notification(n)
+                if n.method == "window/showMessage"
+                    && n.params["message"].as_str().is_some_and(|t| t.starts_with("root: ")));
+            if info_msg || is_lens_refresh(&m) || (is_pub(&m) && Some(i) != last) {
+                continue;
+            }
+            backlog.push_back(m);
         }
     }
 
@@ -230,6 +279,7 @@ fn publishes_the_broken_link_then_clears_it_after_the_fix() {
     let uri = v.uri("broken.md");
     let text = v.read("broken.md");
     c.open(&uri, &text);
+    c.ready(&uri);
     let d = c.diagnostics(&uri);
     assert_eq!(d.len(), 1, "{d:?}");
     assert_eq!(d[0]["severity"], 2);
@@ -256,6 +306,7 @@ fn a_later_change_restarts_the_debounce() {
     let uri = v.uri("broken.md");
     let text = v.read("broken.md");
     c.open(&uri, &text);
+    c.ready(&uri);
     assert_eq!(c.diagnostics(&uri).len(), 1);
     c.change(&uri, 2, &text.replace("(missing-note)", "(a.md)"));
     std::thread::sleep(Duration::from_millis(250));
@@ -274,6 +325,7 @@ fn settings_off_publishes_nothing_and_hint_overrides() {
     c.initialize(json!({}));
     let uri = v.uri("broken.md");
     c.open(&uri, &v.read("broken.md"));
+    c.ready(&uri);
     assert_eq!(c.diagnostics(&uri).len(), 1);
 
     let set = |s: &str| json!({ "settings": { "mdroots": { "diagnostics": s } } });
@@ -378,6 +430,7 @@ fn after_shutdown_only_exit_counts() {
     let uri = v.uri("broken.md");
     let text = v.read("broken.md");
     c.open(&uri, &text);
+    c.ready(&uri);
     assert_eq!(c.diagnostics(&uri).len(), 1);
     // A pending debounce is dropped by shutdown.
     c.change(&uri, 2, &text.replace("(missing-note)", "(a.md)"));
@@ -406,6 +459,10 @@ fn after_shutdown_only_exit_counts() {
     c.server.take().unwrap().join().unwrap().unwrap();
 }
 
+/// The reason of the single-file workspace serving a document until its
+/// root is open.
+const SINGLE_REASON: &str = "opened without discovery";
+
 // ---- feature requests ----
 
 const UTF8: &str = r#"{ "general": { "positionEncodings": ["utf-8"] } }"#;
@@ -425,6 +482,9 @@ fn session(v: &Vault, caps: &str, open: &[&str]) -> Client {
     c.initialize(serde_json::from_str(caps).unwrap());
     for rel in open {
         c.open(&v.uri(rel), &v.read(rel));
+    }
+    for rel in open {
+        c.ready(&v.uri(rel));
     }
     c
 }
@@ -490,6 +550,7 @@ fn definition_follows_links_and_anchors() {
     // Goto works in code: README's fenced [[project-scope]].
     let readme = v.uri("README.md");
     c.open(&readme, &v.read("README.md"));
+    c.ready(&readme);
     let r = ok(c.request("textDocument/definition", at(&readme, 7, 16)));
     assert_eq!(spots(&r), [spot("project-scope.md", 0, 0)]);
     c.shutdown().unwrap();
@@ -549,6 +610,7 @@ fn references_on_a_link_and_elsewhere() {
     assert_eq!(spots(&r), [spot("b.md", 2, 8), spot("tagged.md", 5, 9)]);
     // On a broken link: none.
     c.open(&v.uri("broken.md"), &v.read("broken.md"));
+    c.ready(&v.uri("broken.md"));
     let r = ok(c.request("textDocument/references", at(&v.uri("broken.md"), 2, 18)));
     assert_eq!(r, json!([]));
     c.shutdown().unwrap();
@@ -936,6 +998,7 @@ fn did_save_refreshes_from_disk_and_republishes() {
     let text = "# Note A\n\nSee [the part](b.md#part).\n";
     v.write("a.md", text);
     c.open(&uri, text);
+    c.ready(&uri);
     let d = c.diagnostics(&uri);
     assert_eq!(d.len(), 1, "{d:?}");
     assert_eq!(d[0]["code"], "broken-anchor");
@@ -963,6 +1026,7 @@ fn did_change_watched_files_refreshes_affected_workspaces() {
     let text = "See [the part](b.md#part).\n";
     v.write("a.md", text);
     c.open(&uri, text);
+    c.ready(&uri);
     assert_eq!(c.diagnostics(&uri).len(), 1);
     v.write("b.md", "## Part\n");
     c.notify(
@@ -986,6 +1050,7 @@ fn a_watching_server_republishes_when_a_missing_target_appears_on_disk() {
     c.initialize(json!({}));
     let uri = v.uri("broken.md");
     c.open(&uri, &v.read("broken.md"));
+    c.ready(&uri);
     let d = c.diagnostics(&uri);
     assert_eq!(d.len(), 1, "{d:?}");
     assert_eq!(d[0]["code"], "broken-link");
@@ -1193,6 +1258,7 @@ fn a_refresh_asks_for_code_lenses_only_when_the_client_supports_it() {
         c.initialize(json!({ "workspace": { "codeLens": { "refreshSupport": support } } }));
         let uri = v.uri("a.md");
         c.open(&uri, &v.read("a.md"));
+        c.ready(&uri);
         assert_eq!(c.diagnostics(&uri), Vec::<Value>::new());
         v.write("c.md", "[[a]]\n");
         c.notify(
@@ -1231,6 +1297,7 @@ fn a_watching_server_asks_for_code_lenses_after_a_change_on_disk() {
     c.initialize(json!({ "workspace": { "codeLens": { "refreshSupport": true } } }));
     let uri = v.uri("a.md");
     c.open(&uri, &v.read("a.md"));
+    c.ready(&uri);
     assert_eq!(c.diagnostics(&uri), Vec::<Value>::new());
     v.write("c.md", "[[a]]\n");
     let start = Instant::now();
@@ -1320,4 +1387,293 @@ fn no_extract_for_empty_selections_other_kinds_or_unknown_files() {
     );
     assert_eq!(snapshot(&v), before);
     c.shutdown().unwrap();
+}
+
+// ---- background open ----
+
+/// A [`StdProbe`](mdroots::StdProbe) whose calls block until the test
+/// opens the gate: discovery, and so the background open, waits for it.
+/// The single-file path never probes, so it is not held up.
+struct Gate {
+    open: std::sync::Mutex<bool>,
+    cv: std::sync::Condvar,
+}
+
+impl Gate {
+    fn new() -> std::sync::Arc<Gate> {
+        std::sync::Arc::new(Gate {
+            open: std::sync::Mutex::new(false),
+            cv: std::sync::Condvar::new(),
+        })
+    }
+
+    fn release(&self) {
+        *self.open.lock().unwrap() = true;
+        self.cv.notify_all();
+    }
+
+    fn wait(&self) {
+        let mut open = self.open.lock().unwrap();
+        while !*open {
+            open = self.cv.wait(open).unwrap();
+        }
+    }
+}
+
+struct GatedProbe(std::sync::Arc<Gate>);
+
+impl mdroots::Probe for GatedProbe {
+    fn stat(&self, p: &Path) -> std::io::Result<mdroots::FsStat> {
+        self.0.wait();
+        mdroots::StdProbe.stat(p)
+    }
+    fn lstat(&self, p: &Path) -> std::io::Result<mdroots::FsStat> {
+        self.0.wait();
+        mdroots::StdProbe.lstat(p)
+    }
+    fn mount(&self, p: &Path) -> std::io::Result<mdroots::MountInfo> {
+        self.0.wait();
+        mdroots::StdProbe.mount(p)
+    }
+    fn read_dir(&self, p: &Path) -> std::io::Result<Vec<(String, mdroots::FsStat)>> {
+        self.0.wait();
+        mdroots::StdProbe.read_dir(p)
+    }
+    fn read_link(&self, p: &Path) -> std::io::Result<PathBuf> {
+        self.0.wait();
+        mdroots::StdProbe.read_link(p)
+    }
+    fn read_small(&self, p: &Path, cap: usize) -> std::io::Result<Vec<u8>> {
+        self.0.wait();
+        mdroots::StdProbe.read_small(p, cap)
+    }
+    fn read_prefix(&self, p: &Path, n: usize) -> std::io::Result<Vec<u8>> {
+        self.0.wait();
+        mdroots::StdProbe.read_prefix(p, n)
+    }
+    fn volume_id(&self, p: &Path) -> std::io::Result<String> {
+        self.0.wait();
+        mdroots::StdProbe.volume_id(p)
+    }
+    fn home(&self) -> Option<PathBuf> {
+        mdroots::StdProbe.home()
+    }
+    fn now(&self) -> Duration {
+        mdroots::StdProbe.now()
+    }
+}
+
+/// A client whose background opens wait for `gate`, on a temp cache dir.
+fn gated_session(gate: &std::sync::Arc<Gate>, cache: &Path, capabilities: Value) -> Client {
+    let mut c = Client::new();
+    c.spawn_with(
+        Options::default()
+            .fs(std::sync::Arc::new(mdroots::StdFs))
+            .probe(std::sync::Arc::new(GatedProbe(gate.clone())))
+            .cache_dir(cache.to_path_buf()),
+    );
+    c.initialize(capabilities);
+    c
+}
+
+fn codes(d: &[Value]) -> Vec<&str> {
+    d.iter().map(|d| d["code"].as_str().unwrap()).collect()
+}
+
+/// A note with a wiki link to a missing note, an in-document anchor and a
+/// wiki link to b.md.
+const PENDING: &str = "# P\n\nSee [[gone]] and [x](#p) and [[b]].\n";
+
+#[test]
+fn a_slow_open_publishes_single_file_diagnostics_then_the_roots() {
+    let v = Vault::corpus("zk-min");
+    v.write("p.md", PENDING);
+    let (gate, cache) = (Gate::new(), tempfile::tempdir().unwrap());
+    let c = gated_session(&gate, cache.path(), json!({}));
+    let uri = v.uri("p.md");
+    c.open(&uri, PENDING);
+    // The open is held at the gate: this publish is the single-file one,
+    // where no other note is indexed (lazy rules: a hint, not broken).
+    assert_eq!(codes(&c.diagnostics(&uri)), ["not-in-working-set"]);
+    gate.release();
+    // The root is open: every note is indexed, so the link is broken.
+    assert_eq!(codes(&c.diagnostics(&uri)), ["broken-link"]);
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn requests_during_a_slow_open_answer_from_the_single_file() {
+    let v = Vault::corpus("zk-min");
+    v.write("p.md", PENDING);
+    let (gate, cache) = (Gate::new(), tempfile::tempdir().unwrap());
+    let mut c = gated_session(&gate, cache.path(), serde_json::from_str(UTF8).unwrap());
+    let uri = v.uri("p.md");
+    c.open(&uri, PENDING);
+    assert_eq!(c.diagnostics(&uri).len(), 1);
+    // In-document anchors resolve; a wiki link finds its target on disk.
+    let r = ok(c.request("textDocument/definition", at(&uri, 2, 22)));
+    assert_eq!(spots(&r), [spot("p.md", 0, 0)]);
+    let r = ok(c.request("textDocument/definition", at(&uri, 2, 33)));
+    assert_eq!(spots(&r), [spot("b.md", 0, 0)]);
+    let r = ok(c.request(
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": uri } }),
+    ));
+    assert_eq!(r[0]["name"], "P");
+    let r = ok(c.request(
+        "workspace/executeCommand",
+        command(
+            "mdroots.backlinks",
+            json!([uri, { "line": 0, "character": 0 }]),
+        ),
+    ));
+    assert_eq!(r, json!([]));
+    // Only open workspaces are searched: none yet.
+    let r = ok(c.request("workspace/symbol", json!({ "query": "note" })));
+    assert_eq!(r, json!([]));
+    // A note that is not open is served alone too, never opened here:
+    // its link target is not indexed (hover shows only the path) and no
+    // note links to it.
+    let a = v.uri("a.md");
+    let r = ok(c.request("textDocument/hover", at(&a, 2, 6)));
+    let preview = r["contents"]["value"].as_str().unwrap();
+    assert!(
+        preview.starts_with('`') && preview.ends_with("b.md`"),
+        "{preview}"
+    );
+    let top = json!({ "line": 0, "character": 0 });
+    let backlinks = json!([a, top]);
+    let r = ok(c.request(
+        "workspace/executeCommand",
+        command("mdroots.backlinks", backlinks.clone()),
+    ));
+    assert_eq!(r, json!([]));
+    gate.release();
+    c.ready(&uri);
+    // The root is open: the whole root answers.
+    let r = ok(c.request(
+        "workspace/executeCommand",
+        command("mdroots.backlinks", backlinks),
+    ));
+    assert_eq!(spots(&r), [spot("b.md", 2, 8), spot("tagged.md", 5, 9)]);
+    let r = ok(c.request("workspace/symbol", json!({ "query": "note b" })));
+    assert_eq!(r[0]["name"], "Note B");
+    c.shutdown().unwrap();
+}
+
+/// Messages until one matches `want` (10 s), and that message.
+fn until(c: &Client, want: impl Fn(&Message) -> bool) -> (Message, Vec<Message>) {
+    let mut seen = Vec::new();
+    loop {
+        let m = c.recv();
+        if want(&m) {
+            return (m, seen);
+        }
+        seen.push(m);
+    }
+}
+
+fn is_progress(m: &Message, kind: &str) -> bool {
+    matches!(m, Message::Notification(n)
+        if n.method == "$/progress" && n.params["value"]["kind"] == kind)
+}
+
+#[test]
+fn a_slow_open_reports_progress_when_the_client_supports_it() {
+    let v = Vault::corpus("zk-min");
+    let (gate, cache) = (Gate::new(), tempfile::tempdir().unwrap());
+    let c = gated_session(
+        &gate,
+        cache.path(),
+        json!({ "window": { "workDoneProgress": true } }),
+    );
+    let uri = v.uri("a.md");
+    c.open(&uri, &v.read("a.md"));
+    // Held at the gate past a second: the token is created, then begun.
+    let (create, _) = until(&c, |m| matches!(m, Message::Request(_)));
+    let Message::Request(create) = create else {
+        unreachable!()
+    };
+    assert_eq!(create.method, "window/workDoneProgress/create");
+    let token = create.params["token"].clone();
+    assert!(token.as_str().unwrap().starts_with("mdroots/index/"));
+    c.conn
+        .sender
+        .send(Response::new_ok(create.id, Value::Null).into())
+        .unwrap();
+    let (begin, _) = until(&c, |m| is_progress(m, "begin"));
+    let Message::Notification(begin) = begin else {
+        unreachable!()
+    };
+    assert_eq!(begin.params["token"], token);
+    let title = begin.params["value"]["title"].as_str().unwrap();
+    assert_eq!(title, format!("mdroots: indexing {}", v.dir.display()));
+    gate.release();
+    let (end, _) = until(&c, |m| is_progress(m, "end"));
+    let Message::Notification(end) = end else {
+        unreachable!()
+    };
+    assert_eq!(end.params["token"], token);
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn a_slow_open_shows_a_message_without_progress_support() {
+    let v = Vault::corpus("zk-min");
+    let (gate, cache) = (Gate::new(), tempfile::tempdir().unwrap());
+    let c = gated_session(&gate, cache.path(), json!({}));
+    let uri = v.uri("a.md");
+    c.open(&uri, &v.read("a.md"));
+    let (shown, seen) = until(
+        &c,
+        |m| matches!(m, Message::Notification(n) if n.method == "window/showMessage"),
+    );
+    let Message::Notification(shown) = shown else {
+        unreachable!()
+    };
+    assert_eq!(shown.params["type"], 3);
+    assert_eq!(
+        shown.params["message"],
+        format!("mdroots: indexing {}\u{2026}", v.dir.display())
+    );
+    assert!(!seen.iter().any(|m| is_progress(m, "begin")), "{seen:?}");
+    gate.release();
+    let seen = shutdown_seeing(c);
+    assert!(!seen.iter().any(|m| is_progress(m, "end")), "{seen:?}");
+}
+
+#[test]
+fn a_document_closed_during_the_open_gets_nothing_after_it() {
+    let v = Vault::corpus("zk-min");
+    let (gate, cache) = (Gate::new(), tempfile::tempdir().unwrap());
+    let mut c = gated_session(&gate, cache.path(), json!({}));
+    let uri = v.uri("broken.md");
+    c.open(&uri, &v.read("broken.md"));
+    assert_eq!(c.diagnostics(&uri).len(), 1);
+    c.notify(
+        "textDocument/didClose",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    assert_eq!(c.diagnostics(&uri), Vec::<Value>::new());
+    gate.release();
+    // The root opens and stays cached: reopening serves it at once, with
+    // one publish (no second, post-open one).
+    let other = v.uri("a.md");
+    loop {
+        let r = ok(c.request(
+            "workspace/executeCommand",
+            command("mdroots.info", json!([other])),
+        ));
+        if r.as_str().is_some_and(|t| t.contains("mode: marker")) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    c.open(&uri, &v.read("broken.md"));
+    assert_eq!(codes(&c.diagnostics(&uri)), ["broken-link"]);
+    let seen = shutdown_seeing(c);
+    let pubs = seen.iter().filter(
+        |m| matches!(m, Message::Notification(n) if n.method == "textDocument/publishDiagnostics"),
+    );
+    assert_eq!(pubs.count(), 0, "{seen:?}");
 }
