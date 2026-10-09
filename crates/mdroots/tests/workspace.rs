@@ -673,7 +673,7 @@ fn first_open_indexes_and_creates_the_db() {
     assert_eq!(ws.role(), Some(Role::Reconciler));
     let db = ws.cache().unwrap();
     assert!(db.starts_with(cache.path().join("roots")), "{db:?}");
-    assert!(db.to_string_lossy().ends_with(".v1.db"), "{db:?}");
+    assert!(db.to_string_lossy().ends_with(".v2.db"), "{db:?}");
     assert_eq!(
         db_paths(&ws),
         ["a.md", "b.md", "one/dup.md", "sub/c.md", "two/dup.md"]
@@ -703,7 +703,7 @@ fn a_second_workspace_is_a_peer_that_hydrates_from_the_db() {
     let reg = SqliteRegistry::open(&cache.path().join("roots.v1.db")).unwrap();
     let rows = reg.all();
     assert_eq!(rows.len(), 1);
-    let name = format!("{}.v1.db", rows[0].root_id);
+    let name = format!("{}.v2.db", rows[0].root_id);
     assert_eq!(peer.cache().unwrap().file_name().unwrap(), name.as_str());
 }
 

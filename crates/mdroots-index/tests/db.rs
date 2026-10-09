@@ -38,7 +38,7 @@ fn kinds(v: &[(&str, &str)]) -> Vec<(String, String)> {
 #[test]
 fn two_connections_share_generation() {
     let tmp = tempfile::tempdir().unwrap();
-    let p = tmp.path().join("roots/r.v1.db"); // parent not yet created
+    let p = tmp.path().join("roots/r.v2.db"); // parent not yet created
     let a = IndexDb::open(&p).unwrap();
     let b = IndexDb::open(&p).unwrap();
     let g = a.generation().unwrap();
@@ -163,4 +163,103 @@ fn stat_change_updates_stat_columns_without_a_change_log_entry() {
     );
     assert_eq!(&rows[0].content[..], b"ay");
     assert_eq!(change_log(&p), kinds(&[("a.md", "add")]));
+}
+
+fn paths(db: &IndexDb, q: &str) -> Vec<String> {
+    db.search(q, 10)
+        .unwrap()
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect()
+}
+
+#[test]
+fn search_follows_upserts_and_removes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = IndexDb::open(&tmp.path().join("r.db")).unwrap();
+    db.apply(&[
+        Change::Upsert(row("a.md", "alpha beta")),
+        Change::Upsert(row("b.md", "gamma")),
+    ])
+    .unwrap();
+    assert_eq!(paths(&db, "alpha"), ["a.md"]);
+    db.apply(&[
+        Change::Upsert(row("a.md", "delta")),
+        Change::Remove("b.md".into()),
+    ])
+    .unwrap();
+    assert!(paths(&db, "alpha").is_empty());
+    assert!(paths(&db, "gamma").is_empty());
+    assert_eq!(paths(&db, "delta"), ["a.md"]);
+    // A stat-only change leaves the text alone.
+    db.apply(&[Change::Stat(row("a.md", "ignored"))]).unwrap();
+    assert_eq!(paths(&db, "delta"), ["a.md"]);
+    assert!(paths(&db, "ignored").is_empty());
+}
+
+#[test]
+fn search_terms_are_and_ed_with_a_prefix_on_the_last() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = IndexDb::open(&tmp.path().join("r.db")).unwrap();
+    db.apply(&[
+        Change::Upsert(row("a.md", "linking notes together")),
+        Change::Upsert(row("b.md", "notes about Café life")),
+    ])
+    .unwrap();
+    assert_eq!(paths(&db, "link"), ["a.md"]);
+    assert!(paths(&db, "ink").is_empty());
+    assert!(
+        paths(&db, "link notes").is_empty(),
+        "only the last is a prefix"
+    );
+    assert_eq!(paths(&db, "notes link"), ["a.md"]);
+    assert_eq!(paths(&db, "NOTES"), ["a.md", "b.md"]);
+    assert_eq!(paths(&db, "cafe"), ["b.md"]);
+    assert!(paths(&db, "").is_empty());
+    assert!(paths(&db, "  \t ").is_empty());
+}
+
+#[test]
+fn search_query_syntax_is_plain_text() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = IndexDb::open(&tmp.path().join("r.db")).unwrap();
+    db.apply(&[Change::Upsert(row(
+        "a.md",
+        "say \"hi\" AND NEAR(x) or -y * done",
+    ))])
+    .unwrap();
+    for q in [
+        "\"", "\"hi\"", "hi\"", "AND", "OR", "NOT", "-", "-y", "*", "NEAR(", "NEAR(x", ")",
+        "a AND", "col:x", "^", "\"\"\"", "say -", "{x}",
+    ] {
+        db.search(q, 10).unwrap_or_else(|e| panic!("{q:?}: {e}"));
+    }
+    assert_eq!(paths(&db, "\"hi\""), ["a.md"]);
+    assert_eq!(paths(&db, "AND"), ["a.md"]);
+    assert_eq!(paths(&db, "NEAR("), ["a.md"]);
+    assert_eq!(paths(&db, "-y"), ["a.md"]);
+    assert!(paths(&db, "-").is_empty());
+    assert!(paths(&db, "*").is_empty());
+}
+
+#[test]
+fn search_orders_by_rank_and_returns_snippets() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut db = IndexDb::open(&tmp.path().join("r.db")).unwrap();
+    db.apply(&[
+        Change::Upsert(row("b.md", "one fox among many other words here")),
+        Change::Upsert(row("a.md", "fox fox fox")),
+        Change::Upsert(row("c.md", "fox fox fox")),
+    ])
+    .unwrap();
+    let hits = db.search("fox", 10).unwrap();
+    let p: Vec<&str> = hits.iter().map(|(p, _)| p.as_str()).collect();
+    assert_eq!(p, ["a.md", "c.md", "b.md"]);
+    assert_eq!(hits[0].1, "fox fox fox");
+    assert_eq!(db.search("fox", 1).unwrap().len(), 1);
+}
+
+#[test]
+fn the_schema_is_v2() {
+    assert_eq!(mdroots_index::SCHEMA, 2);
 }

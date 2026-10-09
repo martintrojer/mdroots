@@ -391,13 +391,13 @@ fn roots_explains_the_choice() {
 }
 
 /// The root id in the DB path is time-based:
-/// `<TMP>/cache/mdroots/roots/<id>.v1.db` -> `<CACHE>/roots/<ID>.v1.db`.
+/// `<TMP>/cache/mdroots/roots/<id>.v2.db` -> `<CACHE>/roots/<ID>.v2.db`.
 fn redact_cache(s: &str) -> String {
     s.lines()
         .map(
             |l| match l.strip_prefix("cache: <TMP>/cache/mdroots/roots/") {
-                Some(rest) if rest.ends_with(".v1.db") => {
-                    "cache: <CACHE>/roots/<ID>.v1.db".to_owned()
+                Some(rest) if rest.ends_with(".v2.db") => {
+                    "cache: <CACHE>/roots/<ID>.v2.db".to_owned()
                 }
                 _ => l.to_owned(),
             },
