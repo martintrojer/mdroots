@@ -26,8 +26,8 @@ Measurements below come from two testbed vaults: a ~730-note [zk](https://github
 
 **Decision**
 - mdroots is a Rust library; `mdroots lsp`, the CLI and other embedders (TUIs, SSGs, MCP servers, other language servers) call the same API (`mdroots::Workspaces`) directly. The CLI is the first embedder.
-- Synchronous core, no async runtime and no background thread: nothing polls, and the embedder calls `Workspace::refresh` to pick up changes on disk. Opt-in background work (`Options::background`) comes with the watcher (M6).
-- Slow calls (`refresh`, `diagnostics`, `rename_note`) take `&Cancel`. The LSP answers requests one at a time, in order; a `$/cancelRequest` drops a queued request, and a `didChange` drops the queued requests on that document.
+- Synchronous core, no async runtime. By default no background thread: nothing polls, and the embedder calls `Workspace::refresh` or `refresh_paths` to pick up changes on disk. The only background thread is the opt-in native watcher (`Options::watch(true)`, set by `mdroots lsp`), which calls the same `refresh_paths`.
+- Slow calls (`refresh`, `refresh_paths`, `full_text`, `diagnostics`, `rename_note`) take `&Cancel`. The LSP answers requests one at a time, in order; a `$/cancelRequest` drops a queued request, and a `didChange` drops the queued requests on that document.
 - Each query sees one consistent state: the process's in-memory index (D9) with overlays applied at call time. A refresh builds a new index and swaps it in, so a concurrent change is never seen halfway.
 - Planned: a non-blocking open that returns a `Lazy` workspace at once and finishes discovery in the background, so an editor never blocks on a slow filesystem. Today `open_for` is synchronous and discovery is bounded by its budgets.
 - The library never writes user files. Refactors return a `WorkspaceEdit`.
@@ -47,13 +47,13 @@ Measurements below come from two testbed vaults: a ~730-note [zk](https://github
 
 **Decision**
 - mdroots always runs inside the embedding process. No daemon, RPC, sockets or remote backend.
-- Per root, `flock(LOCK_EX|LOCK_NB)` on `<id>.lock` elects a **reconciler**: background sweep, watcher, FTS. It is the only process that writes the root's DB.
+- Per root, `flock(LOCK_EX|LOCK_NB)` on `<id>.lock` elects a **reconciler**: the native watcher, the FTS table, and later background sweeps. It is the only process that writes the root's DB.
 - Every other process is a **read-only peer**: it serves queries from the DB plus its own overlays (unsaved buffers, and files it just saved, parsed in memory until the DB catches up). Its saves reach the DB through the reconciler's watcher or next sweep.
 - A peer that wants freshness while no one holds the lock tries the lock and becomes the reconciler.
 - Peers follow commits via `PRAGMA data_version` (~1.2 µs per call; changes only for other connections' commits) plus `change_log`.
 - Crash recovery is the kernel releasing the flock (also on SIGKILL). No heartbeats, PID files or stale-lock cleanup.
 - Only the reconciler acts on watcher events; peers act only on their own `didOpen`/`didChange`/`didSave`, so a save is not parsed N times.
-- Built in M4: the election, the `.open` lock, `discover.lock`, peers that never write, and promotion on `refresh`. Peers pick up the reconciler's commits on their next `refresh` (D9). The watcher, FTS, `data_version` following, the 5 s takeover retry and the stuck-reconciler warning come with M6.
+- Built: the election, the `.open` lock, `discover.lock`, peers that never write, promotion on `refresh` (M4); the reconciler's native watcher and FTS table (M6). Peers pick up the reconciler's commits on their next `refresh` (D9). Not built: `data_version` following, the 5 s takeover retry and the stuck-reconciler warning.
 - Use `std::fs::File::try_lock` / `try_lock_shared` (Rust ≥ 1.89). Rust opens files `O_CLOEXEC`, so children don't inherit locks; a second fd in the same process is refused (that process becomes a peer); flock does not conflict with [SQLite](https://sqlite.org)'s fcntl locks.
 
 **Lock files** (in the base dir of D5; full rules in [specs/roots.md](specs/roots.md))
@@ -64,13 +64,13 @@ Measurements below come from two testbed vaults: a ~730-note [zk](https://github
 | `<id>.open` | every process, `LOCK_SH`, while the DB is open | GC, schema cleanup and corruption rebuild need `LOCK_EX\|LOCK_NB` on it, so they never unlink a DB another process has open (a documented SQLite corruption path) |
 | `discover.lock` (global) | the discovering process, during discovery stages 2–4 | serialises discovery: one walk per user at a time; others re-check the registry after taking it |
 
-`.lock` and `.open` are removed only when the whole root is GC-ed, under `LOCK_EX` on both. A process that takes either lock re-checks that the path still names the locked inode (`stat` vs `fstat`).
+`.lock` and `.open` are never deleted, not even by GC of a whole root: they are tiny, and deleting one a process waits on would let a second process take it. One `.lock`/`.open` pair per root and schema covers every generation file of that root's DB.
 
 **Transactions and failure modes**
 - The reconciler's writes are `BEGIN IMMEDIATE` with `busy_timeout`, because a deferred read-then-write gets `SQLITE_BUSY` at once and ignores the timeout. Readers retry on `SQLITE_BUSY` during WAL recovery after a crash.
 - The reconciler checkpoints periodically and caps WAL size, because a leaked long-lived reader blocks checkpoints.
 - Stuck reconciler (alive but SIGSTOPed or hung on a network/virtual FS `stat`): no liveness detection. A peer that sees a stale `meta.reconciled_at` logs one warning and point-checks its own open files and their link targets in memory. It still writes nothing.
-- Watcher gap on takeover (up to the 5 s lock retry): on macOS the new reconciler replays FSEvents from the last committed ID; on Linux it runs the `dir_state` diff once before starting inotify.
+- Watcher gap on takeover: changes made while no reconciler watched are found by the re-list and re-stat the new reconciler runs on promotion (and every process runs on open). FSEvents replay would avoid that walk; it is deferred (D9).
 - Herd start (ten editors at once): one process walks under `discover.lock`, one wins the root flock, nine serve from the existing index. A "lazy" verdict from the walk-rate check alone is not saved until a second measurement agrees, so a herd-slowed walk doesn't stick.
 
 **Why**
@@ -100,12 +100,11 @@ Measurements below come from two testbed vaults: a ~730-note [zk](https://github
 - The DB is a **cache**: correctness never depends on it. It is rebuilt on schema change, corruption or OS purge. `IndexMode::Memory` stays available for embedders.
 - Links are resolved at query time, so adding or renaming a doc never rewrites its referrers' rows. Today they are not stored at all (D9); the derived tables will store them unresolved, as normalised keys.
 - Writes go in small committed batches; changes are published through `change_log`.
-- Corruption: never rename the file. The reconciler builds a new generation `<db>-<gen8>.db` with a new `meta.generation` (UUID) and repoints the registry; GC deletes the old file once `<id>.open` can be taken exclusively.
-- Peers compare the DB path's inode and `meta.generation` on every `data_version` check and reopen when either changed (covers rebuilds and cache purges). `change_log.seq` restarts per generation, so a reopening peer drops its cursor and hot cache.
+- Corruption: never rename or unlink the file. The reconciler (`quick_check` on open and on promotion, or a `Corrupt` error) builds a new generation `<db>-<gen8>.db` with a new random `meta.generation`, fills it, then repoints the registry's `db_file`; GC deletes the old file once `<id>.open` can be taken exclusively. A peer of a corrupt file serves from memory meanwhile, so `open_for` never fails on a corrupt cache.
+- Every process re-reads the registry row on `refresh` and `refresh_paths` and reopens when `db_file` names another file. Planned: a per-query check of `data_version` and the DB inode, to catch cache purges between refreshes.
 - Root moves: `files.path` is root-relative. On a registry miss, a DB whose stored marker inode (or volume UUID + marker inode) matches the new root is re-keyed instead of rebuilt.
-- Rebuild order: metadata first in small batches, so links and diagnostics work early; FTS last, throttled, reconciler only. Batch size and page cache are bounded to stay under the RSS target.
-- GC (at most daily): roots unseen for 30 days or gone, old schema versions older than 7 days, stale generations. Skips any DB whose `.open` is held.
-- Not built yet (M6): corruption rebuild into a new generation, peers reopening on an inode or `generation` change, FTS and GC. A DB of another schema or a corrupt DB is an error today.
+- The [FTS5](https://sqlite.org/fts5.html) table mirrors each note's content in the same transaction that writes it, reconciler only. Batch size and page cache are bounded to stay under the RSS target.
+- GC (at most daily per cache dir): stale generations, DB files of roots without a registry row, old schema versions 7 days old, roots unseen for 30 days or gone, then least recently seen roots over a 1 GiB budget. Skips any root whose `.open` is held. Lock files are never deleted (D3).
 
 **Freshness rule** (single writer, so no fence between writers; details in [specs/index.md](specs/index.md))
 - Version = the `fstat` of the fd the content was read from: stat, read, `fstat`; retry if the stats differ.
@@ -116,7 +115,7 @@ Measurements below come from two testbed vaults: a ~730-note [zk](https://github
 - Parse speed alone does not justify a DB: walk + parse takes 104–129 ms on the ~730-note vault and 12–36 ms on the ~210-note vault, under the 250 ms cold target (pulldown-cmark ~1.1 GB/s).
 - Warm start < 30 ms to first result: an in-memory server must open every file at start, ~100 µs per open on macOS, so ~2 s at 20k files before parsing.
 - N editors share one cache instead of N cold reads; with the derived tables (D9) they also stop holding N in-memory copies. marksman re-parses every start: ~610–840 ms to first result, 134–145 MB RSS. zk answers in 22–43 ms at 32–35 MB from its DB.
-- FTS is too large to rebuild per process.
+- FTS is too large to rebuild per process. A peer, whose DB may lag the text it serves, scans its in-memory notes with the same matching rules instead.
 - Estimated size (unmeasured): metadata ~1 MB per 1k notes; FTS5 with external content ~1× source size. For comparison a clean `zk index` takes 2.2–3.4 s at 42–48 MB RSS.
 
 **Rejected**
@@ -138,7 +137,7 @@ Measurements below come from two testbed vaults: a ~730-note [zk](https://github
 | 4 | in memory for the session | nothing usable |
 
 - "Local" = `statfs` reports `MNT_LOCAL`, with fs-type name matching as fallback (same test as root classification). flock and WAL are used only there, because both are unsafe on NFS/SMB.
-- A cache dir or registry that cannot be opened leaves the session in memory instead of failing. Dropping to memory on a full disk at write time comes with M6.
+- A cache dir or registry that cannot be opened leaves the session in memory instead of failing; a corrupt per-root DB is rebuilt (D4). Dropping to memory on a full disk at write time is not built.
 - OS purges and cleared runtime/tmp dirs are treated like deletion: peers reopen (D4), the next reconciler rebuilds. Cost: one cold start.
 - `Options::index(IndexMode::Memory)` never touches the cache dir (in-memory index), for read-only embedders. `Options::cache_dir(path)` (the CLI's `MDROOTS_CACHE_DIR`) replaces the chain, for tests.
 - Processes with different environments may pick different base dirs; each gets its own reconciler. `mdroots roots` prints the root's DB path (so the base dir) and the process's role; `cache_dir` also returns why each candidate was taken or rejected.
@@ -230,23 +229,26 @@ Each crate may also use any crate to its left directly (`mdroots-cli` uses `mdro
 ## D9. The per-root DB caches content; queries run on an in-memory index
 
 **Decision**
-- Each `files` row of the per-root DB (D4) holds a note's root-relative path, its stat (`ino`, `ctime_ns`, `mtime_ns`, `size`) and its **bytes**. There are no derived SQL tables (keys, links, frontmatter) yet.
-- Every process hydrates an in-memory `MemStore` from the DB's bytes (`MemStore::from_contents`) and answers every query from memory. An unchanged note is never opened: it is re-read only when its `(ino, ctime_ns, size)` differs from its row, or it has no row.
+- Each `files` row of the per-root DB (D4) holds a note's root-relative path, its stat (`ino`, `ctime_ns`, `mtime_ns`, `size`) and its **bytes**; an FTS5 table mirrors the bytes for full-text search. There are no derived SQL tables (keys, links, frontmatter).
+- Every process hydrates an in-memory `MemStore` from the DB's bytes (`MemStore::from_contents`) and answers every query from memory, except the reconciler's `full_text`, which reads the FTS table. Whole-root results (the diagnostics policy's resolved share, the backlink index) are computed once per store and dropped on the next content change. An unchanged note is never opened: it is re-read only when its `(ino, ctime_ns, size)` differs from its row, or it has no row.
 - Content equality replaces the spec's `hash`, because the bytes are stored anyway. A read with new bytes is an upsert plus a `change_log` entry; the same bytes with a new stat (`touch`) update only the stat columns. A parser upgrade needs no re-index, since every process parses the stored content.
 - The reconciler (D3) re-lists the root per its mode on open and on `Workspace::refresh` (budgeted walk, git index scan, enumerator, or the lazy working set), re-stats every file and writes what changed in `BEGIN IMMEDIATE` batches of at most 200 files or 50 ms. A peer never lists: it uses the DB's file set, re-stats it and reads changed files into memory only.
-- No watcher in M4: changes on disk arrive through `refresh`, which `mdroots lsp` calls on `didSave` and `didChangeWatchedFiles`.
+- Changes on disk arrive through `refresh` (which `mdroots lsp` calls on `didSave`, and on `didChangeWatchedFiles` for workspaces that do not watch) and through the reconciler's opt-in native watcher, which point-refreshes changed paths with `refresh_paths` and patches the store in place.
 - `Workspace::open_at` (a directory chosen by the caller) and single-file decisions stay in memory; only discovered, registered roots get a DB.
 
 **Why**
 - It gives the warm-start win of D4 (no file opens for unchanged notes) with a small schema and no query layer to keep in sync with the parser; the in-memory layer already existed (M1–M3).
 - Storing bytes makes change detection exact without a hash and makes parser changes free.
-- Measured (release build, macOS APFS): an 11-note vault checks in 0.32 s cold and under 0.01 s warm at 2.2 MB peak footprint; a synthetic 3,000-note notebook (12 MB) takes 0.40 s with a fresh cache and 0.14 s with the DB present, at 36.6 MB peak footprint.
+- Measured (release build, macOS APFS): an 11-note vault checks in 0.32 s cold and under 0.01 s warm at 2.2 MB peak footprint. On a synthetic 3,000-note notebook (12 MB), `mdroots check` on one note takes 0.6–0.7 s with a fresh cache and 0.11 s with the DB present, at 25.5 MB and 30.5 MB peak footprint; whole-root queries in memory (`bench_root`: diagnostics for every file 46–65 ms, backlinks for 100 files 11 ms) peak at 24.1 MB.
 
 **Costs accepted**
-- Every process holds every note's bytes and parse in memory, so memory grows with the vault. The 3,000-note notebook is already just over the 35 MB per-process target (D3); see [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).
+- Every process holds every note's bytes and parse in memory, so memory grows with the vault. The 3,000-note notebook stays under the 35 MB per-process target (D3), with little margin; see [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).
 - Hydrating parses every note at start; a peer sees another process's writes only on its next `refresh`.
 
-**Next (M6)**: derived tables (`keys`, `links`, `frontmatter` with indexed lookups, [specs/index.md](specs/index.md) §1.2) so queries stop needing every note in memory; then the watcher, FTS and GC.
+**Deferred to M7** (decided in M6, with these numbers):
+- **Derived tables** (`keys`, `links`, `frontmatter` with indexed lookups, [specs/index.md](specs/index.md) §1.2). Before M6 opening the 3,000-note notebook peaked at 37 MB with or without the DB, against the 35 MB target. M6 cached whole-root results and stopped copying each note's text into its line index (28.3 → 24.1 MB on the whole-root bench); every measured path now peaks at 23–31 MB. The target vaults (~730 and ~210 notes) are far below that size, so a second query layer kept in sync with the parser is not worth it yet.
+- **FSEvents replay** (`sinceWhen`). [notify](https://crates.io/crates/notify) cannot set it, and the alternatives (`fsevent-sys`, direct FFI) need unsafe code, which the workspace forbids (`unsafe_code = "forbid"`). Offline changes are already caught by the re-list and re-stat on open.
+- **Cross-root `ATTACH`, a background open, [Watchman](https://facebook.github.io/watchman/) clocks**: no measured need yet.
 
 **Rejected**
 - Building the derived tables in M4: a second query layer before the first one was measured.

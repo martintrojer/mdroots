@@ -17,10 +17,11 @@ Each one ends as a spec change or a decision in [DECISIONS.md](DECISIONS.md).
    again on `Workspace::refresh`. Open: is 500 ms the right budget, the
    EdenFS glob API instead of a child process, and whether `git ls-files`
    should do the same for other lazy roots.
-3. **FSEvents replay cost.** After a day offline, replay from `sinceWhen` may
-   report directories only (`MustScanSubDirs`, dropped events,
-   `EventIdsWrapped`) and fall back to the `dir_state` diff. How long does it
-   take to reach `HistoryDone` on a busy volume, and how often does it degrade?
+3. **FSEvents replay cost** (deferred to M7, D9). After a day offline, replay
+   from `sinceWhen` may report directories only (`MustScanSubDirs`, dropped
+   events, `EventIdsWrapped`) and fall back to the `dir_state` diff. How long
+   does it take to reach `HistoryDone` on a busy volume, how often does it
+   degrade, and is it cheaper than today's re-list and re-stat on open?
 4. **Bare paths in prose at all?** In the research vault, 192 of 193 bare
    path-like tokens that exist on disk are frontmatter values; in the zk vault
    2 of 2,423 exist. Resolve bare paths only in frontmatter values, or also in
@@ -40,15 +41,17 @@ Each one ends as a spec change or a decision in [DECISIONS.md](DECISIONS.md).
    magic file name. Revisit when used ([specs/roots.md](specs/roots.md)).
 9. **Memory per process with the in-memory query layer (D9).** Every process
    holds every note's bytes and parse in a `MemStore`. Measured peak
-   footprint (release build, macOS APFS): 2.2 MB on an 11-note vault, 36.6 MB
-   on a synthetic 3,000-note notebook (12 MB of markdown), already over the
-   35 MB per-process target. The content held in memory dominates. Open: the
-   footprint with 10 concurrent editors, and up to which vault size the
-   target must hold.
+   footprint (release build, macOS APFS): 2.2 MB on an 11-note vault; on a
+   synthetic 3,000-note notebook (12 MB of markdown) 24.1 MB for whole-root
+   queries in memory (28.3 MB before M6), and 25.5 MB opening one note with a
+   fresh cache, 30.5 MB with the DB present. That is under the 35 MB per-process
+   target with little margin. Open: the footprint with 10 concurrent
+   editors, and up to which vault size the target must hold.
 10. **When to add the derived SQL tables.** `keys`, `links` and `frontmatter`
    with indexed lookups ([specs/index.md](specs/index.md) §1.2) would let a
    process answer from [SQLite](https://sqlite.org) without holding every note in memory, at the
    cost of a second query layer kept in sync with the parser (and a parser
-   version to re-index on). Planned for M6; open is whether to add them for
-   every root or only above a vault size, and which queries move first
-   (backlinks and completion are the ones that scan every note).
+   version to re-index on). Deferred to M7 (D9). Open: add them for every
+   root or only above a vault size, and which queries move first (completion
+   and full-text for peers scan every note; backlinks and the diagnostics
+   share are cached per store since M6).
