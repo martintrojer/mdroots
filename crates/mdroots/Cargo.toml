@@ -18,6 +18,7 @@ mdroots-resolve = { path = "../mdroots-resolve", version = "=0.1.0" }
 mdroots-core = { path = "../mdroots-core", version = "=0.1.0" }
 mdroots-roots = { path = "../mdroots-roots", version = "=0.1.0" }
 mdroots-index = { path = "../mdroots-index", version = "=0.1.0" }
+unicode-normalization = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

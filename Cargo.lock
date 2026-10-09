@@ -390,6 +390,7 @@ dependencies = [
  "mdroots-roots",
  "mdroots-syntax",
  "tempfile",
+ "unicode-normalization",
 ]
 
 [[package]]

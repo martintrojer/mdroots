@@ -198,3 +198,26 @@ fn cancel_stops_the_search() {
     let e = ws.full_text("x", 10, &c).unwrap_err();
     assert_eq!(e.kind(), ErrorKind::Cancelled);
 }
+
+#[test]
+fn accents_fold_in_both_paths_and_the_line_is_the_first_match() {
+    let (tmp, dir) = zkvault();
+    let note = dir.join("accent.md");
+    fs::write(
+        &note,
+        "# Heading only\n\ntext\n\nA visit to the Café today.\n",
+    )
+    .unwrap();
+    for opts in [
+        std_opts().cache_dir(tmp.path().join("cache")),
+        std_opts().index(IndexMode::Memory),
+    ] {
+        let ws = Workspace::open_for(&note, opts).unwrap();
+        let hits: Vec<Hit> = search(&ws, "cafe")
+            .into_iter()
+            .filter(|h| h.path == note)
+            .collect();
+        assert_eq!(hits.len(), 1, "role {:?}", ws.role());
+        assert_eq!(hits[0].line, 4, "role {:?}", ws.role());
+    }
+}

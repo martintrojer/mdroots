@@ -6,8 +6,8 @@
 //! naive scan of the current text with the same rules: lowercase, tokens
 //! are runs of letters and digits, every query term must appear (a term of
 //! several tokens as a phrase), and the last term also matches as a prefix.
-//! Unlike FTS5, the naive scan does not fold diacritics (`cafe` does not
-//! find `café`).
+//! Both fold diacritics (`cafe` finds `café`), as FTS5's `unicode61
+//! remove_diacritics 2` tokenizer does.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -155,11 +155,19 @@ fn has_phrase(toks: &[String], phrase: &[String], prefix: bool) -> bool {
     })
 }
 
-/// Runs of letters and digits, lowercase.
+/// Runs of letters and digits, lowercase, diacritics removed (NFD, then
+/// combining marks dropped).
 fn tokens(s: &str) -> Vec<String> {
+    use unicode_normalization::UnicodeNormalization;
+    use unicode_normalization::char::is_combining_mark;
     s.split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
-        .map(str::to_lowercase)
+        .map(|t| {
+            t.nfd()
+                .filter(|c| !is_combining_mark(*c))
+                .collect::<String>()
+                .to_lowercase()
+        })
         .collect()
 }
 
