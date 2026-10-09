@@ -5,7 +5,7 @@ questions still open. Specs describe what exists; [DECISIONS.md](DECISIONS.md)
 holds the decisions in force. An item leaves this file when it becomes code
 plus a spec change, or a decision.
 
-Status: 0.2.0. Milestones M1–M7 are built: parsing and resolution, root
+Status: 0.2.1. Milestones M1–M7 are built: parsing and resolution, root
 discovery, the `mdroots` facade and CLI, the per-root
 [SQLite](https://sqlite.org) cache, the language server, the file watcher,
 full-text search, cache GC, folding, code lenses, extract-note and a
@@ -84,10 +84,9 @@ Ordered by expected value. Each has a reason it is not built yet.
 |---|---|
 | CI on Linux and macOS | §1.1; the gate already passes on both by hand |
 | Library heading sections (`Workspace::sections(path)`) and per-heading backlink counts for embedders | ramble, a read-only TUI, can use the library parts behind the editor features: `frontmatter_range` for its frontmatter fold (instead of its own detection), `anchor_backlinks`/`heading_backlinks` for link counts next to headings. Heading-section folding is computed inside `mdroots-lsp` today; moving it into the library would let ramble fold by section too |
-| Port two front matter fixes from ramble (nested list items from the parser; block-scalar list items as text) | blocks ramble deleting its own front matter parser ([research/ramble](research/ramble.md), Still to port) |
 | "New note" command and the filename scheme vote | the link style exists (`Workspace::link_style`); the filename scheme (slug, id prefix, date) is not voted yet |
 | `workspace/willRenameFiles`, a full-text LSP request, semantic tokens | small server additions; no client asked yet ([Neovim](https://neovim.io) 0.12 never sends `willRenameFiles`) |
-| Embedder API: typed `subscribe` events, `notes_with_tag`, `NoteSummary.modified`, `Preview.summary`, code-mention search dirs in `Options`, a server builder that shares an embedder's `Workspaces` | driven by ramble, a separate TUI markdown reader by the same author ([research/ramble](research/ramble.md)) |
+| Embedder API: typed `subscribe` events, `notes_with_tag`, `NoteSummary.modified`, `Preview.summary`, a server builder that shares an embedder's `Workspaces` | driven by ramble, a separate TUI markdown reader by the same author ([research/ramble](research/ramble.md)) |
 | Derived SQL tables (`keys`, `links`, `frontmatter`) | memory is under target at 3,000 notes; adds a second query layer and a parser version to keep in sync (D9) |
 | FSEvents replay (`sinceWhen`) | needs FFI and the workspace forbids unsafe code; the re-list on open already catches offline changes (D9) |
 | Cross-root `ATTACH` | no measured need ([roots spec §4](specs/roots.md)) |

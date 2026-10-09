@@ -4,6 +4,20 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
+## 0.2.1
+
+- Front matter: block scalars (`|`, `>`) whose lines look like keys or list
+  items are text on one line; nested list items come from the YAML parser
+  (`[a, [b, c]]` gives `a` and `b, c`); a block-scalar list item (`- |`) is
+  its text; map list items (`{…}`) are placeholders, so they never become
+  tags or aliases; scan and parser are combined in linear time (20k keys in
+  about 20 ms instead of 0.6 s). Ported from ramble, a TUI markdown reader
+  by the same author.
+- `Options::code_dirs`: extra directories code mentions (`` `src/main.rs:12` ``)
+  resolve against, after the note's directory and before the root.
+- Linux: kernel pseudo-filesystems (`/proc`, `/sys`, ...) count as virtual,
+  so opening a file there never walks them.
+
 ## 0.2.0
 
 Language server:

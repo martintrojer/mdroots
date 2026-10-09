@@ -30,18 +30,18 @@ Fetch from the ramble repo at the named commit.
 
 | ramble code (commit) | Use | Status |
 |---|---|---|
-| `src/frontmatter.rs` nested list items from the parser (`065bdf7`) + `nested_list_items_take_the_parser_items` | `l:\n  - a\n  - - b\n    - c` is `["a", "b, c"]`; mdroots 0.2.0 gives `["a", "- b", "c"]` | **to port** before ramble deletes `frontmatter.rs` |
-| `src/frontmatter.rs` block-scalar list items (`01e1ef6`) + `block_scalar_list_items_are_their_text` | `- \|` with indented text is that text; mdroots 0.2.0 gives the literal `\|` | **to port**, same |
-| `src/app/codepath.rs` `code_path_dirs` (`75b8285`) | extra code-mention search dirs (page dir, VCS root, tree root, deduped) as an `Options` field | **to port** ([ROADMAP](../ROADMAP.md) §3, embedder API) |
+| `src/frontmatter.rs` nested list items from the parser (`065bdf7`) + `nested_list_items_take_the_parser_items` | `l:\n  - a\n  - - b\n    - c` is `["a", "b, c"]`; mdroots 0.2.0 gives `["a", "- b", "c"]` | ported in 0.2.1 (with `04f915b` and `d5ff6fb`) |
+| `src/frontmatter.rs` block-scalar list items (`01e1ef6`) + `block_scalar_list_items_are_their_text` | `- \|` with indented text is that text; mdroots 0.2.0 gives the literal `\|` | ported in 0.2.1 |
+| `src/app/codepath.rs` `code_path_dirs` (`75b8285`) | extra code-mention search dirs (page dir, VCS root, tree root, deduped) as an `Options` field | built in 0.2.1 as `Options::code_dirs` (the caller computes the dirs) |
 | `src/app/watch.rs` + `tests/watch.rs` (`75b8285`) | lessons for the watcher: editors replace by rename, compare content not events, kick once after `watch()` so a write between load and watch is seen | built in M6 without porting (`crates/mdroots/src/watch.rs` reconciles by stat and content); the FSEvents replay lesson waits for replay ([ROADMAP](../ROADMAP.md) §3) |
 | `src/lsp/uri.rs` `uri_to_path`, `canonical_uri` (`75b8285`) | URI ↔ path in `mdroots-lsp` | not ported: `mdroots-lsp` decodes `file:` URIs with lsp-types' `fluent-uri`; zk's undeclared UTF-32 columns matter only to ramble's optional zk backend |
 | `tests/support/fake_lsp.rs`, `src/lsp/framing.rs` (`75b8285`) | a scripted test client | not needed: `mdroots-lsp` tests use `lsp_server::Connection::memory()` and the CLI tests drive the real binary |
 | `src/notebook.rs` `walk_notes`, `src/app/launch.rs` `vcs_root` (`75b8285`) | the `ignore::WalkBuilder` flags and the VCS marker list | used as reference for the M2 walk and marker table |
 
-Fixes already carried over from ramble's later front matter commits:
-block scalars whose lines look like keys or items are text (`04f915b`), and
-parsing is linear in the number of keys (`d5ff6fb`; 20k keys parse in about
-0.6 s in a release build).
+All of ramble's front matter fixes up to `01e1ef6` are in mdroots 0.2.1:
+block scalars are text on one line (`04f915b`), linear-time parsing
+(`d5ff6fb`; 20k keys in about 20 ms), nested list items from the parser
+(`065bdf7`) and block-scalar list items as text (`01e1ef6`).
 
 ## What ramble deletes once it embeds mdroots
 
@@ -77,4 +77,4 @@ optional backend.
 - `mask` (keeping empty-frontmatter fences out of the render pass) can use `Workspace::frontmatter_range` or `Document::frontmatter().range` instead of its own detection.
 - The hover popup (`src/ui/hover.rs`) stays, fed by `preview()`; only the LSP markdown flattening goes.
 - `serde_json` stays (`review.rs`), `ignore` stays (sidebar), `toml` stays (config).
-- The embedder API ramble needs is in [specs/library.md](../specs/library.md) §3.2–§3.3. Built by 0.2.0: `document_links` (with `text_range`, `anchor`, `line`, `status`), `goto`, `preview`, unranked `notes`, `full_text` with snippet and line, backlinks with `from_title`, `line`, `in_code`, `refresh_paths` (instead of `touched`), `subscribe` (changed paths), `open_single` and `Workspaces::get` for a non-blocking first open. Still gaps ([ROADMAP](../ROADMAP.md) §3): `notes_with_tag`, `NoteSummary.modified`, `Preview.summary`, typed `subscribe` events, and code-mention search dirs in `Options`. ramble's plan: `docs/specs/2026-10-08-mdroots-migration.md` in the ramble repo.
+- The embedder API ramble needs is in [specs/library.md](../specs/library.md) §3.2–§3.3. Built by 0.2.0: `document_links` (with `text_range`, `anchor`, `line`, `status`), `goto`, `preview`, unranked `notes`, `full_text` with snippet and line, backlinks with `from_title`, `line`, `in_code`, `refresh_paths` (instead of `touched`), `subscribe` (changed paths), `open_single` and `Workspaces::get` for a non-blocking first open. Still gaps ([ROADMAP](../ROADMAP.md) §3): `notes_with_tag`, `NoteSummary.modified`, `Preview.summary`, typed `subscribe` events, ramble's plan: `docs/specs/2026-10-08-mdroots-migration.md` in the ramble repo.
