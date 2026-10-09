@@ -963,6 +963,43 @@ fn did_change_watched_files_refreshes_affected_workspaces() {
 }
 
 #[test]
+fn a_watching_server_republishes_when_a_missing_target_appears_on_disk() {
+    let v = Vault::corpus("zk-min");
+    let cache = tempfile::tempdir().unwrap();
+    let mut c = Client::new();
+    c.spawn_with(
+        Options::default()
+            .cache_dir(cache.path().to_path_buf())
+            .watch(true),
+    );
+    c.initialize(json!({}));
+    let uri = v.uri("broken.md");
+    c.open(&uri, &v.read("broken.md"));
+    let d = c.diagnostics(&uri);
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!(d[0]["code"], "broken-link");
+    // Another program creates the target; no save, no client watcher.
+    v.write("missing-note.md", "# Found\n");
+    let start = Instant::now();
+    loop {
+        let left = Duration::from_secs(5).saturating_sub(start.elapsed());
+        let m = c
+            .conn
+            .receiver
+            .recv_timeout(left)
+            .expect("diagnostics without the broken link within 5 s");
+        if let Message::Notification(n) = m
+            && n.method == "textDocument/publishDiagnostics"
+            && n.params["uri"] == uri.as_str()
+            && n.params["diagnostics"] == json!([])
+        {
+            break;
+        }
+    }
+    c.shutdown().unwrap();
+}
+
+#[test]
 fn registers_a_watcher_when_the_client_offers_dynamic_registration() {
     let mut c = Client::start();
     let caps = json!({ "workspace": { "didChangeWatchedFiles": { "dynamicRegistration": true } } });

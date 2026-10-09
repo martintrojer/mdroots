@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{RecvTimeoutError, TryRecvError};
+use crossbeam_channel::{Receiver, RecvError, Sender, TryRecvError, select};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
     CancelParams, CompletionOptions, DidChangeConfigurationParams, DidChangeTextDocumentParams,
@@ -66,6 +66,19 @@ pub(crate) struct Server {
     /// The client registers file watchers on request
     /// (`workspace.didChangeWatchedFiles.dynamicRegistration`).
     watch_dynamic: bool,
+    /// Roots of the watching workspaces subscribed to (one forwarding
+    /// thread each).
+    watched: HashSet<PathBuf>,
+    /// The forwarding threads send a watching workspace's root here when
+    /// its watcher changed notes; the message loop selects on it.
+    changes: (Sender<PathBuf>, Receiver<PathBuf>),
+}
+
+/// What the message loop waits for.
+enum Event {
+    Message(Message),
+    /// A watching workspace (by root) changed on disk.
+    Changed(PathBuf),
 }
 
 impl Server {
@@ -131,6 +144,8 @@ impl Server {
             shutdown: false,
             apply_seq: 0,
             watch_dynamic: false,
+            watched: HashSet::new(),
+            changes: crossbeam_channel::unbounded(),
         }
     }
 
@@ -166,22 +181,39 @@ impl Server {
     }
 
     /// The next message, publishing debounced diagnostics as they fall
-    /// due while waiting. `None` once the client is gone.
+    /// due and republishing after watcher changes while waiting. `None`
+    /// once the client is gone.
     fn recv(&mut self) -> Option<Message> {
         loop {
-            let next = self.due.values().min().copied();
-            let got = match next {
-                Some(at) => self.conn.receiver.recv_deadline(at),
-                None => self
-                    .conn
-                    .receiver
-                    .recv()
-                    .map_err(|_| RecvTimeoutError::Disconnected),
+            let timeout = self
+                .due
+                .values()
+                .min()
+                .map(|at| at.saturating_duration_since(Instant::now()));
+            let got: Option<Result<Event, RecvError>> = {
+                let (conn, changes) = (&self.conn.receiver, &self.changes.1);
+                let never = crossbeam_channel::never();
+                let deadline = match timeout {
+                    Some(t) => crossbeam_channel::after(t),
+                    None => never.clone(),
+                };
+                select! {
+                    recv(conn) -> m => Some(m.map(Event::Message)),
+                    recv(changes) -> r => Some(r.map(Event::Changed)),
+                    recv(deadline) -> _ => None,
+                }
             };
             match got {
-                Ok(m) => return Some(m),
-                Err(RecvTimeoutError::Disconnected) => return None,
-                Err(RecvTimeoutError::Timeout) => self.publish_due(),
+                Some(Ok(Event::Message(m))) => return Some(m),
+                Some(Ok(Event::Changed(root))) => {
+                    if !self.shutdown {
+                        self.republish(&[root]);
+                    }
+                }
+                // The changes channel never closes (the server holds a
+                // sender), so this is the client going away.
+                Some(Err(RecvError)) => return None,
+                None => self.publish_due(),
             }
         }
     }
@@ -464,10 +496,12 @@ impl Server {
                         .iter()
                         .filter_map(|c| uri::to_path(&c.uri))
                         .collect();
+                    // A watching workspace already follows the disk itself.
                     let affected: Vec<Workspace> = self
                         .workspaces
                         .all()
                         .into_iter()
+                        .filter(|ws| !ws.watching())
                         .filter(|ws| {
                             let root = ws.root().path;
                             paths.iter().any(|p| p.starts_with(&root))
@@ -535,6 +569,12 @@ impl Server {
             log_err("refresh", ws.refresh(&Cancel::new()));
             roots.push(ws.root().path);
         }
+        self.republish(&roots);
+    }
+
+    /// Republishes the diagnostics of the open documents in the
+    /// workspaces with these roots.
+    fn republish(&mut self, roots: &[PathBuf]) {
         let mut keys: Vec<String> = self
             .docs
             .iter()
@@ -574,6 +614,7 @@ impl Server {
         };
         if let Some(ws) = &ws {
             log_err("overlay", ws.set_overlay(&path, &text));
+            self.follow(ws);
         }
         let doc = Doc {
             uri,
@@ -584,6 +625,34 @@ impl Server {
         };
         self.docs.insert(key, doc);
         true
+    }
+
+    /// Subscribes to a watching workspace once: a thread forwards its
+    /// change notifications into the message loop as the root path. The
+    /// thread ends when the workspace (its sender) or the server is gone.
+    fn follow(&mut self, ws: &Workspace) {
+        let root = ws.root().path;
+        if !ws.watching() || self.watched.contains(&root) {
+            return;
+        }
+        let rx = ws.subscribe();
+        let tx = self.changes.0.clone();
+        let fwd_root = root.clone();
+        let spawned = std::thread::Builder::new()
+            .name("mdroots-lsp-watch".to_owned())
+            .spawn(move || {
+                for _ in rx {
+                    if tx.send(fwd_root.clone()).is_err() {
+                        return;
+                    }
+                }
+            });
+        match spawned {
+            Ok(_) => {
+                self.watched.insert(root);
+            }
+            Err(e) => eprintln!("mdroots-lsp: watch: {e}"),
+        }
     }
 
     /// Publishes the open document's diagnostics now.
