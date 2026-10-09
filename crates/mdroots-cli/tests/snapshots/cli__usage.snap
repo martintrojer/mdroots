@@ -11,8 +11,9 @@ commands:
   roots PATH                  show the root chosen for PATH and why
   resolve FROM LINK           resolve LINK as written in the note FROM
   backlinks NOTE              list the notes linking to NOTE
-  lsp [--log FILE]            the language server on stdin/stdout; --log
-                              appends one line per message to FILE
+  lsp [--stdio] [--log FILE]  the language server on stdin/stdout (--stdio
+                              is accepted and ignored); --log appends one
+                              line per message to FILE
 
 environment:
   MDROOTS_CACHE_DIR           cache dir to use instead of the user's (for

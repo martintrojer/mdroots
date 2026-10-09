@@ -320,7 +320,7 @@ The `mdroots` binary (crate `mdroots-cli`) depends on the `mdroots` facade, and 
 | `roots PATH` | the root chosen for PATH: `root:` (absolute), `mode:`, `why:` (discovery's one-line reason), `files:` (indexed count), `cache:` (the root's DB path, or `memory`), `role:` (`reconciler`, `peer`, or `none` in memory), one `nested:` line per nested root | 0 |
 | `resolve FROM LINK` | each target, then `step:` and `status:` | 1 without a target |
 | `backlinks NOTE` | `path:line: title` per linking note | 0 |
-| `lsp [--log FILE]` | the language server (§3.6) on stdin/stdout until `exit` or EOF; `--log` appends one line per message to FILE: time, direction (`<-` from the client, `->` to it), method or `response`, and id | 0 (2 on a protocol error) |
+| `lsp [--stdio] [--log FILE]` | the language server (§3.6) on stdin/stdout until `exit` or EOF; `--stdio` is accepted and ignored (stdio is the only transport; many editor configs pass it); `--log` appends one line per message to FILE: time, direction (`<-` from the client, `->` to it), method or `response`, and id | 0 (2 on a protocol error) |
 
 Paths under the current directory print relative to it, others absolute. Usage errors, unknown arguments, `--help` and a bare `mdroots` print usage to stderr and exit 2, so a server never starts implicitly (it would hang under CI or cron); errors print `mdroots: <message>` and exit 2.
 

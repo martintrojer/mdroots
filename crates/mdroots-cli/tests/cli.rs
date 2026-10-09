@@ -199,6 +199,22 @@ fn lsp_answers_initialize_and_exits_0_after_shutdown() {
 }
 
 #[test]
+fn lsp_accepts_and_ignores_stdio() {
+    let v = Vault::corpus("zk-min");
+    let log = v.canon.join("lsp.log");
+    let log = log.to_str().unwrap();
+    for extra in [
+        &["--stdio"][..],
+        &["--stdio", "--log", log],
+        &["--log", log, "--stdio"],
+    ] {
+        let (code, stdout) = run_lsp(&v, extra, &lsp_session());
+        assert_eq!(code, 0, "{extra:?}: {stdout}");
+        assert!(stdout.contains(r#""name":"mdroots""#), "{extra:?}");
+    }
+}
+
+#[test]
 fn lsp_exits_0_at_stdin_eof() {
     let v = Vault::corpus("zk-min");
     let (code, stdout) = run_lsp(&v, &[], b"");
@@ -232,7 +248,12 @@ fn lsp_log_appends_one_line_per_message() {
 #[test]
 fn lsp_rejects_unknown_arguments() {
     let v = Vault::corpus("zk-min");
-    for args in [&["lsp", "--bogus"][..], &["lsp", "--log"], &["lsp", "x"]] {
+    for args in [
+        &["lsp", "--bogus"][..],
+        &["lsp", "--log"],
+        &["lsp", "x"],
+        &["lsp", "--stdio", "--stdio"],
+    ] {
         let r = v.run(args);
         assert_eq!(r.code, 2, "{args:?}");
         assert!(r.stderr.starts_with("usage: mdroots"), "{args:?}");

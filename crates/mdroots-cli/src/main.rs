@@ -25,8 +25,9 @@ commands:
   roots PATH                  show the root chosen for PATH and why
   resolve FROM LINK           resolve LINK as written in the note FROM
   backlinks NOTE              list the notes linking to NOTE
-  lsp [--log FILE]            the language server on stdin/stdout; --log
-                              appends one line per message to FILE
+  lsp [--stdio] [--log FILE]  the language server on stdin/stdout (--stdio
+                              is accepted and ignored); --log appends one
+                              line per message to FILE
 
 environment:
   MDROOTS_CACHE_DIR           cache dir to use instead of the user's (for
@@ -76,10 +77,28 @@ fn run(args: &[String]) -> Result<Outcome, Error> {
             Ok(ms) => open_and_hold(path, ms),
             Err(_) => Ok(Outcome::Usage),
         },
-        ("lsp", []) => lsp::run(None),
-        ("lsp", [flag, file]) if flag == "--log" && !is_flag(file) => lsp::run(Some(file)),
+        ("lsp", rest) => match lsp_args(rest) {
+            Some(log) => lsp::run(log.map(String::as_str)),
+            None => Ok(Outcome::Usage),
+        },
         _ => Ok(Outcome::Usage),
     }
+}
+
+/// `lsp` arguments: `--log FILE` and `--stdio` (stdio is the only
+/// transport; accepted because many editor configs pass it), each at most
+/// once, in any order. `None` on anything else.
+fn lsp_args(args: &[String]) -> Option<Option<&String>> {
+    let (mut log, mut stdio) = (None, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--stdio" if !stdio => stdio = true,
+            "--log" if log.is_none() => log = Some(it.next().filter(|f| !is_flag(f))?),
+            _ => return None,
+        }
+    }
+    Some(log)
 }
 
 /// Options for every workspace the CLI opens: the cache dir comes from
