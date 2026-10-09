@@ -9,7 +9,7 @@
 //! used and `Frontmatter::error` says why. Unfenced headers (Logseq,
 //! MultiMarkdown, JSON) are read by small line or byte scanners.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::model::{
@@ -865,30 +865,43 @@ fn combine(
             _ => e.key.clone(),
         })
         .collect();
-    let covers = real.iter().all(|(k, _)| norm.contains(k))
-        && norm.iter().all(|n| real.iter().any(|(k, _)| k == n));
-    if covers && !scanned.is_empty() {
-        let mut real = real;
+    // Parser keys are unique: index them once, so this stays linear.
+    let (keys, shapes): (Vec<String>, Vec<FmValue>) = real.into_iter().unzip();
+    let index: HashMap<&str, usize> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| (k.as_str(), i))
+        .collect();
+    let in_scan: HashSet<&str> = norm.iter().map(String::as_str).collect();
+    let covers = !scanned.is_empty()
+        && norm.iter().all(|n| index.contains_key(n.as_str()))
+        && keys.iter().all(|k| in_scan.contains(k.as_str()));
+    if covers {
+        let mut shapes: Vec<Option<FmValue>> = shapes.into_iter().map(Some).collect();
         // The last occurrence of a key is the one the parser kept.
         for (i, n) in norm.iter().enumerate().rev() {
-            if let Some(j) = real.iter().position(|(k, _)| k == n) {
-                let (_, shape) = real.swap_remove(j);
+            if let Some(shape) = shapes[index[n.as_str()]].take() {
                 let value = std::mem::replace(&mut scanned[i].value, FmValue::Map(Vec::new()));
                 scanned[i].value = pick(shape, value);
             }
         }
         return scanned;
     }
-    real.into_iter()
+    let mut first: HashMap<&str, usize> = HashMap::new();
+    for (i, n) in norm.iter().enumerate() {
+        first.entry(n.as_str()).or_insert(i);
+    }
+    keys.iter()
+        .zip(shapes)
         .map(|(key, shape)| {
-            let found = norm.iter().position(|n| *n == key).map(|i| &scanned[i]);
+            let found = first.get(key.as_str()).map(|&i| &scanned[i]);
             FmEntry {
                 value: match found {
                     Some(e) => pick(shape, e.value.clone()),
                     None => shape,
                 },
                 src: found.map_or(0..src.len(), |e| e.src.clone()),
-                key,
+                key: key.clone(),
             }
         })
         .collect()
@@ -919,10 +932,26 @@ fn one_line(v: FmValue) -> FmValue {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Calls of the YAML parser from [`yaml_key`] (tests only).
+    static KEY_LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// An unquoted YAML key as the parser reads it (`1.10` -> `1.1`, `~` ->
-/// empty), so source keys can be matched to parsed ones.
+/// empty), so source keys can be matched to parsed ones. Only a key that
+/// could be a non-string scalar (a number, `~`, `null`, a boolean, a tag
+/// or anchor) is loaded; any other key is a plain string as written.
 fn yaml_key(key: &str) -> String {
     use saphyr::{LoadableYamlNode, Yaml};
+    let lower = key.to_ascii_lowercase();
+    let plain = key.starts_with(|c: char| c.is_alphabetic() || c == '_')
+        && !matches!(lower.as_str(), "null" | "true" | "false" | ".inf" | ".nan");
+    if plain {
+        return key.to_string();
+    }
+    #[cfg(test)]
+    KEY_LOADS.with(|n| n.set(n.get() + 1));
     Yaml::load_from_str(key)
         .ok()
         .and_then(|d| d.first().and_then(yaml_scalar))
@@ -1880,6 +1909,61 @@ mod tests {
         assert_eq!(t[0].value, s("p q"));
         let fm = parse("x = \"\"\"\nl1\nl2\n\"\"\"\ny.z = 1\n", FmKind::Toml);
         assert_eq!(kv(&fm)[0], ("x", s("l1 l2")));
+    }
+
+    fn many_keys(n: usize) -> String {
+        (0..n).map(|i| format!("key{i}: value {i}\n")).collect()
+    }
+
+    /// Fastest of three runs, so a busy machine doesn't fail the test.
+    fn time(src: &str) -> std::time::Duration {
+        (0..3)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                assert!(parse(src, FmKind::Yaml).parsed);
+                t.elapsed()
+            })
+            .min()
+            .unwrap()
+    }
+
+    #[test]
+    fn parse_time_is_linear_in_the_number_of_keys() {
+        let (small, big) = (many_keys(5_000), many_keys(20_000));
+        let (ts, tb) = (time(&small), time(&big));
+        // Linear: 4x the keys, about 4x the time; quadratic would be 16x.
+        assert!(tb < ts * 8, "5k keys {ts:?}, 20k keys {tb:?}");
+    }
+
+    #[test]
+    fn plain_keys_skip_the_per_key_yaml_load() {
+        KEY_LOADS.with(|n| n.set(0));
+        let fm = parse(&many_keys(1_000), FmKind::Yaml);
+        assert_eq!(fm.entries.len(), 1_000);
+        assert_eq!(KEY_LOADS.with(|n| n.get()), 0);
+        let fm = parse("1.10: a\n~: b\nNull: c\ntrue: d\nx: e\n", FmKind::Yaml);
+        assert_eq!(KEY_LOADS.with(|n| n.get()), 4);
+        let keys: Vec<&str> = fm.entries.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, ["1.10", "~", "Null", "true", "x"]);
+    }
+
+    #[test]
+    fn many_keys_with_duplicates_stay_in_source_order() {
+        let mut src = many_keys(3_000);
+        src.push_str("key7: again\nkey0: last\n");
+        let fm = parse(&src, FmKind::Yaml);
+        assert_eq!(fm.entries.len(), 3_002);
+        let tail: Vec<_> = kv(&fm)[2_999..].to_vec();
+        assert_eq!(
+            tail,
+            [
+                ("key2999", s("value 2999")),
+                ("key7", s("again")),
+                ("key0", s("last"))
+            ]
+        );
+        assert_eq!(kv(&fm)[0], ("key0", s("value 0")));
+        assert_eq!(kv(&fm)[7], ("key7", s("value 7")));
     }
 
     #[test]
