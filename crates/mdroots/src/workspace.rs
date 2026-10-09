@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use mdroots_core::{Cancel, Diagnostic, Error, ErrorKind, FileSystem, MemStore};
 use mdroots_resolve::ResolveStep;
-use mdroots_resolve::ladder::LinkStatus;
+use mdroots_resolve::ladder::{LinkStatus, outside_rel};
 use mdroots_roots::discover::{DiscoverOptions, Enumerator, discover};
 use mdroots_roots::probe::Probe;
 use mdroots_roots::registry::{DiscoverLock, Registry};
@@ -49,6 +49,7 @@ pub struct Options {
     index: IndexMode,
     cache_dir: Option<PathBuf>,
     watch: bool,
+    code_dirs: Vec<PathBuf>,
     /// The cache a [`Workspaces`](crate::Workspaces) shares with its
     /// workspaces: `Some(None)` is a resolved in-memory index.
     shared: Option<Option<CacheCtx>>,
@@ -107,6 +108,30 @@ impl Options {
     pub fn watch(mut self, on: bool) -> Self {
         self.watch = on;
         self
+    }
+
+    /// Extra dirs, absolute, that code mentions
+    /// ([`LinkKind::CodeMention`]) resolve against: a relative mention tries
+    /// the linking note's dir, then these in order, then the root. Each is
+    /// canonicalized when a workspace opens; non-absolute dirs and dirs that
+    /// cannot be canonicalized are ignored, duplicates dropped (first kept).
+    /// A hit outside the root is a [`LinkStatus::Unindexed`] target.
+    pub fn code_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
+        self.code_dirs = dirs;
+        self
+    }
+
+    /// [`code_dirs`](Self::code_dirs), canonical and deduplicated.
+    fn canonical_code_dirs(&self, fs: &dyn FileSystem) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = Vec::new();
+        for d in self.code_dirs.iter().filter(|d| d.is_absolute()) {
+            if let Ok(c) = fs.canonicalize(d)
+                && !out.contains(&c)
+            {
+                out.push(c);
+            }
+        }
+        out
     }
 
     pub(crate) fn index_mode(&self) -> IndexMode {
@@ -265,6 +290,9 @@ pub(crate) struct Inner {
     opened: String,
     /// The persistent index; `None` in memory mode.
     index: Mutex<Option<IndexState>>,
+    /// [`Options::code_dirs`], canonical; re-applied after a refresh
+    /// rebuilds the store.
+    code_dirs: Vec<PathBuf>,
     /// Editor overlays by root-relative path, re-applied after a refresh
     /// rebuilds the store.
     overlays: Mutex<BTreeMap<String, String>>,
@@ -290,6 +318,7 @@ struct Parts {
     index: Option<IndexState>,
     store: MemStore,
     watch: bool,
+    code_dirs: Vec<PathBuf>,
 }
 
 /// One root, served from memory and, unless in memory mode, cached in a
@@ -429,6 +458,7 @@ impl Workspace {
             reason: d.reason,
             nested_roots: d.nested_roots,
         };
+        let code_dirs = opts.canonical_code_dirs(&*fs);
         let ws = Workspace::new(Parts {
             fs,
             probe,
@@ -441,6 +471,7 @@ impl Workspace {
             index,
             store,
             watch: opts.watch,
+            code_dirs,
         });
         ws.maybe_watch();
         // Housekeeping on this thread, after the workspace is ready; a cheap
@@ -485,6 +516,7 @@ impl Workspace {
             reason: "single-file: opened without discovery".to_owned(),
             nested_roots: Vec::new(),
         };
+        let code_dirs = opts.canonical_code_dirs(&*fs);
         Ok(Workspace::new(Parts {
             fs,
             probe,
@@ -497,6 +529,7 @@ impl Workspace {
             index: None,
             store,
             watch: false,
+            code_dirs,
         }))
     }
 
@@ -513,6 +546,7 @@ impl Workspace {
             mode: RootMode::Marker,
             nested_roots: Vec::new(),
         };
+        let code_dirs = opts.canonical_code_dirs(&*fs);
         Ok(Workspace::new(Parts {
             fs,
             probe,
@@ -525,10 +559,12 @@ impl Workspace {
             index: None,
             store,
             watch: false,
+            code_dirs,
         }))
     }
 
-    fn new(p: Parts) -> Self {
+    fn new(mut p: Parts) -> Self {
+        set_code_dirs(&mut p.store, &p.code_dirs);
         Workspace {
             inner: Arc::new(Inner {
                 fs: p.fs,
@@ -539,6 +575,7 @@ impl Workspace {
                 single: p.single,
                 listing: p.listing,
                 opened: p.opened,
+                code_dirs: p.code_dirs,
                 index: Mutex::new(p.index),
                 overlays: Mutex::default(),
                 store: RwLock::new(p.store),
@@ -671,6 +708,7 @@ impl Workspace {
                 }
             }
         };
+        set_code_dirs(&mut store, &i.code_dirs);
         let overlays = self.overlays();
         for (rel, text) in overlays.iter() {
             store.set_overlay(rel, text);
@@ -1111,6 +1149,16 @@ pub(crate) fn slash(p: &Path) -> String {
         .map(|c| c.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Hand `dirs` (absolute) to the store, root-relative.
+fn set_code_dirs(store: &mut MemStore, dirs: &[PathBuf]) {
+    let root = store.root().to_path_buf();
+    let rel = dirs
+        .iter()
+        .filter_map(|d| outside_rel(Some(&root), d))
+        .collect();
+    store.set_code_dirs(rel);
 }
 
 /// `p` with `.` and `..` removed lexically.
