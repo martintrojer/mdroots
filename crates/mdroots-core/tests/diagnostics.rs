@@ -260,3 +260,72 @@ fn zkvault_matches_memstore() {
     }
     assert_eq!((links, anchors, ambiguous), (5, 0, 0));
 }
+
+/// 500 notes linking to each other: some links broken, some ambiguous
+/// (the `dup` stem exists twice), some with missing anchors.
+fn big_root() -> MemFs {
+    let mut fs = MemFs::new()
+        .with_file("x/dup.md", "# Dup\n")
+        .with_file("y/dup.md", "# Dup\n");
+    for i in 0..500 {
+        let mut text = format!(
+            "# Note {i}\n\n[[n{:03}]] [[n{:03}#Note]]\n",
+            (i * 7) % 500,
+            (i + 1) % 500
+        );
+        if i % 9 == 0 {
+            text.push_str(&format!("[[gone{i}]]\n"));
+        }
+        if i % 13 == 0 {
+            text.push_str("[[dup]]\n");
+        }
+        if i % 17 == 0 {
+            text.push_str(&format!("[[n{:03}#nowhere]]\n", (i + 3) % 500));
+        }
+        fs = fs.with_file(&format!("n{i:03}.md"), &text);
+    }
+    fs
+}
+
+#[test]
+fn cached_policy_gives_the_fresh_result_for_every_file() {
+    let s = mem(big_root());
+    for lazy in [false, true] {
+        let fresh = DiagnosticPolicy::for_store(&s, lazy);
+        assert_eq!(s.policy(lazy), fresh);
+        let mut total = 0;
+        for rel in s.files() {
+            let want = fresh.diagnostics(&s, rel);
+            total += want.len();
+            assert_eq!(
+                s.policy(lazy).diagnostics(&s, rel),
+                want,
+                "{rel} lazy={lazy}"
+            );
+        }
+        assert!(total > 0, "the root has diagnostics to compare");
+    }
+}
+
+#[test]
+fn policy_cache_is_dropped_by_set_overlay() {
+    let mut s = mem(vault(3, 1));
+    let before = s.policy(false).resolved_share;
+    assert_eq!(
+        before,
+        DiagnosticPolicy::for_store(&s, false).resolved_share
+    );
+    assert_eq!(before, Some(0.75));
+
+    // Fix the broken link: every link resolves now.
+    s.set_overlay(
+        "index.md",
+        "[o0](t.md)\n[o1](t.md)\n[o2](t.md)\n[b0](t.md)\n",
+    );
+    let after = s.policy(false).resolved_share;
+    assert_eq!(after, DiagnosticPolicy::for_store(&s, false).resolved_share);
+    assert_eq!(after, Some(1.0));
+
+    s.clear_overlay("index.md");
+    assert_eq!(s.policy(false).resolved_share, Some(0.75));
+}

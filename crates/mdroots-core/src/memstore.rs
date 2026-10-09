@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use mdroots_resolve::dialect::{RootConventions, detect};
 use mdroots_resolve::env::ResolveEnv;
@@ -17,6 +17,7 @@ use mdroots_syntax::{
 };
 
 use crate::cancel::Cancel;
+use crate::diagnostics::DiagnosticPolicy;
 use crate::error::{Error, ErrorKind};
 use crate::fs::FileSystem;
 
@@ -93,12 +94,30 @@ pub enum AnchorStatus {
     Missing,
 }
 
+/// Target note -> the links that reach it: (source note, index of the link
+/// in the source's [`Document::links`]), sorted by source, then link order.
+type Backlinks = BTreeMap<String, Vec<(String, usize)>>;
+
+/// Whole-root results computed on first use and dropped on every content
+/// change (`replace`, which overlays and disk entries go through), so they
+/// always match the current notes. Link targets that are files on disk but
+/// not notes (`Unindexed`) are not tracked: such a file appearing or
+/// disappearing shows only after the next content change, or in a new store
+/// (a refresh builds one).
+#[derive(Default)]
+struct Caches {
+    /// [`DiagnosticPolicy::for_store`], indexed by the `lazy` flag.
+    policy: [OnceLock<DiagnosticPolicy>; 2],
+    backlinks: OnceLock<Backlinks>,
+}
+
 pub struct MemStore {
     env: FsEnv,
     conventions: RootConventions,
     entries: BTreeMap<String, Entry>,
     index: BTreeMap<(KeyKind, String), BTreeSet<String>>,
     skipped: Vec<(String, Error)>,
+    caches: Caches,
 }
 
 impl MemStore {
@@ -194,6 +213,7 @@ impl MemStore {
             entries: BTreeMap::new(),
             index: BTreeMap::new(),
             skipped: Vec::new(),
+            caches: Caches::default(),
         }
     }
 
@@ -225,7 +245,8 @@ impl MemStore {
     }
 
     /// Replace a note's content with unsaved editor text; adds the note if
-    /// it is not indexed.
+    /// it is not indexed. Like every content change, drops the cached
+    /// [`policy`](Self::policy) and backlink index.
     pub fn set_overlay(&mut self, root_rel: &str, text: &str) {
         let doc = parse_with(text, &self.options(root_rel));
         let parsed = self.parsed(root_rel, doc);
@@ -260,18 +281,44 @@ impl MemStore {
             .collect()
     }
 
+    /// The root's [`DiagnosticPolicy`]: [`DiagnosticPolicy::for_store`],
+    /// computed once per `lazy` flag and kept until the next content change
+    /// (see [`set_overlay`](Self::set_overlay)).
+    pub fn policy(&self, lazy: bool) -> DiagnosticPolicy {
+        self.caches.policy[usize::from(lazy)]
+            .get_or_init(|| DiagnosticPolicy::for_store(self, lazy))
+            .clone()
+    }
+
     /// Links from any note whose targets include `root_rel` (Resolved or
-    /// Ambiguous), in referencing contexts only; sorted by source path.
+    /// Ambiguous), in referencing contexts only; sorted by source path,
+    /// then link order. Answered from a reverse index of every note's
+    /// links, built on first use and kept until the next content change.
     pub fn backlinks(&self, root_rel: &str) -> Vec<(String, Link)> {
-        let mut out = Vec::new();
+        let index = self.caches.backlinks.get_or_init(|| self.build_backlinks());
+        let Some(refs) = index.get(root_rel) else {
+            return Vec::new();
+        };
+        refs.iter()
+            .filter_map(|(from, i)| {
+                let l = self.document(from)?.links().nth(*i)?;
+                Some((from.clone(), l.clone()))
+            })
+            .collect()
+    }
+
+    fn build_backlinks(&self) -> Backlinks {
+        let mut out = Backlinks::new();
         for (from, e) in &self.entries {
             let Some(p) = e.current() else { continue };
-            for l in p.doc.links().filter(|l| counts(l)) {
+            for (i, l) in p.doc.links().enumerate().filter(|(_, l)| counts(l)) {
                 let r = self.resolve_link(from, l, false);
-                if matches!(r.status, LinkStatus::Resolved | LinkStatus::Ambiguous)
-                    && r.targets.iter().any(|t| t == root_rel)
-                {
-                    out.push((from.clone(), l.clone()));
+                if !matches!(r.status, LinkStatus::Resolved | LinkStatus::Ambiguous) {
+                    continue;
+                }
+                let targets: BTreeSet<String> = r.targets.into_iter().collect();
+                for t in targets {
+                    out.entry(t).or_default().push((from.clone(), i));
                 }
             }
         }
@@ -398,8 +445,10 @@ impl MemStore {
         Ok(self.parsed(rel, doc))
     }
 
-    /// Apply `f` to the note's entry and re-index its keys.
+    /// Apply `f` to the note's entry, re-index its keys and drop the
+    /// whole-root caches.
     fn replace(&mut self, rel: &str, f: impl FnOnce(&mut Entry)) {
+        self.caches = Caches::default();
         let entry = self.entries.entry(rel.to_owned()).or_insert(Entry {
             disk: None,
             overlay: None,

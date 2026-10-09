@@ -166,6 +166,41 @@ fn stem_from_another_directory_and_backlink_pair() {
     assert_eq!(raws(&s.broken("b/two.md")), ["gone"]);
 }
 
+/// Backlinks of every note as (source, raw target, range).
+fn all_backlinks(s: &MemStore) -> Vec<(String, String, String, std::ops::Range<usize>)> {
+    s.files()
+        .flat_map(|t| {
+            s.backlinks(t)
+                .into_iter()
+                .map(move |(f, l)| (t.to_owned(), f, l.target.raw, l.range))
+        })
+        .collect()
+}
+
+#[test]
+fn backlinks_after_an_overlay_match_a_fresh_store() {
+    let fs = MemFs::new()
+        .with_file("a.md", "[[b]] [[c]]\n")
+        .with_file("b.md", "[[c]]\n")
+        .with_file("c.md", "[[a]]\n");
+    let mut s = mem(fs);
+    // Built before the overlay, so the overlay must drop the cached index.
+    assert_eq!(froms(&s.backlinks("b.md")), ["a.md"]);
+
+    let text = "[[b]] and again [[b]]\n";
+    s.set_overlay("c.md", text);
+    let fresh = mem(MemFs::new()
+        .with_file("a.md", "[[b]] [[c]]\n")
+        .with_file("b.md", "[[c]]\n")
+        .with_file("c.md", text));
+    assert_eq!(all_backlinks(&s), all_backlinks(&fresh));
+    let back = s.backlinks("b.md");
+    assert_eq!(froms(&back), ["a.md", "c.md"]);
+    assert_eq!(back.len(), 3, "both links from c.md, in link order");
+    assert!(back[1].1.range.start < back[2].1.range.start);
+    assert!(s.backlinks("a.md").is_empty());
+}
+
 #[test]
 fn overlay_changes_links_and_backlinks() {
     let mut s = mem(MemFs::new()

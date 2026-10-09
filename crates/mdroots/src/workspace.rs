@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mdroots_core::{Cancel, Diagnostic, DiagnosticPolicy, Error, ErrorKind, FileSystem, MemStore};
+use mdroots_core::{Cancel, Diagnostic, Error, ErrorKind, FileSystem, MemStore};
 use mdroots_resolve::ResolveStep;
 use mdroots_resolve::ladder::LinkStatus;
 use mdroots_roots::discover::{DiscoverOptions, Enumerator, discover};
@@ -654,9 +654,10 @@ impl Workspace {
             .collect())
     }
 
-    /// The note's diagnostics under the root's [`DiagnosticPolicy`]
-    /// (computed per call). Empty for a path inside the root that is not
-    /// indexed.
+    /// The note's diagnostics under the root's
+    /// [`DiagnosticPolicy`](mdroots_core::DiagnosticPolicy)
+    /// (computed once, kept until the next content change or refresh).
+    /// Empty for a path inside the root that is not indexed.
     pub fn diagnostics(&self, path: &Path, cancel: &Cancel) -> Result<Vec<Diagnostic>, Error> {
         cancel.check()?;
         let rel = self.rel(path)?;
@@ -664,7 +665,7 @@ impl Workspace {
         if store.document(&rel).is_none() {
             return Ok(Vec::new());
         }
-        let policy = DiagnosticPolicy::for_store(&store, self.inner.freshness == Freshness::Lazy);
+        let policy = store.policy(self.inner.freshness == Freshness::Lazy);
         Ok(policy.diagnostics(&store, &rel))
     }
 
