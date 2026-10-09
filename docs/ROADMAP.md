@@ -16,11 +16,15 @@ background open ([library spec §7](specs/library.md)).
 These exist and pass their tests, but nobody has checked them against the
 real world they are meant for.
 
-1. **Linux.** Every test runs on macOS only; the Linux branches (mount
-   detection from `/proc/self/mountinfo`, inotify through
-   [notify](https://crates.io/crates/notify), the uid lookup) have never been
-   compiled. There is no CI. Next step: a GitHub Actions job running
-   `bash scripts/check.sh` on Linux and macOS.
+1. **Linux in CI.** The full gate (`bash scripts/check.sh`: fmt, clippy,
+   every test including the many-process fixtures) and the
+   [Neovim](https://neovim.io) smoke test pass on Fedora 44 (x86_64, btrfs
+   home, tmpfs `/tmp`), run by hand. Checked there: mount detection from
+   `/proc/self/mountinfo` (a `fuse.portal` mount classifies as virtual and is
+   never walked), the [notify](https://crates.io/crates/notify) watcher on
+   inotify (an on-disk change republishes diagnostics in about 7 ms), and the
+   real cache dir left untouched. Missing: a CI job (GitHub Actions, Linux
+   and macOS) so this stays true.
 2. **The real-vault differential since M1.** Resolution parity with
    [zk](https://github.com/zk-org/zk) was measured in M1
    ([m1-differential](research/m1-differential.md)). Not re-run with the real
@@ -78,7 +82,7 @@ Ordered by expected value. Each has a reason it is not built yet.
 
 | Item | Why not yet |
 |---|---|
-| CI on Linux and macOS | §1.1; cheap, should come first |
+| CI on Linux and macOS | §1.1; the gate already passes on both by hand |
 | "New note" command and the filename scheme vote | the link style exists (`Workspace::link_style`); the filename scheme (slug, id prefix, date) is not voted yet |
 | `workspace/willRenameFiles`, a full-text LSP request, semantic tokens | small server additions; no client asked yet ([Neovim](https://neovim.io) 0.12 never sends `willRenameFiles`) |
 | Embedder API: typed `subscribe` events, `notes_with_tag`, `NoteSummary.modified`, `Preview.summary`, code-mention search dirs in `Options`, a server builder that shares an embedder's `Workspaces` | driven by ramble, a separate TUI markdown reader by the same author ([research/ramble](research/ramble.md)) |
