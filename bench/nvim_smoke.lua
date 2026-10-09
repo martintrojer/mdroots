@@ -127,11 +127,18 @@ check('gO -> loclist', loclist_len(win) == 3, loclist_len(win) .. ' entries')
 vim.cmd('lclose')
 
 -- 6. Backlinks through exec_cmd and the plugin's loclist handler: the note's
---    own anchor links are excluded, so only linker.md line 3 remains.
+--    own anchor links are excluded, so only linker.md line 3 remains. The
+--    root opens in the background (until then the note is served alone and
+--    has no backlinks), so retry the map until the loclist fills.
 vim.api.nvim_win_set_cursor(win, { 5, 3 }) -- on "## Setup"
-vim.fn.setloclist(win, {}, 'r', { items = {} })
-maps_of(b)['\\nb'].callback()
-vim.wait(3000, function() return loclist_len(win) > 0 end, 20)
+local notify6 = vim.notify
+vim.notify = function() end -- "no backlinks" while the root is opening
+vim.wait(15000, function()
+  vim.fn.setloclist(win, {}, 'r', { items = {} })
+  maps_of(b)['\\nb'].callback()
+  return vim.wait(500, function() return loclist_len(win) > 0 end, 20)
+end, 50)
+vim.notify = notify6
 local ll = vim.fn.getloclist(win)
 local ll_name = ll[1] and vim.api.nvim_buf_get_name(ll[1].bufnr) or ''
 check('backlinks -> loclist', #ll == 1 and ll_name:match('/linker%.md$') ~= nil and ll[1].lnum == 3,
@@ -179,12 +186,17 @@ for i, line in ipairs(vim.api.nvim_buf_get_lines(b_b, 0, -1, false)) do
   local s = line:find('%[%[')
   if s then lnum, col = i - 1, s + 1; break end
 end
+-- Poll: until vault B's root is open in the background the README is
+-- served alone and the link may not resolve.
 local res
 if lnum then
-  local rr = c:request_sync('textDocument/definition',
-    { textDocument = { uri = vim.uri_from_bufnr(b_b) }, position = { line = lnum, character = col } }, 2000, b_b)
-  res = rr and rr.result
-  res = res and (res.uri or (res[1] and res[1].uri))
+  vim.wait(15000, function()
+    local rr = c:request_sync('textDocument/definition',
+      { textDocument = { uri = vim.uri_from_bufnr(b_b) }, position = { line = lnum, character = col } }, 2000, b_b)
+    res = rr and rr.result
+    res = res and (res.uri or (res[1] and res[1].uri))
+    return res ~= nil
+  end, 100)
 end
 local res_path = res and vim.uri_to_fname(res)
 check('cross-file goto vault B', res_path ~= nil and vim.fn.filereadable(res_path) == 1
