@@ -90,7 +90,8 @@ mdroots-syntax ← mdroots-resolve ← mdroots-core ← mdroots-roots ← mdroot
 `mdroots-core` holds the `FileSystem` trait and `MemStore`, the in-memory
 index; `mdroots-roots` finds roots; `mdroots-index` adds the cache dir,
 the per-root writer lock, the per-root DB with its full-text table, the root registry and cache GC.
-Embedders depend on `mdroots`; `mdroots-lsp` is the server as a library;
+Embedders depend on `mdroots` ([ramble](https://github.com/martintrojer/ramble),
+a TUI markdown reader, embeds the library); `mdroots-lsp` is the server as a library;
 `mdroots-cli` is the `mdroots` binary, `mdroots lsp` included. See [docs/specs/library.md](docs/specs/library.md).
 
 ## Layout

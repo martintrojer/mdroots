@@ -12,7 +12,7 @@
 | [specs/library.md](specs/library.md) | crates and features, public API, scheduling, CLI, [Neovim](https://neovim.io) integration |
 | [research/gopls.md](research/gopls.md) | what makes gopls fast, what mdroots adopts, why no daemon |
 | [research/m1-differential.md](research/m1-differential.md) | mdroots link resolution vs [zk](https://github.com/zk-org/zk)'s `notebook.db` on two real vaults |
-| [research/ramble.md](research/ramble.md) | code ported from ramble, what is left to port, what ramble deletes |
+| [research/ramble.md](research/ramble.md) | code ported from ramble, how ramble embeds mdroots, the gaps it works around |
 
 ## How the docs work
 

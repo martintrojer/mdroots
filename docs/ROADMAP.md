@@ -41,7 +41,12 @@ real world they are meant for.
 4. **Small repos on a virtual filesystem.** vcs-enumerated mode (a small
    [EdenFS](https://github.com/facebook/sapling) repo listed with `sl files`
    within 500 ms) is tested only with a fake enumerator.
-5. **Thresholds.** Chosen, not measured on real vaults
+5. **ramble as an embedder.** ramble's test suite drives its in-process
+   backend (open, document links, goto, preview, pickers, watcher updates)
+   on a fixture notebook with a temp cache dir. Not checked: real vaults,
+   big roots opened from ramble, or ramble and `mdroots lsp` sharing one
+   root's cache.
+6. **Thresholds.** Chosen, not measured on real vaults
    ([index spec §5.2](specs/index.md)):
    - broken-link severity at > 98% (error) / < 80% (hint) resolved links: both
      testbed vaults (94.7%, 93.5%) land on warning without their zk config;
@@ -83,10 +88,10 @@ Ordered by expected value. Each has a reason it is not built yet.
 | Item | Why not yet |
 |---|---|
 | CI on Linux and macOS | §1.1; the gate already passes on both by hand |
-| Library heading sections (`Workspace::sections(path)`) and per-heading backlink counts for embedders | ramble, a read-only TUI, can use the library parts behind the editor features: `frontmatter_range` for its frontmatter fold (instead of its own detection), `anchor_backlinks`/`heading_backlinks` for link counts next to headings. Heading-section folding is computed inside `mdroots-lsp` today; moving it into the library would let ramble fold by section too |
+| Library heading sections (`Workspace::sections(path)`) | heading-section folding is computed inside `mdroots-lsp` today; moving it into the library would let [ramble](https://github.com/martintrojer/ramble), a read-only TUI, fold by section too (per-heading link counts already exist: `anchor_backlinks`, `heading_backlinks`) |
 | "New note" command and the filename scheme vote | the link style exists (`Workspace::link_style`); the filename scheme (slug, id prefix, date) is not voted yet |
 | `workspace/willRenameFiles`, a full-text LSP request, semantic tokens | small server additions; no client asked yet ([Neovim](https://neovim.io) 0.12 never sends `willRenameFiles`) |
-| Embedder API: typed `subscribe` events, `Preview.summary`, a server builder that shares an embedder's `Workspaces` | driven by ramble, a separate TUI markdown reader by the same author ([research/ramble](research/ramble.md)) |
+| Embedder API: typed `subscribe` events, `Preview.summary`, unfenced front matter as a workspace option (today only `ParseOptions` has it), a server builder that shares an embedder's `Workspaces` | gaps ramble works around ([research/ramble](research/ramble.md)); none blocks it |
 | Derived SQL tables (`keys`, `links`, `frontmatter`) | memory is under target at 3,000 notes; adds a second query layer and a parser version to keep in sync (D9) |
 | FSEvents replay (`sinceWhen`) | needs FFI and the workspace forbids unsafe code; the re-list on open already catches offline changes (D9) |
 | Cross-root `ATTACH` | no measured need ([roots spec §4](specs/roots.md)) |
@@ -97,7 +102,7 @@ Ordered by expected value. Each has a reason it is not built yet.
 
 Each ends as a spec change or a decision.
 
-1. **Severity thresholds** (§1.5): keep 98% / 80%, or derive them per root?
+1. **Severity thresholds** (§1.6): keep 98% / 80%, or derive them per root?
    Measure on more vaults first.
 2. **Bare paths in prose.** In the research vault 192 of 193 bare path-like
    tokens that exist on disk are frontmatter values; in the zk vault 2 of
