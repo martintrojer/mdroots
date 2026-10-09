@@ -155,6 +155,9 @@ const MDROOTSIGNORE: &str = ".mdrootsignore";
 /// Gitignore-syntax ignore files, in add order (later wins).
 const IGNORE_FILES: &[&str] = &[".gitignore", ".ignore", MDROOTSIGNORE];
 const RATE_DIRS: usize = 50;
+/// Fewer timed listings than this are noise (one slow `readdir` on a
+/// loaded machine): never rate-abort on them.
+const RATE_MIN_DIRS: usize = 5;
 const RATE_WINDOW: Duration = Duration::from_millis(100);
 
 fn is_note(name: &str) -> bool {
@@ -588,12 +591,15 @@ impl Walker<'_> {
     }
 
     /// The one rate check, after the first 50 dirs or 100 ms. Walks that end
-    /// sooner are never rate-aborted.
+    /// sooner, or that timed fewer than 5 listings, are never rate-aborted.
     fn rate_check(&mut self) -> Result<(), Abort> {
         if self.rate_checked {
             return Ok(());
         }
         self.rate_checked = true;
+        if self.times.len() < RATE_MIN_DIRS {
+            return Ok(());
+        }
         match median(&self.times) {
             Some(m) if m > self.opts.rate_ms_per_dir => Err(Abort::Rate),
             _ => Ok(()),

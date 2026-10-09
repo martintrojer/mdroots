@@ -536,3 +536,12 @@ fn pruned_dir_matches_the_prune_list() {
         assert!(!pruned_dir(name), "{name}");
     }
 }
+
+#[test]
+fn one_slow_listing_never_rate_aborts() {
+    // A single listing slower than the whole rate window (a loaded machine)
+    // is not evidence of a slow filesystem.
+    let slow = wide(2).read_dir_cost(ROOT, Duration::from_millis(150));
+    let (out, _) = run_default(slow);
+    assert_eq!(out.abort, None);
+}
