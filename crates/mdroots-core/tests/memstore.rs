@@ -595,3 +595,52 @@ fn valid_rel_rejects_empty_absolute_and_dot_components() {
         assert!(!valid_rel(bad), "{bad}");
     }
 }
+
+fn change(p: &str, b: Option<&[u8]>) -> (String, Option<Arc<[u8]>>) {
+    (p.to_owned(), b.map(Arc::from))
+}
+
+#[test]
+fn apply_contents_replaces_adds_and_removes_in_place() {
+    let fs = MemFs::new()
+        .with_file("/a.md", "[[b]]\n")
+        .with_file("/c.md", "# C\n");
+    let mut s = mem(fs);
+    assert_eq!(raws(&s.broken("a.md")), ["b"]);
+    let changed = s.apply_contents(vec![
+        change("b.md", Some(b"# B\n")),
+        change("c.md", None),
+        change("gone.md", None),
+        change("a.md", Some(b"[[b]]\n")),
+    ]);
+    // a.md had these bytes already; gone.md was never indexed.
+    assert_eq!(changed, ["b.md", "c.md"]);
+    assert_eq!(s.files().collect::<Vec<_>>(), ["a.md", "b.md"]);
+    // The caches were dropped: the link now resolves and has a backlink.
+    assert!(s.broken("a.md").is_empty());
+    assert_eq!(froms(&s.backlinks("b.md")), ["a.md"]);
+}
+
+#[test]
+fn apply_contents_keeps_overlays_and_records_binary_files() {
+    let mut s = mem(MemFs::new().with_file("/a.md", "disk\n"));
+    s.set_overlay("a.md", "overlay\n");
+    assert_eq!(
+        s.apply_contents(vec![change("a.md", Some(b"new disk\n"))]),
+        ["a.md"]
+    );
+    assert_eq!(s.document("a.md").unwrap().source(), "overlay\n");
+    s.clear_overlay("a.md");
+    assert_eq!(s.document("a.md").unwrap().source(), "new disk\n");
+    // A binary file drops the note and is listed as skipped ...
+    assert_eq!(
+        s.apply_contents(vec![change("a.md", Some(b"\0bin"))]),
+        ["a.md"]
+    );
+    assert!(s.document("a.md").is_none());
+    assert_eq!(s.skipped().len(), 1);
+    // ... until it is text again.
+    s.apply_contents(vec![change("a.md", Some(b"text\n"))]);
+    assert!(s.skipped().is_empty());
+    assert_eq!(s.document("a.md").unwrap().source(), "text\n");
+}

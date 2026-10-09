@@ -196,6 +196,55 @@ impl MemStore {
         Ok(store)
     }
 
+    /// Update notes in place from new disk bytes: `(path, Some(bytes))`
+    /// replaces (or adds) a note's disk content, `(path, None)` drops it.
+    /// Overlays are kept and still win; other notes are untouched, and the
+    /// whole-root caches are dropped as on every content change. Invalid
+    /// paths and binary files go to [`skipped`](Self::skipped) (dropping
+    /// any disk content they had); a path's earlier `skipped` entry is
+    /// cleared. Returns the paths whose disk content changed, sorted (bytes
+    /// equal to the current disk text are not a change).
+    pub fn apply_contents(&mut self, mut changes: Vec<(String, Option<Arc<[u8]>>)>) -> Vec<String> {
+        changes.sort_by(|a, b| a.0.cmp(&b.0));
+        changes.dedup_by(|a, b| a.0 == b.0);
+        let mut changed = Vec::new();
+        for (rel, bytes) in changes {
+            self.skipped.retain(|(p, _)| *p != rel);
+            let disk = self.entries.get(&rel).and_then(|e| e.disk.as_ref());
+            let had_disk = disk.is_some();
+            let parsed = match bytes {
+                None if !had_disk => continue,
+                None => None,
+                Some(b) => {
+                    let same = disk.is_some_and(|d| {
+                        !d.doc.is_lossy() && std::str::from_utf8(&b) == Ok(d.doc.source())
+                    });
+                    if same {
+                        continue;
+                    }
+                    let p = match valid_rel(&rel) {
+                        true => self.parse_disk(&rel, &b),
+                        false => Err(invalid_path(&rel)),
+                    };
+                    match p {
+                        Ok(p) => Some(p),
+                        Err(e) => {
+                            self.skipped.push((rel.clone(), e));
+                            self.skipped.sort_by(|a, b| a.0.cmp(&b.0));
+                            if !had_disk {
+                                continue;
+                            }
+                            None
+                        }
+                    }
+                }
+            };
+            self.replace(&rel, |e| e.disk = parsed);
+            changed.push(rel);
+        }
+        changed
+    }
+
     /// A store with no notes: the root canonicalized and its conventions
     /// detected.
     fn empty(fs: Arc<dyn FileSystem>, root: PathBuf) -> MemStore {
