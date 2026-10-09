@@ -131,6 +131,11 @@ fn help_and_unknown_args_print_usage_and_exit_2() {
         &["roots", "a.md", "b.md"],
         &["resolve", "a.md"],
         &["backlinks"],
+        &["search"],
+        &["search", "--"],
+        &["search", "-x"],
+        &["search", "q", "a.md", "b.md"],
+        &["search", "q", "--bogus"],
     ] {
         let r = v.run(args);
         assert_eq!(r.code, 2, "{args:?}");
@@ -474,6 +479,78 @@ fn backlinks_lists_linking_notes() {
     insta::assert_snapshot!("backlinks_a", r.stdout);
     let r = v.run(&["backlinks", "broken.md"]);
     assert_eq!((r.code, r.stdout.as_str()), (0, ""));
+}
+
+/// Run `mdroots args` in the vault with `MDROOTS_CACHE_DIR` at
+/// `<tmp>/search-cache`.
+fn run_search(v: &Vault, args: &[&str]) -> Run {
+    let out = Command::new(env!("CARGO_BIN_EXE_mdroots"))
+        .args(args)
+        .current_dir(v.dir())
+        .env("MDROOTS_CACHE_DIR", v.canon.join("search-cache"))
+        .env("XDG_CACHE_HOME", v.canon.join("cache"))
+        .env("HOME", v.canon.join("cache"))
+        .output()
+        .unwrap();
+    Run {
+        code: out.status.code().unwrap(),
+        stdout: v.redact(&String::from_utf8(out.stdout).unwrap()),
+        stderr: v.redact(&String::from_utf8(out.stderr).unwrap()),
+    }
+}
+
+#[test]
+fn search_a_file_searches_its_root_through_the_db() {
+    let v = Vault::corpus("zk-min");
+    let r = run_search(&v, &["search", "note", "a.md"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    insta::assert_snapshot!("search_zk_min", r.stdout);
+    let dbs: Vec<_> = fs::read_dir(v.canon.join("search-cache/roots"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".v2.db"))
+        .collect();
+    assert_eq!(dbs.len(), 1, "{dbs:?}");
+}
+
+#[test]
+fn search_a_directory_finds_the_same_notes() {
+    let v = Vault::corpus("zk-min");
+    let names = |s: &str| -> Vec<String> {
+        let mut v: Vec<String> = s
+            .lines()
+            .map(|l| l.split(':').next().unwrap().to_owned())
+            .collect();
+        v.sort();
+        v
+    };
+    let file = run_search(&v, &["search", "note", "a.md"]);
+    let dir = run_search(&v, &["search", "note"]);
+    assert_eq!(dir.code, 0, "{}", dir.stderr);
+    assert_eq!(names(&dir.stdout), names(&file.stdout));
+    // After `--` a query may start with `-` (a term of no letters or
+    // digits, here dropped).
+    let r = run_search(&v, &["search", "--", "- emoji", "."]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(names(&r.stdout), ["README.md", "emoji.md"]);
+}
+
+#[test]
+fn search_without_hits_exits_1() {
+    let v = Vault::corpus("zk-min");
+    for args in [
+        &["search", "nothingmatchesthis", "a.md"][..],
+        &["search", "nothingmatchesthis"],
+        &["search", "--", "-"],
+    ] {
+        let r = run_search(&v, args);
+        assert_eq!(
+            (r.code, r.stdout.as_str()),
+            (1, ""),
+            "{args:?}: {}",
+            r.stderr
+        );
+    }
 }
 
 #[test]

@@ -25,6 +25,10 @@ commands:
   roots PATH                  show the root chosen for PATH and why
   resolve FROM LINK           resolve LINK as written in the note FROM
   backlinks NOTE              list the notes linking to NOTE
+  search [--] QUERY [PATH]    notes containing every word of QUERY (the
+                              last also as a prefix): a file searches its
+                              root, a directory (default .) is scanned in
+                              memory; exit 1 without a hit
   lsp [--stdio] [--log FILE]  the language server on stdin/stdout (--stdio
                               is accepted and ignored); --log appends one
                               line per message to FILE
@@ -73,6 +77,10 @@ fn run(args: &[String]) -> Result<Outcome, Error> {
         ("roots", [path]) if !is_flag(path) => roots(path),
         ("resolve", [from, link]) if !is_flag(from) => resolve(&out, from, link),
         ("backlinks", [note]) if !is_flag(note) => backlinks(&out, note),
+        ("search", rest) => match search_args(rest) {
+            Some((query, path)) => search(&out, query, path),
+            None => Ok(Outcome::Usage),
+        },
         ("__open", [path, flag, ms]) if flag == "--hold-ms" && !is_flag(path) => match ms.parse() {
             Ok(ms) => open_and_hold(path, ms),
             Err(_) => Ok(Outcome::Usage),
@@ -279,4 +287,50 @@ fn backlinks(out: &Out, note: &str) -> Result<Outcome, Error> {
         println!("{}:{}: {}", out.show(&b.from), b.line + 1, b.from_title);
     }
     Ok(Outcome::Ok)
+}
+
+/// `search` arguments: `[--] QUERY [PATH]`; `None` on anything else. After
+/// `--` the query may start with `-`.
+fn search_args(args: &[String]) -> Option<(&str, &str)> {
+    let args = match args.split_first() {
+        Some((dd, rest)) if dd == "--" => rest,
+        _ if args.first().is_some_and(|a| is_flag(a)) => return None,
+        _ => args,
+    };
+    match args {
+        [query] => Some((query, ".")),
+        [query, path] if !is_flag(path) => Some((query, path)),
+        _ => None,
+    }
+}
+
+/// Most hits `search` prints.
+const SEARCH_LIMIT: usize = 1_000;
+
+fn search(out: &Out, query: &str, path: &str) -> Result<Outcome, Error> {
+    let p = canonical(Path::new(path))?;
+    let is_dir = std::fs::metadata(&p)
+        .map_err(|e| Error::new(ErrorKind::Io, format!("{}: {e}", p.display())))?
+        .is_dir();
+    // A directory is opened in memory (naive scan); a file through its
+    // discovered root and, as reconciler, the DB's full-text index.
+    let ws = match is_dir {
+        true => Workspace::open_at(&p, options())?,
+        false => Workspace::open_for(&p, options())?,
+    };
+    let hits = ws.full_text(query, SEARCH_LIMIT, &Cancel::new())?;
+    let mut stdout = std::io::stdout().lock();
+    for h in &hits {
+        let _ = writeln!(
+            stdout,
+            "{}:{}: {}",
+            out.show(&h.path),
+            h.line + 1,
+            h.snippet
+        );
+    }
+    Ok(match hits.is_empty() {
+        true => Outcome::Fail,
+        false => Outcome::Ok,
+    })
 }

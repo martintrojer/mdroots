@@ -11,6 +11,10 @@ commands:
   roots PATH                  show the root chosen for PATH and why
   resolve FROM LINK           resolve LINK as written in the note FROM
   backlinks NOTE              list the notes linking to NOTE
+  search [--] QUERY [PATH]    notes containing every word of QUERY (the
+                              last also as a prefix): a file searches its
+                              root, a directory (default .) is scanned in
+                              memory; exit 1 without a hit
   lsp [--stdio] [--log FILE]  the language server on stdin/stdout (--stdio
                               is accepted and ignored); --log appends one
                               line per message to FILE
