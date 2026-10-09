@@ -412,6 +412,23 @@ fn fixture_15_corrupt_db_is_rebuilt_under_three_processes() {
         c.wait().unwrap();
         o
     };
+    // The holders may still be indexing (the reconciler writes in batches):
+    // wait until the DB holds every note before stopping them, so the file
+    // to corrupt has pages to corrupt.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let rows: i64 = rusqlite::Connection::open(&old)
+            .and_then(|c| c.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0)))
+            .unwrap_or(0);
+        if rows > 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the DB was never filled"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     for mut c in first {
         c.kill().unwrap();
         c.wait().unwrap();
@@ -422,6 +439,7 @@ fn fixture_15_corrupt_db_is_rebuilt_under_three_processes() {
             .unwrap();
     }
     let mut bytes = fs::read(&old).unwrap();
+    assert!(bytes.len() >= 100, "DB file has {} bytes", bytes.len());
     bytes[..100].fill(0xa5);
     fs::write(&old, bytes).unwrap();
 
