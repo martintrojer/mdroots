@@ -1,5 +1,5 @@
-//! The request handlers: goto, references, hover, symbols, completion and
-//! rename (docs/specs/library.md §3.6). Each works on one document's
+//! The request handlers: goto, references, hover, symbols, completion,
+//! rename, folding ranges and code lenses (docs/specs/library.md §3.6). Each works on one document's
 //! current text (the overlay wins) and returns LSP types; the server
 //! serializes them.
 
@@ -8,10 +8,11 @@ use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 
 use lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionList, CompletionTextEdit,
-    DocumentChangeOperation, DocumentChanges, DocumentSymbol, Hover, HoverContents, Location,
-    MarkupContent, MarkupKind, OneOf, OptionalVersionedTextDocumentIdentifier, Position,
-    PrepareRenameResponse, RenameFile, ResourceOp, SymbolInformation, SymbolKind, TextDocumentEdit,
+    CodeLens, Command, CompletionItem, CompletionItemKind, CompletionList, CompletionTextEdit,
+    DocumentChangeOperation, DocumentChanges, DocumentSymbol, FoldingRange, FoldingRangeKind,
+    Hover, HoverContents, Location, MarkupContent, MarkupKind, OneOf,
+    OptionalVersionedTextDocumentIdentifier, Position, PrepareRenameResponse, RenameFile,
+    ResourceOp, SymbolInformation, SymbolKind, TextDocumentEdit,
 };
 use mdroots::syntax::{Heading, LineIndex, PositionEncoding};
 use mdroots::{Cancel, LinkStatus, Workspace};
@@ -68,6 +69,18 @@ impl<'a> Ctx<'a> {
 
     fn range(&self, r: Range<usize>) -> lsp_types::Range {
         position::range(&self.index, &self.text, r, self.enc)
+    }
+
+    /// 0-based line of byte `off`.
+    fn line(&self, off: usize) -> u32 {
+        self.index
+            .line_col(&self.text, off, PositionEncoding::Utf8)
+            .0
+    }
+
+    /// 0-based line of the last byte before `end` (`end` itself when 0).
+    fn last_line(&self, end: usize) -> u32 {
+        self.line(end.saturating_sub(1))
     }
 }
 
@@ -177,6 +190,98 @@ pub(crate) fn references(c: &Ctx, pos: Position) -> Result<Vec<Location>, Fail> 
 /// `mdroots.backlinks`: links to the current note from other notes.
 pub(crate) fn backlinks(c: &Ctx) -> Result<Vec<Location>, Fail> {
     backlink_locations(c, &c.path, true)
+}
+
+/// `mdroots.anchorLinks`: links from other notes to the heading of this
+/// note whose slug is `slug`.
+pub(crate) fn anchor_links(c: &Ctx, slug: &str) -> Result<Vec<Location>, Fail> {
+    let Some(i) = c.ws.outline(&c.path)?.iter().position(|h| h.slug == slug) else {
+        return Ok(Vec::new());
+    };
+    let mut texts = Texts::new(c.ws, c.enc);
+    let mut out = Vec::new();
+    for b in c.ws.heading_backlinks(&c.path, i)? {
+        let range = texts.range(&b.from, b.range.clone());
+        out.extend(location(&b.from, range));
+    }
+    Ok(out)
+}
+
+/// One range per heading section (to the line before the next heading of
+/// the same or a higher level, or the end), then the frontmatter block as
+/// a region; ranges of one line are left out. Lines only, so the encoding
+/// does not matter.
+pub(crate) fn folding_ranges(c: &Ctx) -> Result<Vec<FoldingRange>, Fail> {
+    let hs = c.ws.outline(&c.path)?;
+    let fold = |start: u32, end: u32, kind: Option<FoldingRangeKind>| {
+        (end > start).then_some(FoldingRange {
+            start_line: start,
+            end_line: end,
+            kind,
+            ..Default::default()
+        })
+    };
+    let mut out = Vec::new();
+    for (i, h) in hs.iter().enumerate() {
+        let end = hs[i + 1..]
+            .iter()
+            .find(|n| n.level <= h.level)
+            .map_or(c.text.len(), |n| n.range.start);
+        out.extend(fold(c.line(h.range.start), c.last_line(end), None));
+    }
+    if let Some(r) = c.ws.frontmatter_range(&c.path)? {
+        let (start, end) = (c.line(r.start), c.last_line(r.end));
+        out.extend(fold(start, end, Some(FoldingRangeKind::Region)));
+    }
+    Ok(out)
+}
+
+/// `n` with `one` or `many`: "1 link", "2 links".
+fn count(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// Resolved lenses: "N backlinks" on the title (the first level-1
+/// heading, else line 0), running `mdroots.backlinks`; "N links" on every
+/// other heading links name by anchor, running `mdroots.anchorLinks`.
+/// None for a count of 0.
+pub(crate) fn code_lenses(c: &Ctx) -> Result<Vec<CodeLens>, Fail> {
+    let Some(uri) = uri::from_path(&c.path) else {
+        return Ok(Vec::new());
+    };
+    let hs = c.ws.outline(&c.path)?;
+    let title = hs.iter().position(|h| h.level == 1);
+    let lens = |line: u32, title: String, command: &str, arg: serde_json::Value| CodeLens {
+        range: at_line(line),
+        command: Some(Command {
+            title,
+            command: command.to_owned(),
+            arguments: Some(vec![serde_json::json!(uri.as_str()), arg]),
+        }),
+        data: None,
+    };
+    let mut out = Vec::new();
+    let n = backlinks(c)?.len();
+    if n > 0 {
+        let line = title.map_or(0, |i| c.line(hs[i].range.start));
+        let pos = Position { line, character: 0 };
+        let t = count(n, "backlink", "backlinks");
+        out.push(lens(line, t, "mdroots.backlinks", serde_json::json!(pos)));
+    }
+    for (i, n) in c.ws.anchor_backlinks(&c.path)? {
+        let Some(h) = hs.get(i).filter(|_| Some(i) != title) else {
+            continue;
+        };
+        let t = count(n, "link", "links");
+        let line = c.line(h.range.start);
+        out.push(lens(
+            line,
+            t,
+            "mdroots.anchorLinks",
+            serde_json::json!(h.slug),
+        ));
+    }
+    Ok(out)
 }
 
 pub(crate) fn hover(c: &Ctx, pos: Position) -> Result<Option<Hover>, Fail> {

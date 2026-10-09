@@ -7,13 +7,14 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvError, Sender, TryRecvError, select};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
-    CancelParams, CompletionOptions, DidChangeConfigurationParams, DidChangeTextDocumentParams,
-    DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-    ExecuteCommandOptions, ExecuteCommandParams, FileSystemWatcher, GlobPattern, MessageType,
-    NumberOrString, OneOf, Position, PositionEncodingKind, PublishDiagnosticsParams, Registration,
-    RegistrationParams, RenameOptions, SaveOptions, ServerCapabilities, ShowMessageParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    CancelParams, CodeLensOptions, CompletionOptions, DidChangeConfigurationParams,
+    DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
+    DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, ExecuteCommandOptions,
+    ExecuteCommandParams, FileSystemWatcher, FoldingRangeProviderCapability, GlobPattern,
+    MessageType, NumberOrString, OneOf, Position, PositionEncodingKind, PublishDiagnosticsParams,
+    Registration, RegistrationParams, RenameOptions, SaveOptions, ServerCapabilities,
+    ShowMessageParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
     TextDocumentSyncSaveOptions, Uri, WorkDoneProgressOptions,
 };
 use mdroots::syntax::{LineIndex, PositionEncoding};
@@ -31,7 +32,12 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 const DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// The commands `workspace/executeCommand` accepts.
-const COMMANDS: [&str; 3] = ["mdroots.backlinks", "mdroots.info", "mdroots.renameFile"];
+const COMMANDS: [&str; 4] = [
+    "mdroots.anchorLinks",
+    "mdroots.backlinks",
+    "mdroots.info",
+    "mdroots.renameFile",
+];
 
 /// An open document. `ws` is `None` when the file is not on disk (an
 /// unsaved new buffer): such a document gets no diagnostics.
@@ -66,6 +72,11 @@ pub(crate) struct Server {
     /// The client registers file watchers on request
     /// (`workspace.didChangeWatchedFiles.dynamicRegistration`).
     watch_dynamic: bool,
+    /// The client re-requests code lenses on `workspace/codeLens/refresh`
+    /// (`workspace.codeLens.refreshSupport`).
+    lens_refresh: bool,
+    /// Ids of the `workspace/codeLens/refresh` requests sent.
+    lens_seq: u64,
     /// Roots of the watching workspaces subscribed to (one forwarding
     /// thread each).
     watched: HashSet<PathBuf>,
@@ -115,9 +126,14 @@ impl Server {
             .pointer("/capabilities/workspace/didChangeWatchedFiles/dynamicRegistration")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let lens_refresh = params
+            .pointer("/capabilities/workspace/codeLens/refreshSupport")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let mut server = Server::closed(conn, opts);
         server.enc = enc;
         server.watch_dynamic = watch_dynamic;
+        server.lens_refresh = lens_refresh;
         // `initialize_finish` waits for `initialized`, so the watcher is
         // registered here rather than in the message loop.
         match server.conn.initialize_finish(id, result) {
@@ -144,6 +160,8 @@ impl Server {
             shutdown: false,
             apply_seq: 0,
             watch_dynamic: false,
+            lens_refresh: false,
+            lens_seq: 0,
             watched: HashSet::new(),
             changes: crossbeam_channel::unbounded(),
         }
@@ -351,6 +369,16 @@ impl Server {
                     features::document_symbols(c).map(|v| json!(v))
                 })
             }
+            "textDocument/foldingRange" => {
+                let uri = p.pointer("/textDocument/uri").and_then(Value::as_str);
+                self.with_doc(uri, cancel, |c| {
+                    features::folding_ranges(c).map(|v| json!(v))
+                })
+            }
+            "textDocument/codeLens" => {
+                let uri = p.pointer("/textDocument/uri").and_then(Value::as_str);
+                self.with_doc(uri, cancel, |c| features::code_lenses(c).map(|v| json!(v)))
+            }
             "workspace/symbol" => {
                 let q = p.get("query").and_then(Value::as_str).unwrap_or_default();
                 cancel
@@ -420,6 +448,12 @@ impl Server {
         };
         let arg = |i: usize| p.arguments.get(i).and_then(Value::as_str);
         match p.command.as_str() {
+            "mdroots.anchorLinks" => {
+                let slug = arg(1).unwrap_or_default().to_owned();
+                self.with_doc(arg(0), cancel, |c| {
+                    features::anchor_links(c, &slug).map(|v| json!(v))
+                })
+            }
             "mdroots.backlinks" => {
                 self.with_doc(arg(0), cancel, |c| features::backlinks(c).map(|v| json!(v)))
             }
@@ -573,7 +607,8 @@ impl Server {
     }
 
     /// Republishes the diagnostics of the open documents in the
-    /// workspaces with these roots.
+    /// workspaces with these roots, then asks the client to re-request
+    /// code lenses (backlink counts may have changed).
     fn republish(&mut self, roots: &[PathBuf]) {
         let mut keys: Vec<String> = self
             .docs
@@ -589,6 +624,20 @@ impl Server {
             self.due.remove(&k);
             self.publish(&k);
         }
+        if !roots.is_empty() {
+            self.refresh_lenses();
+        }
+    }
+
+    /// `workspace/codeLens/refresh`, if the client supports it; its answer
+    /// is ignored.
+    fn refresh_lenses(&mut self) {
+        if !self.lens_refresh {
+            return;
+        }
+        self.lens_seq += 1;
+        let id: RequestId = format!("mdroots/codeLensRefresh/{}", self.lens_seq).into();
+        self.send(Request::new(id, "workspace/codeLens/refresh".to_owned(), Value::Null).into());
     }
 
     /// Records the document's new text and sets it as the workspace
@@ -758,6 +807,10 @@ fn capabilities(enc: PositionEncoding) -> ServerCapabilities {
             prepare_provider: Some(true),
             work_done_progress_options: WorkDoneProgressOptions::default(),
         })),
+        folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+        code_lens_provider: Some(CodeLensOptions {
+            resolve_provider: Some(false),
+        }),
         execute_command_provider: Some(ExecuteCommandOptions {
             commands: COMMANDS.map(str::to_owned).to_vec(),
             work_done_progress_options: WorkDoneProgressOptions::default(),

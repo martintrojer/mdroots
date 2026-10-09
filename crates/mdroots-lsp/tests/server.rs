@@ -197,8 +197,15 @@ fn falls_back_to_utf16() {
     assert_eq!(caps["renameProvider"]["prepareProvider"], true);
     assert_eq!(
         caps["executeCommandProvider"]["commands"],
-        json!(["mdroots.backlinks", "mdroots.info", "mdroots.renameFile"])
+        json!([
+            "mdroots.anchorLinks",
+            "mdroots.backlinks",
+            "mdroots.info",
+            "mdroots.renameFile"
+        ])
     );
+    assert_eq!(caps["foldingRangeProvider"], true);
+    assert_eq!(caps["codeLensProvider"]["resolveProvider"], false);
     for p in [
         "definitionProvider",
         "referencesProvider",
@@ -1031,4 +1038,208 @@ fn no_watcher_without_dynamic_registration() {
     }
     c.notify("exit", Value::Null);
     c.server.take().unwrap().join().unwrap().unwrap();
+}
+
+// ---- folding ranges and code lenses ----
+
+/// (start line, end line, kind) of each folding range.
+fn folds(v: &Value) -> Vec<(u64, u64, Option<String>)> {
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            let kind = f.get("kind").and_then(Value::as_str).map(str::to_owned);
+            (
+                f["startLine"].as_u64().unwrap(),
+                f["endLine"].as_u64().unwrap(),
+                kind,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn folding_ranges_for_sections_and_frontmatter() {
+    let v = Vault::corpus("zk-min");
+    let text = "---\ntitle: F\ntags: [x]\n---\n# F\n\nIntro.\n\n## A\n\nText.\n### A1\nDeep.\n## B\n# G\n\nEnd.\n";
+    v.write("f.md", text);
+    let mut c = session(&v, UTF8, &["f.md"]);
+    let uri = v.uri("f.md");
+    let r = ok(c.request(
+        "textDocument/foldingRange",
+        json!({ "textDocument": { "uri": uri } }),
+    ));
+    // Lines: 0-3 frontmatter, 4 # F, 8 ## A, 11 ### A1, 13 ## B (one
+    // line: no range), 14 # G to the end (line 16).
+    let region = Some("region".to_owned());
+    assert_eq!(
+        folds(&r),
+        [
+            (4, 13, None),
+            (8, 12, None),
+            (11, 12, None),
+            (14, 16, None),
+            (0, 3, region),
+        ]
+    );
+    c.shutdown().unwrap();
+}
+
+fn lenses(c: &mut Client, uri: &str) -> Vec<(u64, String, String, Value)> {
+    let r = ok(c.request(
+        "textDocument/codeLens",
+        json!({ "textDocument": { "uri": uri } }),
+    ));
+    r.as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            let cmd = &l["command"];
+            (
+                l["range"]["start"]["line"].as_u64().unwrap(),
+                cmd["title"].as_str().unwrap().to_owned(),
+                cmd["command"].as_str().unwrap().to_owned(),
+                cmd["arguments"].clone(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn code_lenses_count_backlinks_and_anchor_links() {
+    let v = Vault::corpus("zk-min");
+    v.write(
+        "b.md",
+        "# Note B\n\nBack to [Note A](a).\n\n## Part\n\n## Quiet\n\nSee [[#Quiet]].\n",
+    );
+    v.write("c.md", "See [[b#Part]].\n");
+    let mut c = session(&v, UTF8, &["b.md"]);
+    let uri = v.uri("b.md");
+    // a.md, emoji.md and c.md link to b.md; c.md names "Part"; "Quiet" is
+    // only named by b.md itself.
+    let got = lenses(&mut c, &uri);
+    assert_eq!(
+        got,
+        [
+            (
+                0,
+                "3 backlinks".to_owned(),
+                "mdroots.backlinks".to_owned(),
+                json!([uri, { "line": 0, "character": 0 }]),
+            ),
+            (
+                4,
+                "1 link".to_owned(),
+                "mdroots.anchorLinks".to_owned(),
+                json!([uri, "part"]),
+            ),
+        ]
+    );
+    let r = ok(c.request(
+        "workspace/executeCommand",
+        command("mdroots.anchorLinks", json!([uri, "part"])),
+    ));
+    assert_eq!(spots(&r), [spot("c.md", 0, 4)]);
+    let r = ok(c.request(
+        "workspace/executeCommand",
+        command("mdroots.anchorLinks", json!([uri, "quiet"])),
+    ));
+    assert_eq!(r, json!([]));
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn code_lenses_two_backlinks_and_none() {
+    let v = Vault::corpus("zk-min");
+    let mut c = session(&v, UTF8, &["b.md", "broken.md"]);
+    let uri = v.uri("b.md");
+    let got = lenses(&mut c, &uri);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].1, "2 backlinks");
+    // No note links to broken.md: no lens at all.
+    assert!(lenses(&mut c, &v.uri("broken.md")).is_empty());
+    // A note without a level-1 heading gets the lens on line 0.
+    v.write("d.md", "Intro.\n\n## Sub\n");
+    v.write("e.md", "[[d]]\n");
+    let mut c2 = session(&v, UTF8, &["d.md", "e.md"]);
+    let got = lenses(&mut c2, &v.uri("d.md"));
+    assert_eq!((got[0].0, got[0].1.as_str()), (0, "1 backlink"));
+    c2.shutdown().unwrap();
+    c.shutdown().unwrap();
+}
+
+/// Messages up to the shutdown reply, then exit.
+fn shutdown_seeing(mut c: Client) -> Vec<Message> {
+    let (r, seen) = c.request_seeing("shutdown", Value::Null);
+    assert!(r.error.is_none(), "{r:?}");
+    c.notify("exit", Value::Null);
+    c.server.take().unwrap().join().unwrap().unwrap();
+    seen
+}
+
+fn is_lens_refresh(m: &Message) -> bool {
+    matches!(m, Message::Request(r) if r.method == "workspace/codeLens/refresh")
+}
+
+#[test]
+fn a_refresh_asks_for_code_lenses_only_when_the_client_supports_it() {
+    for support in [true, false] {
+        let v = Vault::corpus("zk-min");
+        let mut c = Client::start();
+        c.initialize(json!({ "workspace": { "codeLens": { "refreshSupport": support } } }));
+        let uri = v.uri("a.md");
+        c.open(&uri, &v.read("a.md"));
+        assert_eq!(c.diagnostics(&uri), Vec::<Value>::new());
+        v.write("c.md", "[[a]]\n");
+        c.notify(
+            "workspace/didChangeWatchedFiles",
+            json!({ "changes": [{ "uri": v.uri("c.md"), "type": 1 }] }),
+        );
+        assert_eq!(c.diagnostics(&uri), Vec::<Value>::new());
+        if support {
+            let req = loop {
+                if let Message::Request(r) = c.recv() {
+                    break r;
+                }
+            };
+            assert_eq!(req.method, "workspace/codeLens/refresh");
+            // The client's answer is accepted and ignored.
+            let resp = Response::new_ok(req.id, Value::Null);
+            c.conn.sender.send(resp.into()).unwrap();
+            c.shutdown().unwrap();
+        } else {
+            let seen = shutdown_seeing(c);
+            assert!(!seen.iter().any(is_lens_refresh), "{seen:?}");
+        }
+    }
+}
+
+#[test]
+fn a_watching_server_asks_for_code_lenses_after_a_change_on_disk() {
+    let v = Vault::corpus("zk-min");
+    let cache = tempfile::tempdir().unwrap();
+    let mut c = Client::new();
+    c.spawn_with(
+        Options::default()
+            .cache_dir(cache.path().to_path_buf())
+            .watch(true),
+    );
+    c.initialize(json!({ "workspace": { "codeLens": { "refreshSupport": true } } }));
+    let uri = v.uri("a.md");
+    c.open(&uri, &v.read("a.md"));
+    assert_eq!(c.diagnostics(&uri), Vec::<Value>::new());
+    v.write("c.md", "[[a]]\n");
+    let start = Instant::now();
+    loop {
+        let left = Duration::from_secs(5).saturating_sub(start.elapsed());
+        let m = c
+            .conn
+            .receiver
+            .recv_timeout(left)
+            .expect("a codeLens refresh within 5 s");
+        if is_lens_refresh(&m) {
+            break;
+        }
+    }
+    c.shutdown().unwrap();
 }
