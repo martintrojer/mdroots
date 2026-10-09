@@ -110,7 +110,7 @@ needs no re-index.
 note in memory, the schema gains tables built from the parse, with indexed
 lookups. Deferred because the measured gap is small and the target vaults
 (~730 and ~210 notes) are far below it; the numbers are in D9 and
-[OPEN-QUESTIONS](../OPEN-QUESTIONS.md) item 9. The tables:
+[ROADMAP](../ROADMAP.md) §4 item 5. The tables:
 ```sql
 keys(file_id, kind, key)       -- kind: stem | path | slug | id | alias; INDEX(kind, key)
 links(file_id, range, context, kind, target_raw, target_kind, target_key)

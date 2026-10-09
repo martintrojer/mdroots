@@ -6,7 +6,7 @@
 |---|---|
 | [../README.md](../README.md) | what mdroots is, status, CLI example, crates, build |
 | [DECISIONS.md](DECISIONS.md) | current decisions D1–D9: the rule, why, what was rejected |
-| [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md) | questions not yet settled |
+| [ROADMAP.md](ROADMAP.md) | what is left: unvalidated parts, known limitations, deferred work, open questions |
 | [specs/roots.md](specs/roots.md) | root discovery, filesystem classification, walk budgets, lazy mode, nested roots, many processes per root; what `mdroots-roots` implements |
 | [specs/index.md](specs/index.md) | incremental index, link model, resolution ladder, dialects, frontmatter, differential testing |
 | [specs/library.md](specs/library.md) | crates and features, public API, scheduling, CLI, [Neovim](https://neovim.io) integration |
@@ -22,5 +22,5 @@
   the rejected alternatives. It is edited in place when a decision changes.
 - **Research** holds measurements and comparisons that justify the specs
   and decisions.
-- **OPEN-QUESTIONS.md** entries are deleted once they become a spec change
+- **ROADMAP.md** entries are deleted once they become code plus a spec change
   or a decision.

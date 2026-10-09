@@ -1,6 +1,6 @@
 # Decisions
 
-The design choices behind mdroots that are hard to reverse. Mechanics live in the specs: [roots](specs/roots.md), [index](specs/index.md), [library](specs/library.md). Unresolved points are in [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).
+The design choices behind mdroots that are hard to reverse. Mechanics live in the specs: [roots](specs/roots.md), [index](specs/index.md), [library](specs/library.md). What is left and still open is in [ROADMAP.md](ROADMAP.md).
 
 Measurements below come from two testbed vaults: a ~730-note [zk](https://github.com/zk-org/zk) vault and a ~210-note research vault.
 
@@ -243,7 +243,7 @@ Each crate may also use any crate to its left directly (`mdroots-cli` uses `mdro
 - Measured (release build, macOS APFS): an 11-note vault checks in 0.32 s cold and under 0.01 s warm at 2.2 MB peak footprint. On a synthetic 3,000-note notebook (12 MB), `mdroots check` on one note takes 0.6–0.7 s with a fresh cache and 0.11 s with the DB present, at 25.5 MB and 30.5 MB peak footprint; whole-root queries in memory (`bench_root`: diagnostics for every file 46–65 ms, backlinks for 100 files 11 ms) peak at 24.1 MB.
 
 **Costs accepted**
-- Every process holds every note's bytes and parse in memory, so memory grows with the vault. The 3,000-note notebook stays under the 35 MB per-process target (D3), with little margin; see [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).
+- Every process holds every note's bytes and parse in memory, so memory grows with the vault. The 3,000-note notebook stays under the 35 MB per-process target (D3), with little margin; see [ROADMAP.md](ROADMAP.md) §4.
 - Hydrating parses every note at start; a peer sees another process's writes only on its next `refresh`.
 
 **Deferred to M8** (decided in M6, with these numbers; M7 did not change them):

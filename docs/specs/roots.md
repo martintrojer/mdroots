@@ -130,7 +130,7 @@ A count going above its budget aborts; depth counts from the walk root (its chil
 4. The highest accepted ancestor is the loose root, registered with its reason (`loose root accepted at <dir>: <md> md / <files> files`, or the line of the first rejection). It is then walked once more with the loose budget for its md list; a folder over that budget (more than 5k md or 10k entries) is lazy. To index a larger notes folder fully, add an empty `.mdroots`, which makes it a marker root with the marker budget.
 5. **Hysteresis** (not applied yet; needs the reconcile's file counts): re-run the climb only if the recorded stats are > 7 days old or the reconcile sees the file count change > 2×, so roots do not flip around a threshold and rebuild.
 
-The 20-file, 30%, 2× and 7-day numbers are validated only on the fixtures in §7 (see [OPEN-QUESTIONS.md](../OPEN-QUESTIONS.md)). Results are staged: single-file features at once, then results published after each accepted level.
+The 20-file, 30%, 2× and 7-day numbers are validated only on the fixtures in §7 (see [ROADMAP.md](../ROADMAP.md) §1). Results are staged: single-file features at once, then results published after each accepted level.
 
 ## 3. Lazy and vcs-enumerated modes
 
@@ -228,7 +228,7 @@ Unlinking or renaming an open SQLite file is a documented corruption path.
 ### Versions, memory, scheduling
 
 - **Upgrades**: schema version in the DB filename and locks, so v1 and v2 processes never fight over migrations. Files of another schema are GC-ed once the newest of them is 7 days old by mtime and `<id>.v<old>.open` can be taken exclusively. The registry carries its own `k` for the same reason (still `roots.v1.db`).
-- **Memory**: < 35 MB `phys_footprint` per process with N=10 concurrent instances. As built (D9) each process holds every note's bytes and parse in memory: measured peak footprint 2.2 MB on an 11-note vault and 23–31 MB on a synthetic 3,000-note notebook, depending on the path (D9, [OPEN-QUESTIONS.md](../OPEN-QUESTIONS.md)). The derived tables (M8) would bound it for larger vaults. SQLite is `mmap`ed, so N processes share one page-cache copy; on macOS those pages show in every process's RSS, so measure with `footprint` or `proc_pid_rusage` (`ri_phys_footprint`), not RSS. For comparison, 10 [marksman](https://github.com/artempyanykh/marksman) instances are 10 full workspaces at 134–145 MB RSS each.
+- **Memory**: < 35 MB `phys_footprint` per process with N=10 concurrent instances. As built (D9) each process holds every note's bytes and parse in memory: measured peak footprint 2.2 MB on an 11-note vault and 23–31 MB on a synthetic 3,000-note notebook, depending on the path (D9, [ROADMAP](../ROADMAP.md)). The derived tables (M8) would bound it for larger vaults. SQLite is `mmap`ed, so N processes share one page-cache copy; on macOS those pages show in every process's RSS, so measure with `footprint` or `proc_pid_rusage` (`ri_phys_footprint`), not RSS. For comparison, 10 [marksman](https://github.com/artempyanykh/marksman) instances are 10 full workspaces at 134–145 MB RSS each.
 - **Scheduling** (planned, with a background thread): background work (walks, sweeps, FTS, inference, vcs-enumerated parsing) at `QOS_CLASS_BACKGROUND` (E-cores only). `QOS_CLASS_UTILITY` only for the small link-target queue of open buffers (it prefers P-cores). Requests at default QoS. Linux: `nice 10` + `IOPRIO_CLASS_IDLE` for background, best-effort for the link-target queue.
 
 ## 6. Housekeeping

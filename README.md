@@ -47,8 +47,9 @@ Obsidian config or voted from the notes), and a background open in
 discovered and indexed, with a progress notification for opens over a
 second.
 
-Next is M8: FSEvents replay, derived SQL tables, cross-root links and
-[Watchman](https://facebook.github.io/watchman/) clocks.
+0.2.0 is on crates.io (`cargo install mdroots-cli`, `cargo add mdroots`).
+What is left (Linux CI, real-vault validation, known limitations, deferred
+work and open questions): [docs/ROADMAP.md](docs/ROADMAP.md).
 
 Editor features of `mdroots lsp`: goto definition (links, anchors, code
 mentions), references and backlinks, hover previews, document and

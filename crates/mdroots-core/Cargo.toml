@@ -13,8 +13,8 @@ keywords = ["markdown", "notes", "index"]
 categories = ["text-processing"]
 
 [dependencies]
-mdroots-syntax = { path = "../mdroots-syntax", version = "=0.1.0" }
-mdroots-resolve = { path = "../mdroots-resolve", version = "=0.1.0" }
+mdroots-syntax = { path = "../mdroots-syntax", version = "=0.2.0" }
+mdroots-resolve = { path = "../mdroots-resolve", version = "=0.2.0" }
 
 [dev-dependencies]
 tempfile = "3"
