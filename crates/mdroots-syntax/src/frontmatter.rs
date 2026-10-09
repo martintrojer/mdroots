@@ -15,8 +15,8 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::model::{
-    Confidence, Context, Element, Frontmatter, FrontmatterFormat, Link, LinkKind, Tag, TagSyntax,
-    Value,
+    Confidence, Context, Element, Field, FieldValue, Frontmatter, FrontmatterFormat, Link,
+    LinkKind, Tag, TagSyntax, Value,
 };
 
 /// Parse the frontmatter block at `range` (fences included, for YAML and
@@ -28,6 +28,9 @@ pub(crate) fn parse_block(
 ) -> (Frontmatter, Vec<Element>) {
     let range = clamp(src, range);
     let mut entries: Vec<Entry> = Vec::new();
+    let mut fields: Vec<Field> = Vec::new();
+    let mut parsed_ok = true;
+    let mut inner = range.clone();
     let error = match format {
         FrontmatterFormat::Yaml | FrontmatterFormat::Toml => {
             let kind = if format == FrontmatterFormat::Toml {
@@ -35,8 +38,14 @@ pub(crate) fn parse_block(
             } else {
                 FmKind::Yaml
             };
-            let inner = body(src, &range);
+            inner = body(src, &range);
             let parsed = parse(&src[inner.clone()], kind);
+            parsed_ok = parsed.parsed;
+            fields = parsed
+                .entries
+                .iter()
+                .map(|e| to_field(e, &inner, None))
+                .collect();
             let mut ctx = Flatten {
                 src,
                 inner: inner.clone(),
@@ -48,17 +57,30 @@ pub(crate) fn parse_block(
                 (!parsed.parsed).then(|| "no `key: value` entries in the block".to_owned())
             })
         }
-        FrontmatterFormat::Json => json::entries(src, range.clone(), &mut entries),
+        FrontmatterFormat::Json => {
+            let error = json::entries(src, range.clone(), &mut entries);
+            // JSON `null` is a scalar as written in the fields.
+            fields = entries
+                .iter()
+                .map(|e| Field::from_value(&e.key, &e.value, "null", e.src.clone()))
+                .collect();
+            let content = src[range.clone()]
+                .trim()
+                .trim_start_matches('{')
+                .trim_end_matches('}');
+            parsed_ok = !entries.is_empty() || content.trim().is_empty();
+            error
+        }
         FrontmatterFormat::Logseq => {
-            line_entries(src, range.clone(), logseq_line, &mut entries);
+            line_entries(src, range.clone(), logseq_line, &mut entries, &mut fields);
             None
         }
         FrontmatterFormat::MultiMarkdown => {
-            line_entries(src, range.clone(), mmd_line, &mut entries);
+            line_entries(src, range.clone(), mmd_line, &mut entries, &mut fields);
             None
         }
         _ => {
-            line_entries(src, range.clone(), org_line, &mut entries);
+            line_entries(src, range.clone(), org_line, &mut entries, &mut fields);
             None
         }
     };
@@ -70,9 +92,37 @@ pub(crate) fn parse_block(
             .map(|e| (e.key.clone(), e.value.clone()))
             .collect(),
         error,
-    );
+    )
+    .with_fields(fields, parsed_ok, inner);
     let elements = elements(src, &fm, &entries);
     (fm, elements)
+}
+
+/// A parsed entry as a public field, ranges absolute. `parent` is the
+/// enclosing field's range: a child the parser alone found (its `src` is
+/// the whole parsed text) takes it; a top-level entry keeps the whole
+/// inner block.
+fn to_field(e: &FmEntry, inner: &Range<usize>, parent: Option<&Range<usize>>) -> Field {
+    let whole = e.src == (0..inner.len());
+    let range = match parent {
+        Some(p) if whole => p.clone(),
+        _ => inner.start + e.src.start..inner.start + e.src.end,
+    };
+    let value = match &e.value {
+        FmValue::Scalar(s) => FieldValue::Scalar(s.clone()),
+        FmValue::List(items) => FieldValue::List(items.clone()),
+        FmValue::Map(children) => FieldValue::Map(
+            children
+                .iter()
+                .map(|c| to_field(c, inner, Some(&range)))
+                .collect(),
+        ),
+    };
+    Field {
+        key: e.key.clone(),
+        value,
+        range,
+    }
 }
 
 /// Find an unfenced header at the top of `src` (after a BOM): Logseq
@@ -508,10 +558,16 @@ fn line_entries(
     range: Range<usize>,
     f: fn(&str) -> Option<(&str, &str)>,
     out: &mut Vec<Entry>,
+    fields: &mut Vec<Field>,
 ) {
     for (at, line) in lines(&src[range.clone()]) {
         if let Some((key, value)) = f(line) {
             let start = range.start + at;
+            fields.push(Field {
+                key: key.to_owned(),
+                value: FieldValue::Scalar(value.to_owned()),
+                range: start..start + line.len(),
+            });
             out.push(Entry {
                 key: key.to_owned(),
                 value: scalar_value(value),
@@ -1063,15 +1119,13 @@ fn toml_shape(v: &toml::Value, len: usize) -> FmValue {
     }
 }
 
+/// A string as is, a table as `{…}`, anything else as TOML writes it
+/// (`1.0`, a nested array as `[1, 2]`), as ramble shows it.
 fn toml_text(v: &toml::Value) -> String {
     match v {
         toml::Value::String(s) => s.clone(),
-        toml::Value::Integer(i) => i.to_string(),
-        toml::Value::Float(f) => f.to_string(),
-        toml::Value::Boolean(b) => b.to_string(),
-        toml::Value::Datetime(d) => d.to_string(),
-        toml::Value::Array(items) => items.iter().map(toml_text).collect::<Vec<_>>().join(", "),
         toml::Value::Table(_) => "{…}".into(),
+        v => v.to_string(),
     }
 }
 

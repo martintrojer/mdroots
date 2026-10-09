@@ -20,7 +20,7 @@ pub(crate) fn parse_document(src: String, opts: &ParseOptions) -> Document {
     let (mut elements, regions, fm, abbrevs) = match opts.dialect {
         Dialect::Org => org::parse_org(&src, opts),
         _ => {
-            let pass = markdown(&src);
+            let pass = markdown_with(&src, opts.unfenced_frontmatter);
             (
                 pass.elements,
                 pass.regions,
@@ -61,8 +61,16 @@ struct Open {
     wiki: bool,
 }
 
-/// The markdown structure pass (everything but the scan).
+/// The markdown structure pass (everything but the scan), unfenced
+/// headers on (tests).
+#[cfg(test)]
 pub(crate) fn markdown(src: &str) -> MarkdownPass {
+    markdown_with(src, true)
+}
+
+/// The markdown structure pass. `unfenced`: look for an unfenced header
+/// ([`ParseOptions::unfenced_frontmatter`]).
+fn markdown_with(src: &str, unfenced: bool) -> MarkdownPass {
     // A UTF-8 BOM hides a leading metadata block from pulldown: parse after it.
     let base = if src.starts_with('\u{feff}') { 3 } else { 0 };
     // pulldown reads a leading block with blank lines only between its
@@ -200,7 +208,10 @@ pub(crate) fn markdown(src: &str) -> MarkdownPass {
         let (f, els) = frontmatter::parse_block(src, range, format);
         fm = Some(f);
         elements.extend(els);
-    } else if let Some((range, format)) = frontmatter::detect_unfenced(src) {
+    } else if let Some((range, format)) = unfenced
+        .then(|| frontmatter::detect_unfenced(src))
+        .flatten()
+    {
         // pulldown saw these bytes as prose; the frontmatter pass owns them.
         elements.retain(|e| !range.contains(&e.range().start));
         regions.push(range.clone(), Context::Frontmatter);

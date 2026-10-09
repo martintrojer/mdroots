@@ -36,6 +36,11 @@ pub struct ParseOptions {
     pub colon_tags: bool,
     /// `#multi word#` tags (default false).
     pub multiword_tags: bool,
+    /// Unfenced markdown headers at the top (Logseq `key:: value`,
+    /// MultiMarkdown `Key: value`, a JSON object) are front matter
+    /// (default true). When false they stay prose; fenced `---` / `+++`
+    /// blocks and org keywords are unaffected.
+    pub unfenced_frontmatter: bool,
 }
 
 impl ParseOptions {
@@ -45,6 +50,7 @@ impl ParseOptions {
             hashtags: true,
             colon_tags: false,
             multiword_tags: false,
+            unfenced_frontmatter: true,
         }
     }
 }
@@ -343,21 +349,48 @@ pub struct Frontmatter {
     pub range: Range<usize>,
     pub error: Option<String>,
     entries: Vec<(String, Value)>,
+    fields: Vec<Field>,
+    parsed: bool,
+    inner: Range<usize>,
 }
 
 impl Frontmatter {
+    /// A frontmatter block from flattened entries. Its [`fields`](Self::fields)
+    /// are the same entries (`Value::Null` as an empty scalar), each with
+    /// `range` as its range; [`parsed`](Self::parsed) is true and
+    /// [`inner`](Self::inner) is `range`.
     pub fn from_entries(
         format: FrontmatterFormat,
         range: Range<usize>,
         entries: Vec<(String, Value)>,
         error: Option<String>,
     ) -> Self {
+        let fields = entries
+            .iter()
+            .map(|(k, v)| Field::from_value(k, v, "", range.clone()))
+            .collect();
         Frontmatter {
             format,
+            inner: range.clone(),
             range,
             error,
             entries,
+            fields,
+            parsed: true,
         }
+    }
+
+    /// Replace the fields, the parsed flag and the inner range.
+    pub(crate) fn with_fields(
+        mut self,
+        fields: Vec<Field>,
+        parsed: bool,
+        inner: Range<usize>,
+    ) -> Self {
+        self.fields = fields;
+        self.parsed = parsed;
+        self.inner = inner;
+        self
     }
 
     /// Keys as written, in document order.
@@ -368,6 +401,76 @@ impl Frontmatter {
     /// Value of the first entry whose key is exactly `key`.
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+    }
+
+    /// The top-level entries as written, in source order, before nested
+    /// maps are flattened: duplicate keys all show, scalars keep their
+    /// source text (`null` stays `"null"`), nested maps keep their
+    /// children. For YAML and TOML, keys the parser alone found (TOML
+    /// tables and dotted keys, flow maps) come as the parser reports them.
+    /// JSON entries are flattened to `a.b` keys.
+    pub fn fields(&self) -> &[Field] {
+        &self.fields
+    }
+
+    /// False when the block is not blank but no key could be read from it.
+    pub fn parsed(&self) -> bool {
+        self.parsed
+    }
+
+    /// The bytes between the fences: after the opening fence line and
+    /// before the closing one. For unfenced formats, `range`.
+    pub fn inner(&self) -> Range<usize> {
+        self.inner.clone()
+    }
+}
+
+/// A frontmatter entry as written, from [`Frontmatter::fields`].
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Field {
+    pub key: String,
+    pub value: FieldValue,
+    /// The entry's lines in [`Document::source`]. When they can't be
+    /// found: the block's inner range for a top-level field, the parent's
+    /// range for a nested one.
+    pub range: Range<usize>,
+}
+
+impl Field {
+    pub(crate) fn from_value(key: &str, v: &Value, null: &str, range: Range<usize>) -> Field {
+        let value = match v {
+            Value::Null => FieldValue::Scalar(null.to_owned()),
+            Value::Str(s) => FieldValue::Scalar(s.clone()),
+            Value::List(items) => FieldValue::List(items.clone()),
+        };
+        Field {
+            key: key.to_owned(),
+            value,
+            range,
+        }
+    }
+}
+
+/// The value of a [`Field`], text as written on one line.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum FieldValue {
+    Scalar(String),
+    List(Vec<String>),
+    /// A nested map and its entries (empty when unknown).
+    Map(Vec<Field>),
+}
+
+impl FieldValue {
+    /// The value on one line: a scalar as is, list items joined with `, `,
+    /// a map as `{…}`.
+    pub fn display(&self) -> String {
+        match self {
+            FieldValue::Scalar(s) => s.clone(),
+            FieldValue::List(items) => items.join(", "),
+            FieldValue::Map(_) => "{…}".into(),
+        }
     }
 }
 

@@ -18,7 +18,7 @@ workspace = true
 [dependencies]
 pulldown-cmark = { version = "0.13.4", default-features = false }
 saphyr = "0.1"
-toml = { version = "1", default-features = false, features = ["parse", "serde", "preserve_order"] }
+toml = { version = "1", default-features = false, features = ["parse", "display", "serde", "preserve_order"] }
 unicode-general-category = "1.1"
 
 [dev-dependencies]

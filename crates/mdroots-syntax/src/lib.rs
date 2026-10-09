@@ -14,8 +14,9 @@ mod structure;
 
 pub use line_index::{LineIndex, PositionEncoding};
 pub use model::{
-    Anchor, Confidence, Context, Dialect, Document, Element, Frontmatter, FrontmatterFormat,
-    Heading, Link, LinkDef, LinkKind, LinkTarget, ParseOptions, Tag, TagSyntax, Value,
+    Anchor, Confidence, Context, Dialect, Document, Element, Field, FieldValue, Frontmatter,
+    FrontmatterFormat, Heading, Link, LinkDef, LinkKind, LinkTarget, ParseOptions, Tag, TagSyntax,
+    Value,
 };
 
 /// Parse `text` with default options for `dialect`.

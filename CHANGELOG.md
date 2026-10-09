@@ -4,6 +4,19 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
+## Unreleased
+
+- `Frontmatter::fields()`: the top-level front matter entries as written,
+  each with its byte range in the document and nested maps as a tree
+  (`Field`, `FieldValue`, `FieldValue::display`). Also new:
+  `Frontmatter::parsed()` (false when a non-blank block has no key) and
+  `Frontmatter::inner()` (the text between the fences).
+- `ParseOptions::unfenced_frontmatter` (default true): set it to false to
+  leave Logseq, MultiMarkdown and JSON headers as prose.
+- TOML front matter values that only the parser reads (in tables, dotted
+  keys) are written as TOML writes them, in `entries()` too: `1.0` stays
+  `1.0` (was `1`), and a nested array is one item `[1, 2]` (was `1, 2`).
+
 ## 0.2.1
 
 - Front matter: block scalars (`|`, `>`) whose lines look like keys or list
