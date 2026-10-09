@@ -59,11 +59,13 @@ struct Run {
 }
 
 fn run_in(cwd: &Path, args: &[&str], v: &Vault) -> Run {
-    // The cache dir resolves under XDG_CACHE_HOME: never the real one.
+    // The cache dir resolves under XDG_CACHE_HOME: never the real one. An
+    // inherited MDROOTS_CACHE_DIR (CI sets one) would override it.
     let cache = v.canon.join("cache");
     let out = Command::new(env!("CARGO_BIN_EXE_mdroots"))
         .args(args)
         .current_dir(cwd)
+        .env_remove("MDROOTS_CACHE_DIR")
         .env("XDG_CACHE_HOME", &cache)
         .env("HOME", &cache)
         .output()
@@ -167,6 +169,7 @@ fn run_lsp(v: &Vault, extra: &[&str], stdin: &[u8]) -> (i32, String) {
         .arg("lsp")
         .args(extra)
         .current_dir(v.dir())
+        .env_remove("MDROOTS_CACHE_DIR")
         .env("XDG_CACHE_HOME", &cache)
         .env("HOME", &cache)
         .stdin(std::process::Stdio::piped())
