@@ -16,7 +16,7 @@ use crate::Outcome;
 pub fn run(log: Option<&str>) -> Result<Outcome, Error> {
     let (conn, io) = Connection::stdio();
     let served = match log {
-        None => mdroots_lsp::serve_with(conn, crate::options()),
+        None => mdroots_lsp::serve_with(conn, options()),
         Some(path) => {
             let file = OpenOptions::new()
                 .create(true)
@@ -30,6 +30,12 @@ pub fn run(log: Option<&str>) -> Result<Outcome, Error> {
     io.join()
         .map_err(|e| Error::new(ErrorKind::Io, format!("lsp: {e}")))?;
     Ok(Outcome::Ok)
+}
+
+/// The CLI's options plus the native file watcher, which only a
+/// long-running server wants.
+fn options() -> mdroots::Options {
+    crate::options().watch(true)
 }
 
 /// Serves on an in-memory connection, forwarding (and logging) each
@@ -63,7 +69,7 @@ fn logged(
             }
         })
     };
-    let served = mdroots_lsp::serve_with(server, crate::options());
+    let served = mdroots_lsp::serve_with(server, options());
     // The server's end is dropped: outbound drains and drops the stdio
     // sender, which lets the writer thread finish.
     let _ = outbound.join();
