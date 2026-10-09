@@ -562,6 +562,21 @@ fn note_summary_modified_is_the_file_mtime() {
 }
 
 #[test]
+fn note_summary_modified_keeps_pre_epoch_times() {
+    let (_tmp, root, _ws) = temp_repo(&[("old.md", "# Old\n")]);
+    let old = std::time::UNIX_EPOCH - std::time::Duration::from_secs(315_619_200);
+    let file = std::fs::File::options()
+        .write(true)
+        .open(root.join("old.md"))
+        .unwrap();
+    file.set_modified(old).unwrap();
+    drop(file);
+    let ws = Workspace::open_at(&root, Options::default().index(IndexMode::Memory)).unwrap();
+    let n = ws.notes().into_iter().next().unwrap();
+    assert_eq!(n.modified, Some(old));
+}
+
+#[test]
 fn notes_with_tag_matches_frontmatter_and_hash_tags_ignoring_case() {
     let (_tmp, root, ws) = temp_repo(&[
         ("a.md", "---\ntags: [Rust, cli]\n---\n# A\n"),

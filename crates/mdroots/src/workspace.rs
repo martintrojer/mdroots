@@ -900,15 +900,21 @@ impl Workspace {
     }
 
     /// `path`'s modification time on disk; `None` when the stat fails or
-    /// the filesystem reports no time (zero).
+    /// the filesystem reports no time (exactly zero, as in-memory
+    /// filesystems do). Times before the epoch are kept.
     fn modified(&self, path: &Path) -> Option<SystemTime> {
         let ns = self.inner.fs.stat(path).ok()?.mtime_ns;
         if ns == 0 {
             return None;
         }
-        let secs = u64::try_from(ns.div_euclid(1_000_000_000)).ok()?;
-        let nanos = ns.rem_euclid(1_000_000_000) as u32;
-        UNIX_EPOCH.checked_add(Duration::new(secs, nanos))
+        let secs = u64::try_from(ns.unsigned_abs() / 1_000_000_000).ok()?;
+        let nanos = (ns.unsigned_abs() % 1_000_000_000) as u32;
+        let d = Duration::new(secs, nanos);
+        if ns > 0 {
+            UNIX_EPOCH.checked_add(d)
+        } else {
+            UNIX_EPOCH.checked_sub(d)
+        }
     }
 
     /// Each tag with the number of notes carrying it, sorted by name.
