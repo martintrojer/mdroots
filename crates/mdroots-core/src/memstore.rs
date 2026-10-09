@@ -119,6 +119,9 @@ pub struct MemStore {
     index: BTreeMap<(KeyKind, String), BTreeSet<String>>,
     skipped: Vec<(String, Error)>,
     caches: Caches,
+    /// Extra code-mention dirs, root-relative (see
+    /// [`set_code_dirs`](Self::set_code_dirs)).
+    code_dirs: Vec<String>,
 }
 
 impl MemStore {
@@ -264,6 +267,7 @@ impl MemStore {
             index: BTreeMap::new(),
             skipped: Vec::new(),
             caches: Caches::default(),
+            code_dirs: Vec::new(),
         }
     }
 
@@ -308,6 +312,22 @@ impl MemStore {
         self.replace(root_rel, |e| e.overlay = None);
     }
 
+    /// Extra dirs code mentions ([`LinkKind::CodeMention`])
+    /// resolve against: root-relative, `/`-separated, and may start with `..`
+    /// (see [`outside_rel`](mdroots_resolve::ladder::outside_rel) to compute
+    /// one from an absolute dir). A relative mention tries the linking
+    /// note's dir, then these in order, then the root. Drops the cached
+    /// [`policy`](Self::policy) and backlink index, like a content change.
+    pub fn set_code_dirs(&mut self, dirs: Vec<String>) {
+        self.caches = Caches::default();
+        self.code_dirs = dirs;
+    }
+
+    /// The dirs set by [`set_code_dirs`](Self::set_code_dirs).
+    pub fn code_dirs(&self) -> &[String] {
+        &self.code_dirs
+    }
+
     pub fn resolve_link(
         &self,
         from_root_rel: &str,
@@ -317,6 +337,7 @@ impl MemStore {
         let mut ctx = ResolveCtx::new(&self.env, self);
         ctx.allow_partial = allow_partial;
         ctx.root_abs = Some(&self.env.root);
+        ctx.code_dirs = &self.code_dirs;
         ctx.docs_dir = self.conventions.docs_dir.as_deref();
         resolve(from_root_rel, link, &ctx)
     }

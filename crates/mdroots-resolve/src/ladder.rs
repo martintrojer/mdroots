@@ -515,8 +515,9 @@ fn clean(p: &Path) -> PathBuf {
     out
 }
 
-/// `abs` relative to the root, climbing with `..` when outside it.
-fn outside_rel(root: Option<&Path>, abs: &Path) -> Option<String> {
+/// `abs` relative to the root, climbing with `..` when outside it (both
+/// cleaned lexically first); `None` without a root.
+pub fn outside_rel(root: Option<&Path>, abs: &Path) -> Option<String> {
     let (root, abs) = (clean(root?), clean(abs));
     let r: Vec<_> = root.components().collect();
     let a: Vec<_> = abs.components().collect();

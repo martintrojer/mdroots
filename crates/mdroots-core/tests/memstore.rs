@@ -731,3 +731,30 @@ fn vote_cache_is_dropped_by_set_overlay() {
     s.clear_overlay("a.md");
     assert_eq!(s.vote().wiki_share, 0.0);
 }
+
+#[test]
+fn code_dirs_extend_code_mention_lookup() {
+    let fs = MemFs::new()
+        .with_file("/p/notes/docs/a.md", "`src/main.rs:12` `lib.rs`\n")
+        .with_file("/p/notes/docs/lib.rs", "")
+        .with_file("/p/src/main.rs", "")
+        .with_file("/p/lib.rs", "");
+    let mut s = MemStore::open(Arc::new(fs), PathBuf::from("/p/notes"), &Cancel::new()).unwrap();
+
+    let (_, r) = link(&s, "docs/a.md", "src/main.rs:12");
+    assert_eq!(r.status, LinkStatus::Unchecked);
+    assert!(r.targets.is_empty());
+
+    s.set_code_dirs(vec!["..".to_owned()]);
+    assert_eq!(s.code_dirs(), [".."]);
+    let (_, r) = link(&s, "docs/a.md", "src/main.rs:12");
+    assert_eq!(r.status, LinkStatus::Unindexed);
+    assert_eq!(r.targets, ["../src/main.rs"]);
+    // The linking note's dir wins over a code dir.
+    let (_, r) = link(&s, "docs/a.md", "lib.rs");
+    assert_eq!(r.targets, ["docs/lib.rs"]);
+
+    s.set_code_dirs(Vec::new());
+    let (_, r) = link(&s, "docs/a.md", "src/main.rs:12");
+    assert_eq!(r.status, LinkStatus::Unchecked);
+}
