@@ -133,51 +133,59 @@ fn check(probe: &dyn Probe, env: &CacheEnv, c: &Candidate) -> Result<(), String>
         other => return Err(format!("not local ({other:?})")),
     }
     let io_err = |what: &str, e: io::Error| format!("{what}: {e}");
-    crate::create_private_dir(&c.path).map_err(|e| io_err("create", e))?;
-    if c.check_owner && !owned_by(&c.path, env.uid) {
-        return Err(format!("not owned by uid {}", env.uid));
+    if c.check_owner {
+        create_owned_private_dir(&c.path, env.uid)?;
+    } else {
+        crate::create_private_dir(&c.path).map_err(|e| io_err("create", e))?;
     }
-    set_private(&c.path).map_err(|e| io_err("chmod 0700", e))?;
     let probe_file = c.path.join(WRITE_TEST);
     std::fs::write(&probe_file, b"").map_err(|e| io_err("not writable", e))?;
     std::fs::remove_file(&probe_file).map_err(|e| io_err("remove write test", e))?;
     Ok(())
 }
 
+/// Create `path` (mode 0700) in a shared dir such as `/var/tmp`, where
+/// another user may have planted it first. A symlink is never followed, and
+/// an existing dir is made 0700 only once it is known to be a real dir owned
+/// by `uid`: the chmod goes through a handle whose identity matches the
+/// checked entry, so nothing that is then rejected is ever chmodded.
 #[cfg(unix)]
-fn set_private(p: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700))
-}
-
-#[cfg(not(unix))]
-fn set_private(_: &Path) -> io::Result<()> {
-    Ok(())
-}
-
-/// Whether `path` is owned by `uid`; a shared tmp dir could hold a dir
-/// pre-created by another user.
-#[cfg(unix)]
-fn owned_by(path: &Path, uid: u32) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::symlink_metadata(path).is_ok_and(|m| m.uid() == uid)
-}
-
-#[cfg(not(unix))]
-fn owned_by(_: &Path, _: u32) -> bool {
-    true
-}
-
-#[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn owned_by_checks_uid() {
-        let tmp = tempfile::tempdir().unwrap();
-        let me = current_uid();
-        assert!(owned_by(tmp.path(), me));
-        assert!(!owned_by(tmp.path(), me.wrapping_add(1)));
-        assert!(!owned_by(&tmp.path().join("missing"), me));
+fn create_owned_private_dir(path: &Path, uid: u32) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    if let Some(parent) = path.parent() {
+        // Missing parents only: an existing shared parent keeps its mode.
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)
+            .map_err(|e| format!("create: {e}"))?;
     }
+    // mkdir never follows a symlink in the last component.
+    match std::fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(format!("create: {e}")),
+    }
+    let entry = std::fs::symlink_metadata(path).map_err(|e| format!("stat: {e}"))?;
+    if entry.file_type().is_symlink() {
+        return Err("symlink, not followed".into());
+    }
+    if !entry.is_dir() {
+        return Err("not a directory".into());
+    }
+    if entry.uid() != uid {
+        return Err(format!("not owned by uid {uid}"));
+    }
+    let dir = std::fs::File::open(path).map_err(|e| format!("open: {e}"))?;
+    let opened = dir.metadata().map_err(|e| format!("stat: {e}"))?;
+    if (opened.dev(), opened.ino()) != (entry.dev(), entry.ino()) {
+        return Err("replaced while checked".into());
+    }
+    dir.set_permissions(std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("chmod 0700: {e}"))
+}
+
+#[cfg(not(unix))]
+fn create_owned_private_dir(path: &Path, _: u32) -> Result<(), String> {
+    crate::create_private_dir(path).map_err(|e| format!("create: {e}"))
 }

@@ -147,3 +147,80 @@ fn read_only_candidate_skipped() {
     );
     assert!(!xdg.join("mdroots").exists());
 }
+
+/// Only the shared `<tmp_dir>/mdroots-<uid>` candidate, for `uid`.
+fn tmp_only(tmp: &Path, uid: u32) -> CacheEnv {
+    CacheEnv {
+        xdg_cache_home: None,
+        home: None,
+        xdg_runtime_dir: None,
+        uid,
+        ..env(tmp)
+    }
+}
+
+#[test]
+fn tmp_dir_symlink_to_other_dir_rejected_untouched() {
+    // A symlink planted at the shared candidate, pointing at a dir its
+    // owner keeps at 0755; the expected uid does not match.
+    let tmp = tempfile::tempdir().unwrap();
+    let t = tmp.path();
+    let e = tmp_only(t, rustix::process::getuid().as_raw().wrapping_add(1));
+    let victim = t.join("victim");
+    std::fs::create_dir(&victim).unwrap();
+    std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::create_dir(t.join("vartmp")).unwrap();
+    std::os::unix::fs::symlink(&victim, t.join(format!("vartmp/mdroots-{}", e.uid))).unwrap();
+    assert_eq!(cache_dir(&StdProbe, &e), None);
+    assert_eq!(mode(&victim), 0o755, "symlink target chmodded");
+}
+
+#[test]
+fn tmp_dir_symlink_to_own_dir_rejected_untouched() {
+    // Even with a matching owner, the shared candidate is never followed.
+    let tmp = tempfile::tempdir().unwrap();
+    let t = tmp.path();
+    let e = tmp_only(t, rustix::process::getuid().as_raw());
+    let target = t.join("target");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::create_dir(t.join("vartmp")).unwrap();
+    std::os::unix::fs::symlink(&target, t.join(format!("vartmp/mdroots-{}", e.uid))).unwrap();
+    assert_eq!(cache_dir(&StdProbe, &e), None);
+    assert_eq!(mode(&target), 0o755, "symlink target chmodded");
+}
+
+#[test]
+fn tmp_dir_not_owned_rejected_without_chmod() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = tmp.path();
+    let e = tmp_only(t, rustix::process::getuid().as_raw().wrapping_add(1));
+    let cand = t.join(format!("vartmp/mdroots-{}", e.uid));
+    std::fs::create_dir_all(&cand).unwrap();
+    std::fs::set_permissions(&cand, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(cache_dir(&StdProbe, &e), None);
+    assert_eq!(mode(&cand), 0o755, "rejected dir chmodded");
+}
+
+#[test]
+fn tmp_dir_file_at_candidate_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = tmp.path();
+    let e = tmp_only(t, rustix::process::getuid().as_raw());
+    std::fs::create_dir(t.join("vartmp")).unwrap();
+    let cand = t.join(format!("vartmp/mdroots-{}", e.uid));
+    std::fs::write(&cand, b"").unwrap();
+    assert_eq!(cache_dir(&StdProbe, &e), None);
+}
+
+#[test]
+fn tmp_dir_existing_own_dir_reset_to_0700() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = tmp.path();
+    let e = tmp_only(t, rustix::process::getuid().as_raw());
+    let cand = t.join(format!("vartmp/mdroots-{}", e.uid));
+    std::fs::create_dir_all(&cand).unwrap();
+    std::fs::set_permissions(&cand, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(cache_dir(&StdProbe, &e).unwrap().path, cand);
+    assert_eq!(mode(&cand), 0o700);
+}
