@@ -945,3 +945,37 @@ fn roots_prints_settings_and_their_sources() {
         ]
     );
 }
+
+#[test]
+fn notes_repeated_link_filters_all_apply() {
+    let v = graph_vault();
+    // hub.md links a, b and sub/t; c links only b; s links only a.
+    assert_eq!(notes(&v, &["-l", "a.md", "-l", "b.md"]), ["hub.md"]);
+    assert_eq!(notes(&v, &["-L", "hub.md", "-L", "c.md"]), ["b.md"]);
+}
+
+#[test]
+fn notes_a_flag_where_a_value_belongs_is_a_usage_error() {
+    let v = graph_vault();
+    for args in [
+        &["notes", "-t", "--orphan"][..],
+        &["notes", "-m", "--orphan"],
+        &["notes", "--sort"],
+        &["notes", "-l", "-L", "a.md"],
+    ] {
+        let r = run_cached(&v, &v.dir(), args);
+        assert_eq!(r.code, 2, "{args:?}: {}", r.stdout);
+    }
+}
+
+#[test]
+fn notes_delimiter0_ends_json_with_nul() {
+    let v = graph_vault();
+    let r = run_cached(
+        &v,
+        &v.dir(),
+        &["notes", "-f", "json", "-0", "-t", "nonexistent"],
+    );
+    assert_eq!(r.code, 0);
+    assert_eq!(r.stdout, "[]\0");
+}

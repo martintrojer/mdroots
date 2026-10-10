@@ -234,9 +234,9 @@ pub struct NoteQuery {
     pub modified_before: Option<SystemTime>,
     pub orphan: bool,
     pub missing_backlink: bool,
-    /// Notes linking to any of these.
+    /// Notes linking to every one of these.
     pub link_to: Vec<PathBuf>,
-    /// Notes linked from any of these.
+    /// Notes linked from every one of these.
     pub linked_by: Vec<PathBuf>,
     pub related: Vec<PathBuf>,
     /// `None`: title A–Z. `bool`: ascending.
@@ -299,11 +299,16 @@ impl Workspace {
         let related = match q.related.is_empty() {
             true => None,
             false => {
-                let mut set = BTreeSet::new();
+                let mut all: Option<BTreeSet<PathBuf>> = None;
                 for p in &q.related {
-                    set.extend(self.related(p)?.into_iter().map(|(n, _)| n.path));
+                    let set: BTreeSet<PathBuf> =
+                        self.related(p)?.into_iter().map(|(n, _)| n.path).collect();
+                    all = Some(match all {
+                        Some(a) => a.intersection(&set).cloned().collect(),
+                        None => set,
+                    });
                 }
-                Some(set)
+                all
             }
         };
         let within =
@@ -372,27 +377,33 @@ impl Workspace {
         Ok(hits.into_iter().map(|h| h.path).collect())
     }
 
-    /// Indexed notes with a counted link to any of `targets` (self-links
-    /// excluded).
+    /// Indexed notes with a counted link to every one of `targets`
+    /// (self-links excluded): repeated filters combine like the others.
     fn linking_to(&self, targets: &[PathBuf]) -> Result<BTreeSet<PathBuf>, Error> {
-        let mut out = BTreeSet::new();
+        let mut all: Option<BTreeSet<PathBuf>> = None;
         for t in targets {
             let rel = self.rel(t)?;
             let store = self.store();
-            for (from, _) in store.backlinks(&rel) {
-                if from != rel {
-                    out.insert(self.abs(&from));
-                }
-            }
+            let set: BTreeSet<PathBuf> = store
+                .backlinks(&rel)
+                .into_iter()
+                .filter(|(from, _)| *from != rel)
+                .map(|(from, _)| self.abs(&from))
+                .collect();
+            all = Some(match all {
+                Some(a) => a.intersection(&set).cloned().collect(),
+                None => set,
+            });
         }
-        Ok(out)
+        Ok(all.unwrap_or_default())
     }
 
-    /// Indexed notes any of `sources` links to with a counted link (every
+    /// Indexed notes every one of `sources` links to with a counted link (every
     /// candidate of an ambiguous link; self-links excluded).
     fn linked_from(&self, sources: &[PathBuf]) -> Result<BTreeSet<PathBuf>, Error> {
-        let mut out = BTreeSet::new();
+        let mut all: Option<BTreeSet<PathBuf>> = None;
         for s in sources {
+            let mut out = BTreeSet::new();
             let rel = self.rel(s)?;
             let store = self.store();
             for (l, r) in store.links(&rel) {
@@ -406,8 +417,12 @@ impl Workspace {
                     }
                 }
             }
+            all = Some(match all {
+                Some(a) => a.intersection(&out).cloned().collect(),
+                None => out,
+            });
         }
-        Ok(out)
+        Ok(all.unwrap_or_default())
     }
 }
 

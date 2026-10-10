@@ -441,9 +441,14 @@ fn link_to_and_linked_by() {
     q = NoteQuery::default();
     q.linked_by = vec![p("/v/a.md")];
     assert_eq!(names(&ws, &q), ["b.md", "c.md"]);
+    // Repeated, every source must link: a and idx share no target, a and
+    // d share c.
     q.linked_by = vec![p("/v/a.md"), p("/v/idx.md")];
-    assert_eq!(names(&ws, &q), ["b.md", "e.md", "c.md"]);
+    assert!(names(&ws, &q).is_empty());
+    q.linked_by = vec![p("/v/a.md"), p("/v/sub/deep/d.md")];
+    assert_eq!(names(&ws, &q), ["c.md"]);
     // combined with other filters
+    q.linked_by = vec![p("/v/a.md")];
     q.tag = vec![tag("todo")];
     assert_eq!(names(&ws, &q), ["c.md"]);
 }

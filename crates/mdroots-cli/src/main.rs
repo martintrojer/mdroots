@@ -47,10 +47,10 @@ commands:
                               `2 weeks ago`, `last monday`, 7d, ...
     --orphan                  notes no other note links to
     --missing-backlink        notes linked from a note they don't link to
-    -l, --link-to NOTE        notes linking to NOTE (repeatable)
-    -L, --linked-by NOTE      notes NOTE links to (repeatable)
+    -l, --link-to NOTE        notes linking to NOTE (repeatable: and)
+    -L, --linked-by NOTE      notes NOTE links to (repeatable: and)
     --related NOTE            notes sharing a linked note with NOTE but
-                              not linked with it (repeatable)
+                              not linked with it (repeatable: and)
     -s, --sort KEY[+|-]       title, path, created or modified (t, p, c,
                               m); + ascending, - descending (default
                               title+)
@@ -255,6 +255,38 @@ fn run_gc(now_ms: u64) -> Result<Outcome, Error> {
     }
     Ok(Outcome::Ok)
 }
+
+/// Every flag `mdroots notes` takes.
+const NOTES_FLAGS: &[&str] = &[
+    "--tagless",
+    "--orphan",
+    "--missing-backlink",
+    "-0",
+    "--delimiter0",
+    "-t",
+    "--tag",
+    "-m",
+    "--match",
+    "-x",
+    "--exclude",
+    "--created",
+    "--modified",
+    "--created-after",
+    "--created-before",
+    "--modified-after",
+    "--modified-before",
+    "-l",
+    "--link-to",
+    "-L",
+    "--linked-by",
+    "--related",
+    "-s",
+    "--sort",
+    "-n",
+    "--limit",
+    "-f",
+    "--format",
+];
 
 fn is_flag(a: &str) -> bool {
     a.starts_with('-') && a != "-"
@@ -574,7 +606,13 @@ fn notes(out: &Out, args: &[String]) -> Result<Outcome, Error> {
     while let Some(a) = it.next() {
         let flag = a.as_str();
         // Every flag but the booleans takes the next argument.
-        let mut value = || it.next().ok_or(());
+        // One of this command's flags where the value belongs is a missing
+        // value (`-t --orphan`); other dashes are values (`-t -draft`).
+        let mut value = || {
+            it.next()
+                .filter(|v| !NOTES_FLAGS.contains(&v.as_str()))
+                .ok_or(())
+        };
         let date = |v: &str| parse_date(v, now).map_err(|e| bad(flag, e));
         let day = |v: &str| day_range(v, now).map_err(|e| bad(flag, e));
         match flag {
@@ -652,7 +690,8 @@ fn notes(out: &Out, args: &[String]) -> Result<Outcome, Error> {
             let rows: Vec<String> = found.iter().map(note_json).collect();
             s.push('[');
             s.push_str(&rows.join(","));
-            s.push_str("]\n");
+            s.push(']');
+            s.push(end);
         }
         Format::Jsonl => {
             for n in &found {

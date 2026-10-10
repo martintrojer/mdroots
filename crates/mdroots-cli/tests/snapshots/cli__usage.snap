@@ -27,10 +27,10 @@ commands:
                               `2 weeks ago`, `last monday`, 7d, ...
     --orphan                  notes no other note links to
     --missing-backlink        notes linked from a note they don't link to
-    -l, --link-to NOTE        notes linking to NOTE (repeatable)
-    -L, --linked-by NOTE      notes NOTE links to (repeatable)
+    -l, --link-to NOTE        notes linking to NOTE (repeatable: and)
+    -L, --linked-by NOTE      notes NOTE links to (repeatable: and)
     --related NOTE            notes sharing a linked note with NOTE but
-                              not linked with it (repeatable)
+                              not linked with it (repeatable: and)
     -s, --sort KEY[+|-]       title, path, created or modified (t, p, c,
                               m); + ascending, - descending (default
                               title+)
