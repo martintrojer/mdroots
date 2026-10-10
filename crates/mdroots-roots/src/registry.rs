@@ -270,10 +270,11 @@ pub(crate) fn on_disk(probe: &dyn Probe, rec: &RootRecord) -> bool {
 /// session's `workspace_folders`? Yes when `e` no longer holds
 /// ([`on_disk`]), when it is an editor row ([`is_editor`]) whose folder is
 /// not a current workspace folder, or when `new` has a real recorded marker
-/// and `e` is a markerless row strictly inside it: a loose search never runs
-/// inside a marker, so such a row is a legacy editor row (0.2.8 wrote
-/// aborted workspace-folder walks as lazy without a marker) or predates
-/// the marker.
+/// and `e` is a markerless row strictly inside it on the same device: a
+/// loose search never runs inside a marker, so such a row is a legacy
+/// editor row (0.2.8 wrote aborted workspace-folder walks as lazy without a
+/// marker) or predates the marker. Below a mount the climb never reaches
+/// `new`'s marker, so a markerless row there is a root of its own.
 pub(crate) fn removable(
     probe: &dyn Probe,
     e: &RootRecord,
@@ -284,7 +285,7 @@ pub(crate) fn removable(
     let inside = e.path != new.path && e.path.starts_with(&new.path);
     !on_disk(probe, e)
         || (is_editor(e) && !workspace_folders.contains(&e.path))
-        || (marker_root && inside && e.marker.is_none())
+        || (marker_root && inside && e.marker.is_none() && e.dev == new.dev)
 }
 
 /// The recorded marker file exists; true without one, or for an editor row.

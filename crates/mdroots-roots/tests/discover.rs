@@ -1348,6 +1348,110 @@ fn a_new_git_root_removes_a_markerless_editor_row_inside_it() {
     );
 }
 
+/// The sweep after registering a marker root keeps a markerless root
+/// below a mount (the climb from it stops at the mount, so the outer
+/// marker does not govern it).
+#[test]
+fn a_registered_marker_root_keeps_a_markerless_root_below_a_mount() {
+    let mut reg = MemRegistry::new();
+    let mut probe = FakeProbe::new()
+        .home("/h")
+        .file("/h/repo/.mdroots", "")
+        .file("/h/repo/top.md", "")
+        .mount(
+            "/h/repo/mnt",
+            MountInfo {
+                fs_type: "apfs".into(),
+                from: "disk7".into(),
+                local: true,
+                dev: 7,
+            },
+        );
+    for i in 0..30 {
+        probe = probe.file(format!("/h/repo/mnt/notes/n{i}.md"), "");
+    }
+    let o = opts();
+    let d = discover(
+        &probe,
+        &mut reg,
+        &NoEnumerator,
+        Path::new("/h/repo/mnt/notes/n0.md"),
+        &o,
+        &Cancel::new(),
+    );
+    // Loose growth stops at the mount's root.
+    assert_eq!(d.root, Some(p("/h/repo/mnt")), "{}", explain(&d));
+    let child = row(&reg, "/h/repo/mnt").expect("loose row below the mount");
+    assert_eq!((child.marker.clone(), child.dev), (None, 7));
+
+    // Registering (and later updating) the outer marker root keeps it.
+    for _ in 0..2 {
+        let d = discover(
+            &probe,
+            &mut reg,
+            &NoEnumerator,
+            Path::new("/h/repo/top.md"),
+            &o,
+            &Cancel::new(),
+        );
+        assert_eq!(d.root, Some(p("/h/repo")), "{}", explain(&d));
+        assert!(
+            row(&reg, "/h/repo/mnt").is_some(),
+            "root below the mount kept: {:?}",
+            reg.all()
+                .iter()
+                .map(|r| (&r.path, r.mode, r.dev))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// A nested marker root that moved keeps its row until the destination is
+/// opened, so registering the old enclosing root does not lose the move.
+#[test]
+fn registering_an_enclosing_root_keeps_a_moved_roots_row() {
+    let mut reg = MemRegistry::new();
+    let tree = || {
+        FakeProbe::new()
+            .home("/h")
+            .file("/h/repo/.mdroots", "")
+            .dir("/h/repo/child/.zk")
+            .file("/h/repo/child/a.md", "")
+            .file("/h/repo/top.md", "")
+    };
+    let o = opts();
+    let probe = tree();
+    discover(
+        &probe,
+        &mut reg,
+        &NoEnumerator,
+        Path::new("/h/repo/child/a.md"),
+        &o,
+        &Cancel::new(),
+    );
+    let id = row(&reg, "/h/repo/child").expect("child row").root_id;
+
+    let probe = tree().rename("/h/repo/child", "/h/moved");
+    discover(
+        &probe,
+        &mut reg,
+        &NoEnumerator,
+        Path::new("/h/repo/top.md"),
+        &o,
+        &Cancel::new(),
+    );
+    discover(
+        &probe,
+        &mut reg,
+        &NoEnumerator,
+        Path::new("/h/moved/a.md"),
+        &o,
+        &Cancel::new(),
+    );
+    let moved = row(&reg, "/h/moved").expect("moved root registered");
+    assert_eq!(moved.root_id, id, "root_id kept across the move");
+}
+
 // --- list_root ----------------------------------------------------------------
 
 /// Discover `file`, then re-list its root with `list_root` on the same
