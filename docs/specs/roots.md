@@ -4,7 +4,13 @@ Related: [index spec](index.md), [library spec](library.md), D3, D4, D5 in [DECI
 
 Hard rule: **mdroots never calls `readdir` on a tree before it has established that the tree is local and bounded.** A monorepo on a virtual filesystem such as [EdenFS](https://github.com/facebook/sapling) (the virtual filesystem from the [Sapling](https://sapling-scm.com/) project) can hold millions of files fetched on demand; a recursive walk there takes hours. Every rule below exists to make that walk impossible.
 
-Implementation: the `mdroots-roots` crate implements §1–§4, the §6 data model and fixtures 1–11 of §7. Every discovery filesystem call goes through its `Probe` trait (`StdProbe` over `std::fs` and `statfs`, `FakeProbe` in memory, `Counting` to count and forbid `read_dir`), so tests can prove the hard rule. Two things sit outside `Probe`: `DiscoverLock` opens `discover.lock` with `std::fs`, and the `SlFiles` enumerator runs `sl files` in a child process. `discover()` takes a canonical absolute file path; canonicalising (including `F_GETPATH` on macOS) is the caller's job. The registry is a trait with an in-memory `MemRegistry`. `list_root` re-lists a known root per mode (budgeted walk, [git](https://git-scm.com) index scan, enumerator; `None` for lazy and single-file roots, or on abort or over budget). `mdroots-index` adds the [SQLite](https://sqlite.org) registry (`SqliteRegistry`), the cache dir choice and the flock roles of §5, and the per-root DB; the facade takes `discover.lock` around discovery. §5 and §7 say which parts are built.
+Implementation:
+
+- **Crate and traits.** `mdroots-roots` implements §1–§4, the §6 data model and fixtures 1–11 of §7. Every discovery filesystem call goes through its `Probe` trait (`StdProbe` over `std::fs` and `statfs`, `FakeProbe` in memory, `Counting` to count and forbid `read_dir`), so tests can prove the hard rule. The registry is a trait with an in-memory `MemRegistry`; a vcs-enumerated root is listed through an `Enumerator`.
+- **Outside `Probe`.** `DiscoverLock` opens `discover.lock` with `std::fs`, and the `SlFiles` enumerator runs `sl files` in a child process.
+- **Caller duties.** `discover()` takes a canonical absolute file path; canonicalising (including `F_GETPATH` on macOS) is the caller's job.
+- **Re-listing.** `list_root` re-lists a known root per mode (budgeted walk, [git](https://git-scm.com) index scan, enumerator; `None` for lazy and single-file roots, or on abort or over budget).
+- **What `mdroots-index` adds.** The [SQLite](https://sqlite.org) registry (`SqliteRegistry`), the cache dir choice, the flock roles of §5 and the per-root DB; the facade takes `discover.lock` around discovery.
 
 ## 0. Measurements (M-series Mac, APFS)
 
@@ -13,18 +19,18 @@ Implementation: the `mdroots-roots` crate implements §1–§4, the §6 data mod
 | Unpruned walk of a projects folder (`rg --files --no-ignore --hidden`) | 662k entries, 1.64 s (~400k entries/s) |
 | Same, honouring ignore files, `*.md` only | 1,023 md, 131 ms |
 | Same, pruned at nested repos, dot dirs, `node_modules`/`target` | 506 files, 4 md, < 70 ms (490 files and 1 md are one unpacked source tarball) |
-| `git ls-files` (twice) in a 3.8k-file repo (neovim) | 90 ms, mostly process spawns |
+| `git ls-files` (twice) in a 3.8k-file repo ([Neovim](https://neovim.io)) | 90 ms, mostly process spawns |
 | `.git/index` header (12 bytes) | tracked entry count, O(1) |
-| `statfs(<eden checkout>)` | `f_fstypename = "edenfs:"` (trailing colon), `MNT_LOCAL` unset |
-| `statfs(<build-output dir inside eden checkout>)` | `apfs`, `MNT_LOCAL` set, own `st_dev`: a local mount inside the virtual repo. Several such redirections can exist per checkout |
+| `statfs` on a large virtual-filesystem checkout | `f_fstypename = "edenfs:"` (trailing colon), `MNT_LOCAL` unset |
+| `statfs` on a build-output dir inside that checkout | `apfs`, `MNT_LOCAL` set, own `st_dev`: a local mount inside the virtual repo. Several such redirections can exist per checkout |
 | Small notes repo on EdenFS | also `edenfs:`, `MNT_LOCAL` unset |
-| `<eden checkout>/.eden/` | present at every depth; `readlink(<dir>/.eden/root)` gives the checkout root in one call |
+| `.eden/` in the checkout | present at every depth; `readlink(<dir>/.eden/root)` gives the checkout root in one call |
 | 23 `stat`s of missing names | ~2–5 ms on Eden, ~0.06 ms on APFS |
 | `statfs` on a Google Drive folder | `apfs`, `MNT_LOCAL` set, same `st_dev` as `$HOME`: statfs cannot see cloud folders |
 | `readdir` per directory, warm cache | median 0.19–0.22 ms/dir |
 | `mdroots-roots` budgeted walk of this repo (37 dirs, 163 entries; debug build, warm cache) | 11–40 ms, median ~0.16 ms/dir |
 | Loose decision for a 30-note temp folder (debug build) | ~2 ms |
-| One file in a large EdenFS checkout (debug build) | lazy after 6 `stat`/`statfs` calls, 0 `readdir`, 1.4 ms |
+| One file in a large virtual-filesystem checkout (debug build) | lazy after 6 `stat`/`statfs` calls, 0 `readdir`, 1.4 ms |
 | Rust walker on a cold cache, a cloud folder or EdenFS | not measured |
 
 Consequences: pruning makes walks ~12× cheaper, so it is required. Big or virtual trees are detectable with a few `stat`/`statfs` calls; the test is `MNT_LOCAL`, not the type name, and it must be repeated at mount boundaries inside a virtual tree. Cloud folders are caught by path, `SF_DATALESS` and walk speed.
@@ -39,13 +45,22 @@ Longest-prefix match of `realpath(file)` in the registry (`roots.v<k>.db`). On m
 
 1. the recorded marker still exists (one `stat`);
 2. the root's `st_dev` and `fs_type` match the recorded values (else re-decide from stage 2, lazy verdicts included);
-3. no new marker sits between `dir(file)` and the root. Probe each level with the stage 2 marker list; on a virtual FS probe a short list instead (below, ~0.1–0.2 ms per name). Caching the probe per directory per session is not done yet: every `open_for` probes again. This is how a `git clone` or new `.zk/` inside a loose or lazy root becomes its own root.
+3. no new marker sits between `dir(file)` and the root. Probe each level with the stage 2 marker list; on a virtual FS probe a short list instead (below, ~0.1–0.2 ms per name). The probe is not cached per directory: every `open_for` probes again. This is how a `git clone` or new `.zk/` inside a loose or lazy root becomes its own root.
 
 Otherwise treat it as a miss. After the first session the hit path is a few stats.
 
-Also a miss: a rate verdict with fewer than two agreeing measurements (stage 4), and a budget verdict decided 7 or more days ago. A `.mdrootsignore` that covers `dir(file)`, at any level from `dir(file)` up to the root, makes the file single-file on every filesystem. The implementation's virtual-FS probe checks 10 names per level: the explicit and notes-tool markers plus the VCS markers (`.git`, `.jj`, `.hg`, `.sl`), so a nested clone is found; a hit there registers the new directory as a lazy root. On a local FS a new marker of any class is a miss, and stages 2–4 decide.
+Also a miss:
 
-**Root moves.** Each row stores the marker's inode and a volume id. The implementation's volume id is `dev:<st_dev hex>`, because `ATTR_VOL_UUID` (macOS) and `f_fsid` (Linux) are not reachable without unsafe code; it is stable while the volume stays mounted, so move detection works within one boot or mount. On a miss where stage 2 finds a marker, a row with the same `(volume_uuid, marker_ino)` whose path no longer holds the marker is a move: update `path`, keep `root_id` and the DB file. Nothing is renamed on disk, and `files.path` is root-relative ([index spec](index.md)), so rows survive. A copy (both paths hold a marker) is a new root.
+- a rate verdict with fewer than two agreeing measurements (stage 4);
+- a budget verdict decided 7 or more days ago.
+
+Other rules of the hit path:
+
+- A `.mdrootsignore` that covers `dir(file)`, at any level from `dir(file)` up to the root, makes the file single-file on every filesystem.
+- The virtual-FS probe checks 10 names per level: the explicit and notes-tool markers plus the VCS markers (`.git`, `.jj`, `.hg`, `.sl`), so a nested clone is found; a hit there registers the new directory as a lazy root.
+- On a local FS a new marker of any class is a miss, and stages 2–4 decide.
+
+**Root moves.** Each row stores the marker's inode and a volume id. The implementation's volume id is `dev:<st_dev hex>`, because `ATTR_VOL_UUID` (macOS) and `f_fsid` (Linux) are not reachable without unsafe code; it is stable while the volume stays mounted, so move detection works within one boot or mount. On a miss where stage 2 finds a marker, a row with the same `(volume_id, marker_ino)` whose path no longer holds the marker is a move: update `path`, keep `root_id` and the DB file. Nothing is renamed on disk, and `files.path` is root-relative ([index spec](index.md)), so rows survive. A copy (both paths hold a marker) is a new root.
 
 ### Stage 2: `statfs`, then marker climb (no `readdir`)
 
@@ -59,8 +74,8 @@ Also a miss: a rate verdict with fewer than two agreeing measurements (stage 4),
 | Class | Markers | Meaning |
 |---|---|---|
 | explicit | `.mdroots` (empty file), `.mdrootsignore` | "root here" / "never index here" |
-| notes tool | `.zk/`, `.obsidian/`, `.marksman.toml`, `.iwe/`, `.foam/` | strong |
-| docs tool | `mkdocs.yml`, `book.toml`, `docusaurus.config.{js,ts,mjs,cjs}`, `_config.yml`, `hugo.toml`, `conf.py` + `index.md` | strong |
+| notes tool | `.zk/`, `.obsidian/`, `.marksman.toml`, `.iwe/` ([iwe](https://github.com/iwe-org/iwe)), `.foam/` | strong |
+| docs tool | `mkdocs.yml` ([mkdocs](https://www.mkdocs.org)), `book.toml` ([mdBook](https://rust-lang.github.io/mdBook/)), `docusaurus.config.{js,ts,mjs,cjs}` ([Docusaurus](https://docusaurus.io)), `_config.yml` ([Jekyll](https://jekyllrb.com)), `hugo.toml` ([Hugo](https://gohugo.io)), `conf.py` + `index.md` | strong |
 | VCS | `.git` (dir or file), `.jj`, `.hg`, `.sl` | medium |
 | monorepo | `.eden/`, `.buckconfig` ([Buck2](https://buck2.build)), `WORKSPACE`/`MODULE.bazel` ([Bazel](https://bazel.build)) | tree is **huge** |
 | editor | LSP `workspaceFolders` containing the file, when sent | strong |
@@ -116,7 +131,7 @@ A count going above its budget aborts; depth counts from the walk root (its chil
 
 **Rate check, per directory.** Entries/s depends on entries per directory (a local Documents folder measured 16–19k entries/s), so time each `readdir` instead: after the first 50 directories or 100 ms, whichever comes first, take the median ms/dir, but only once the walk knows at least 50 directories (listed or queued). A walk that finishes sooner, or a root with fewer than 50 directories, is never rate-aborted; the wall budget bounds it, because a few slow `readdir`s on a loaded machine say nothing about the filesystem. The check runs once; if fewer than 5 listings were timed by then it is skipped. Above the threshold the FS is slow (network, FUSE, cold disk, cloud): abort and go lazy. The threshold is 5 ms/dir (`DiscoverOptions::rate_ms_per_dir` overrides it). Warm-cache walks measure ~0.16–0.22 ms/dir (§0), far below it; it is not calibrated on a cold cache (after `sudo purge`), a cloud folder or EdenFS.
 
-**Recording.** Abort or success records `{entries_seen, md_seen, dirs_seen, ms, ms_per_dir, reason}` in the registry, so the next start goes straight to reconcile. A lazy verdict from the rate check **alone** is saved only after a second measurement (later or by another session) agrees, so one slow walk during a herd start or backup does not stick. In the implementation the first rate abort registers a pending row (`lazy pending: rate 7.1 ms/dir, 1 of 2 measurements`, one confirmation) that stage 1 treats as a miss; the next walk either succeeds and replaces it or aborts on rate again and confirms it (2 of 2). Other lazy verdicts (virtual FS, Eden, budgets) are saved at once. A cancelled walk is never registered. Retry the full walk at most once per 7 days, or on `fs_type`/`st_dev` change, or on `mdroots.reindex`.
+**Recording.** Abort or success records `{entries_seen, md_seen, dirs_seen, ms, ms_per_dir, reason}` in the registry, so the next start goes straight to reconcile. A lazy verdict from the rate check **alone** is saved only after a second measurement (later or by another session) agrees, so one slow walk during a herd start or backup does not stick. In the implementation the first rate abort registers a pending row (`lazy pending: rate 7.1 ms/dir, 1 of 2 measurements`, one confirmation) that stage 1 treats as a miss; the next walk either succeeds and replaces it or aborts on rate again and confirms it (2 of 2). Other lazy verdicts (virtual FS, Eden, budgets) are saved at once. A cancelled walk is never registered. Retry the full walk at most once per 7 days, or on `fs_type`/`st_dev` change.
 
 ## 2. Loose roots (no VCS or marker)
 
@@ -136,10 +151,10 @@ The 20-file, 30%, 2× and 7-day numbers are validated only on the fixtures in §
 
 Lazy mode never enumerates the tree:
 
-- **Working-set index**: each opened file's directory is listed one level (cap 2k entries, dataless skipped) and its md files parsed into the DB.
+- **Working-set index**: each opened file's directory is listed one level (cap 2k entries, dataless skipped) and its md files indexed (the reconciler writes them to the DB; a peer parses them into memory only).
 - **Links by `stat`**: relative and root-relative paths, each with and without `.md`. On Eden one stat is a metadata lookup, no content fetch.
-- **`[[stem]]`**: working-set index only. Optional v2: ask the VCS with a 500 ms timeout (`git ls-files '*foo.md'`, Eden's glob API, or `sl files 'glob:**/foo.md'`); measure first.
-- **No native watcher.** A process re-checks working-set files when its own editor opens or saves them. The reconciler point-checks and writes files from its own editor's saves and from the client's `didChangeWatchedFiles`. Another peer's save reaches the DB only when that peer later becomes reconciler, or at the next working-set sweep.
+- **`[[stem]]`**: working-set index only. Possible extension ([ROADMAP](../ROADMAP.md)): ask the VCS with a 500 ms timeout (`git ls-files '*foo.md'`, Eden's glob API, or `sl files 'glob:**/foo.md'`); measure first.
+- **No native watcher.** A process re-checks working-set files when its own editor opens or saves them. The reconciler point-checks and writes files from its own editor's saves and from the client's `didChangeWatchedFiles`. Another peer's save reaches the DB only when that peer later becomes reconciler, or when the reconciler's own editor opens or saves that file.
 - **Diagnostics** per the [index spec](index.md): only `stat`-checkable links are diagnosed; an unresolved `[[stem]]` is a hint ("not in indexed set"), never an error.
 
 **vcs-enumerated** (small Eden repos, where lazy would mean `[[stem]]` never resolves): ask Eden once for `**/*.md` via its glob API, falling back to `sl files 'glob:**/*.md'`, killed after 500 ms or 20k paths. In budget → the path list feeds stem resolution and the reconcile queue as in index-driven mode, parsed at background priority, open and linked files first. Over budget → stays lazy, recorded (verdict `budget`), not retried for 7 days. No watcher either way.
@@ -158,22 +173,23 @@ nb/proj/docs/    —      → B
 
 - Walks prune at nested markers, so DBs are disjoint and one root's GC never touches another.
 - **The registry rejects overlapping inserts**, except a nested root at a marker (nearest wins). A loose root never contains a marker root, and loose roots never nest; a new marker root may appear inside a loose root. When an insert is rejected, discovery uses the nearest registered root containing the file, or returns its decision unregistered with `(not registered: overlaps <dir>)`.
-- **Cross-root links** (planned, M8): resolve in the current scope first; on a miss, find the root containing the target in the registry and `ATTACH` its DB read-only (LRU, SQLite's default limit is 10). Today a link into another root resolves only by `stat` (relative paths) as Unindexed. Completion stays in the current root.
-- **New marker** (e.g. `git init` in a loose root): found by the next reconcile or the stage 1 probe; the subtree is re-parsed into the new root and its rows deleted from the parent.
-- **Marker removed**: merged back on the parent's next reconcile; the orphan DB is GC-ed (§6).
+- **Cross-root links**: a link into another root resolves only by `stat` (relative paths), as Unindexed. Completion stays in the current root. Planned ([ROADMAP](../ROADMAP.md)): on a miss in the current scope, find the root containing the target in the registry and `ATTACH` its DB read-only (LRU, SQLite's default limit is 10).
+- **New marker** (e.g. `git init` in a loose root): the stage 1 probe finds it on the next `open_for` of a file below it, which registers and indexes the new root in its own DB. The parent drops the subtree's rows on its next re-list (open or `refresh`), because the walk prunes at the new marker; a lazy parent keeps them. No rows move between DBs: each root parses its own files.
+- **Marker removed**: the nested row fails the stage 1 marker check, so its files are decided again and go to the parent, whose next re-list walks into the directory and indexes them. The orphan DB is GC-ed once it goes unseen for 30 days (§6).
+- Moving rows between root DBs instead of re-parsing is planned ([ROADMAP](../ROADMAP.md)).
 - **Editor folder vs markers**: a file in `nb/proj` belongs to B even if the client's workspace folder is `nb`. The process just opens a second DB.
 
 ## 5. Many processes on one root
 
-Typical: tmux with many nvim instances restored at once. No daemon; each process runs mdroots in-process, coordinates only through the filesystem, and each root has one writer (D3 in [DECISIONS.md](../DECISIONS.md)). What the DB holds and how a process serves queries from it is D9 and [index spec](index.md) §1.
+Typical: tmux with many nvim instances restored at once. No daemon; each process runs mdroots in-process, coordinates only through the filesystem, and each root has one writer (D3 in [DECISIONS.md](../DECISIONS.md)). What the DB holds and how a process serves queries from it is D9 and [index §1](index.md#1-index-under-churn).
 
-**Built**: the cache dir chain, the registry, `discover.lock`, the per-root DB, the `.lock`/`.open` roles, peers that never write, promotion on `Workspace::refresh` (M4); the reconciler's native watcher, GC, and the corruption rebuild into generation files (M6). Everything marked planned or M8 below is not built yet.
+Everything below is built except what is marked planned ([ROADMAP](../ROADMAP.md)).
 
 ### Files
 
-Base dir per D5: `$XDG_CACHE_HOME/mdroots`, else `~/Library/Caches/mdroots` (macOS, excluded from Time Machine) or `~/.cache/mdroots`. If not local (`MNT_LOCAL` unset) or not writable: `$XDG_RUNTIME_DIR/mdroots`, then `/var/tmp/mdroots-$UID` (`0700`, owner checked), then an in-memory index for the session, because `flock` and WAL are unsafe on NFS/SMB. A registry that cannot be opened also leaves the session in memory (planned: also a full disk at write time). `Options::cache_dir` (the CLI's `MDROOTS_CACHE_DIR`) replaces the chain. Processes with different base dirs (e.g. `XDG_CACHE_HOME` set in some shells only) get separate reconcilers; `mdroots roots` prints the root's DB path (`cache:`) and this process's role (`role: reconciler|peer`, or `cache: memory`, `role: none`).
+Base dir: D5 (the chain and why it must be local; selection in [index §1.7](index.md#17-files-and-connections)). A registry that cannot be opened also leaves the session in memory (planned: also a full disk at write time). `Options::cache_dir` (the CLI's `MDROOTS_CACHE_DIR`) replaces the chain. Processes with different base dirs (e.g. `XDG_CACHE_HOME` set in some shells only) get separate reconcilers; `mdroots roots` prints the root's DB path (`cache:`) and this process's role (`role: reconciler|peer`, or `cache: memory`, `role: none`).
 
-`<db>` = `<id>.v<schema>` (`<id>.v2` today), so each schema version has its own file and locks. One lock scope per root and schema: `<db>.lock` and `<db>.open` cover every generation file of `<db>`.
+`<db>` = `<id>.v<schema>` (`<id>.v2` at schema 2), so each schema version has its own file and locks. One lock scope per root and schema: `<db>.lock` and `<db>.open` cover every generation file of `<db>`.
 
 | Path | Purpose |
 |---|---|
@@ -200,13 +216,13 @@ The registry row stores the current DB file name (`db_file`): `<db>.db`, or the 
 
 ### File events
 
-`mdroots lsp` turns on the native watcher (`Options::watch(true)`; libraries default to off). As built:
+`mdroots lsp` turns on the native watcher (`Options::watch(true)`; libraries default to off). [index §1.3](index.md#13-finding-what-changed) owns the details:
 
 - **Only the reconciler watches**, and only a DB-backed marker, VCS or loose root on a local filesystem. Never a lazy, single-file, tracked-only, index-driven or vcs-enumerated root, and never a virtual, remote or cloud filesystem, so a root on EdenFS is never watched. Peers act only on their own `didOpen`/`didChange`/`didSave`, in overlays; otherwise N editors would mean N parses per save.
-- [notify](https://crates.io/crates/notify) 8 watches the root recursively (FSEvents on macOS, inotify on Linux). Events are debounced (200 ms quiet, 1 s cap), filtered by root-relative components (hidden and pruned dirs dropped), and point-refreshed with `Workspace::refresh_paths`; a lost-events rescan or an event on the root itself re-lists the root ([index spec](index.md) §1.3).
+- [notify](https://crates.io/crates/notify) 8 watches the root recursively (FSEvents on macOS, inotify on Linux). Events are debounced (200 ms quiet, 1 s cap), filtered by root-relative components (hidden and pruned dirs dropped), and point-refreshed with `Workspace::refresh_paths`; a lost-events rescan or an event on the root itself re-lists the root ([index §1.3](index.md#13-finding-what-changed)).
 - Client `didChangeWatchedFiles` (the server registers a `**/*.{md,markdown,org}` watcher right after `initialize` when the client offers dynamic registration; Neovim does on macOS and Windows) refreshes only workspaces that do not watch: peers, lazy roots and the other non-watching modes. A peer's refresh writes nothing. `didSave` refreshes the saved document's workspace in every process.
 - **Offline changes and takeover.** A file changed while no reconciler watched (no mdroots running, or between a reconciler's exit and a peer's promotion) is picked up by the next re-list and re-stat: on open, on `refresh` (every `didSave`), or on promotion.
-- **Planned (M8): FSEvents replay.** `notify` hard-codes `kFSEventStreamEventIdSinceNow`, so replay from `meta.fsevents_last_id` needs `fsevent-sys` or direct FFI, which the workspace's `forbid(unsafe_code)` rules out for now. `MustScanSubDirs`, `UserDropped`, `KernelDropped`, `EventIdsWrapped` would fall back to a `dir_state` diff of the subtree (or root); the new ID would be committed after `HistoryDone`, in the same transaction as its batch. On Linux, a takeover would run one `dir_state` diff before starting inotify.
+- **Planned: FSEvents replay** and the takeover `dir_state` diff ([index, Planned design](index.md#change-sources)).
 
 ### DB lifetime: never unlink an open DB
 
@@ -214,13 +230,13 @@ Unlinking or renaming an open SQLite file is a documented corruption path.
 
 - Every process holds `LOCK_SH` on `<db>.open` while any `<db>*.db` is open.
 - GC takes `LOCK_EX|LOCK_NB` on `<db>.open`, skips the root on failure, and deletes DB files with their `-wal` and `-shm`, never lock files.
-- **Corruption** (`quick_check` fails when the reconciler opens or takes over the DB, or opening or a sync returns `Corrupt`, e.g. `SQLITE_NOTADB`): the reconciler never renames or unlinks; it builds `<db>-<gen8>.db` with a new `meta.generation`, fills it, and repoints the registry row's `db_file` after that first sync succeeds, so peers never switch to an empty file. A peer that opens a corrupt file serves from an empty in-memory DB (it indexes as the peer of an empty DB does) and never fails. On `refresh` and `refresh_paths` every process re-reads the row and reopens the file it names. GC deletes the old file once nobody holds the root open (fixture 15).
+- **Corruption**: the reconciler never renames or unlinks a corrupt DB; it builds `<db>-<gen8>.db` and repoints the registry row's `db_file` after its first sync, and GC deletes the old file once nobody holds the root open (fixture 15). Steps: [index §1.6](index.md#16-failures-and-races).
 - `<db>.lock` and `<db>.open` are never deleted, not even when a whole root is GC-ed: they are tiny, and a waiter on an unlinked lock would elect a second reconciler. Because the files are never unlinked, a process need not re-check the locked inode.
 - The registry is never deleted automatically; an old `roots.v<k-1>.db` is a few KB.
 
 ### Thundering herd
 
-- **Discovery is serialised** under `discover.lock` (the per-root flock cannot help before the root is known). As built, a process that does not get it blocks until it does, then finds the row in the registry. `mdroots lsp` does that wait on its opener thread and serves the opened file single-file meanwhile ([library](library.md) §3.6); a one-shot command waits. One process walks; the rest find the row. This is also the global walk semaphore: one discovery walk per user at a time.
+- **Discovery is serialised** under `discover.lock` (the per-root flock cannot help before the root is known). A process that does not get it blocks until it does, then finds the row in the registry. `mdroots lsp` does that wait on its opener thread and serves the opened file single-file meanwhile ([library §3.6](library.md#36-embedding-the-server)); a one-shot command waits. One process walks; the rest find the row. This is also the global walk semaphore: one discovery walk per user at a time.
 - One process wins the root flock; the others serve immediately from the index plus overlays. None waits on a write lock, because none writes.
 - A new root's DB is created by the flock holder only (`CREATE ... IF NOT EXISTS` in `BEGIN IMMEDIATE`). With no DB it indexes at once, inside `open_for`. A peer that opens before the DB has rows indexes in memory from discovery's listing and writes nothing. Peers publish diagnostics per document once that document and its targets are checked locally.
 - Rate-only lazy verdicts need two measurements (§1 stage 4), so herd slowness does not stick.
@@ -228,12 +244,12 @@ Unlinking or renaming an open SQLite file is a documented corruption path.
 ### Versions, memory, scheduling
 
 - **Upgrades**: schema version in the DB filename and locks, so v1 and v2 processes never fight over migrations. Files of another schema are GC-ed once the newest of them is 7 days old by mtime and `<id>.v<old>.open` can be taken exclusively. The registry carries its own `k` for the same reason (still `roots.v1.db`).
-- **Memory**: < 35 MB `phys_footprint` per process with N=10 concurrent instances. As built (D9) each process holds every note's bytes and parse in memory: measured peak footprint 2.2 MB on an 11-note vault and 23–31 MB on a synthetic 3,000-note notebook, depending on the path (D9, [ROADMAP](../ROADMAP.md)). The derived tables (M8) would bound it for larger vaults. SQLite is `mmap`ed, so N processes share one page-cache copy; on macOS those pages show in every process's RSS, so measure with `footprint` or `proc_pid_rusage` (`ri_phys_footprint`), not RSS. For comparison, 10 [marksman](https://github.com/artempyanykh/marksman) instances are 10 full workspaces at 134–145 MB RSS each.
+- **Memory**: each process holds every note's bytes and parse in memory (D9); the target and measurements are in D3 and [ROADMAP](../ROADMAP.md), and the [derived tables](index.md#derived-tables) would bound it for larger vaults. SQLite is `mmap`ed, so N processes share one page-cache copy; on macOS those pages show in every process's RSS, so measure with `footprint` or `proc_pid_rusage` (`ri_phys_footprint`), not RSS.
 - **Scheduling** (planned, with a background thread): background work (walks, sweeps, FTS, inference, vcs-enumerated parsing) at `QOS_CLASS_BACKGROUND` (E-cores only). `QOS_CLASS_UTILITY` only for the small link-target queue of open buffers (it prefers P-cores). Requests at default QoS. Linux: `nice 10` + `IOPRIO_CLASS_IDLE` for background, best-effort for the link-target queue.
 
 ## 6. Housekeeping
 
-Registry table as built (`roots.v1.db`, `SqliteRegistry`; one row per `RootRecord`):
+Registry table (`roots.v1.db`, `SqliteRegistry`; one row per `RootRecord`):
 
 | Column | Holds |
 |---|---|
@@ -252,16 +268,16 @@ Registry table as built (`roots.v1.db`, `SqliteRegistry`; one row per `RootRecor
 
 plus `meta(key, value)` with the registry schema and `gc_at`, the time of the last GC run. Rows that do not decode (an unknown mode from a newer binary) are skipped; SQLite errors on reads count as a miss, because the registry is a cache. Overlap checks and inserts run in one `BEGIN IMMEDIATE`, so two processes inserting the same root get one row.
 
-- **GC** (`mdroots_index::gc`): at most daily, claimed by the process that updates `meta.gc_at` in a `BEGIN IMMEDIATE` registry transaction; `open_for` runs it when due. Candidates: generation files the row's `db_file` does not name, DB files of a root with no row, old-schema files 7 days old, roots not seen for 30 days or whose path is gone (their row too), and, over a 1 GiB budget, the least recently seen roots. Each needs `LOCK_EX|LOCK_NB` on `<db>.open`, else skipped until the next run (fixture 14). Details: [index spec](index.md) §1.7.
+- **GC** (`mdroots_index::gc`): at most daily, claimed through `meta.gc_at`; each deletion needs `LOCK_EX|LOCK_NB` on `<db>.open` (fixture 14). Candidates and rules: [index §1.7](index.md#17-files-and-connections).
 - **OS cache purge** (macOS clears `~/Library/Caches` under disk pressure; cleaners) is treated as deletion: the next process recreates the cache and becomes the reconciler; without a registry, discovery reruns under `discover.lock`. A process already running keeps serving from memory (fixture 16); reopening on a purge before the next refresh is planned.
 - **`mdroots roots PATH`** prints the root chosen for PATH with mode, indexed file count, the DB path and this process's role, and why, e.g. "lazy: statfs edenfs:, MNT_LOCAL unset", "single-file: inside a local mount in an Eden repo", "loose root rejected at <dir>: 4 md (< 20), adds 2 md (<= 2 in child)", "lazy pending: rate 7.1 ms/dir, 1 of 2 measurements". `explain()` returns this line; `cargo run -p mdroots-roots --example roots -- <file>` prints it with the `readdir` count. In the editor, `mdroots.info` (`:MdrootsInfo` in Neovim) shows root, mode, reason and file count through `window/showMessage`; it is the main way to debug a wrong root.
-- **Escape hatches**: empty `.mdroots` forces a root; `.mdrootsignore` excludes paths and stops loose climbing (empty: never index here); `MDROOTS_LAZY=path1:path2` forces lazy (optional, not implemented yet).
+- **Escape hatches**: empty `.mdroots` forces a root; `.mdrootsignore` excludes paths and stops loose climbing (empty: never index here). A variable that forces lazy mode per path is an idea in [ROADMAP](../ROADMAP.md).
 
 ## 7. Fixtures
 
 Many-process fixtures use a temporary cache dir. "Zero readdir" is checked with an instrumented walker or `fs_usage -f filesys`. Timings logged.
 
-Discovery fixtures 1–11 live in `crates/mdroots-roots/tests/fixtures.rs`. Fixtures 1–4 and 9–11 build synthetic trees in a temp dir and run over `StdProbe`, wrapped in a probe that pins `home()` to the temp dir (setting `$HOME` would need unsafe code), so growth rules apply and no climb leaves the temp dir; `Counting` checks every `readdir`. Fixtures 5–8 need a virtual FS or a cloud folder and run on `FakeProbe`. No test touches a real home directory, network mount or virtual FS. Each asserts its `discover()` call stays under one second. Many-process fixtures 12–18 live in `crates/mdroots-cli/tests/many_process.rs`: they run real `mdroots` processes on a copy of `tests/corpus/zk-min` in a temp dir, with `MDROOTS_CACHE_DIR`, `XDG_CACHE_HOME` and `HOME` pointed into it. A hidden `mdroots __open PATH --hold-ms N [--refresh-every MS]` opens a workspace, prints its role, file count and DB file, holds it open, and prints them again after each refresh; a hidden `mdroots __gc --now-ms N --force` runs a forced GC on that cache dir. Those processes run no watcher (only `mdroots lsp` turns it on); the watcher is tested in-process in `crates/mdroots/tests/watch.rs`, on temp dirs only. Fixture 19 is replaced by the watcher and the re-list on open.
+Discovery fixtures 1–11 live in `crates/mdroots-roots/tests/fixtures.rs`. Fixtures 1–4 and 9–11 build synthetic trees in a temp dir and run over `StdProbe`, wrapped in a probe that pins `home()` to the temp dir (setting `$HOME` would need unsafe code), so growth rules apply and no climb leaves the temp dir; `Counting` checks every `readdir`. Fixtures 5–8 need a virtual FS or a cloud folder and run on `FakeProbe`. No test touches a real home directory, network mount or virtual FS. Each asserts its `discover()` call stays under one second. Many-process fixtures 12–18 live in `crates/mdroots-cli/tests/many_process.rs`: they run real `mdroots` processes on a copy of `tests/corpus/zk-min` in a temp dir, with `MDROOTS_CACHE_DIR`, `XDG_CACHE_HOME` and `HOME` pointed into it. A hidden `mdroots __open PATH --hold-ms N [--refresh-every MS]` opens a workspace, prints its role, file count and DB file, holds it open, and prints them again after each refresh; a hidden `mdroots __gc --now-ms N --force` runs a forced GC on that cache dir. Those processes run no watcher (only `mdroots lsp` turns it on); the watcher is tested in-process in `crates/mdroots/tests/watch.rs`, on temp dirs only.
 
 **Discovery**
 
@@ -269,10 +285,10 @@ Discovery fixtures 1–11 live in `crates/mdroots-roots/tests/fixtures.rs`. Fixt
 2. A mid-size git checkout (3.8k files, 13 md, the shape of a [Neovim](https://neovim.io) checkout): budgeted walk.
 3. Synthetic notes folder, no VCS, 4,000 md among 6,000 files: loose root accepted by (a). A larger one (6,000 md) exceeds the loose md budget: lazy, verdict `budget`.
 4. A `.zk` notebook inside a git repo.
-5. A file in a large EdenFS monorepo: lazy from `statfs` before any marker stat, root from `readlink(.eden/root)`, zero readdir outside the file's dir.
+5. A file in a large virtual-filesystem monorepo (Eden-shaped fake): lazy from `statfs` before any marker stat, root from `readlink(.eden/root)`, zero readdir outside the file's dir.
 6. A file in a build-output mount inside that checkout: lazy or single-file, zero readdir outside the file's dir, no registry row at the mount.
-7. A small notes repo on EdenFS: `vcs-enumerated` within 500 ms, zero readdir outside opened dirs (that `[[stem]]` then resolves is checked with the index, M3).
-8. A dataless cloud file (iCloud after `brctl evict`, or Drive online-only), in a loose root: recorded as dataless and not read during discovery, still `SF_DATALESS` afterwards; link existence by `stat` (opening it is M3).
+7. A small notes repo on EdenFS: `vcs-enumerated` within 500 ms, zero readdir outside opened dirs (the facade indexing the enumerated files is tested in `crates/mdroots/tests/workspace.rs`; a `[[stem]]` resolving across them is not tested separately).
+8. A dataless cloud file (iCloud after `brctl evict`, or Drive online-only), in a loose root: recorded as dataless and not read during discovery, still `SF_DATALESS` afterwards; link existence by `stat`. Opening a dataless file reads it (`crates/mdroots/tests/workspace.rs`, on a lazy root).
 9. A dotfiles repo at a temp `HOME` with a large untracked tree: `tracked-only`, zero walk.
 10. `git clone` into an existing lazy root, open a file in it: stage 1 probe registers a nested root.
 11. `mv notes notes2` between sessions: row re-keyed by marker inode + volume UUID, no cold rebuild.
@@ -286,4 +302,3 @@ Discovery fixtures 1–11 live in `crates/mdroots-roots/tests/fixtures.rs`. Fixt
 16. `rm -rf` the base dir under 3 processes: all reopen, one rebuilds, nobody writes to an unlinked file. **Built**: the cache dir is deleted while a process holds the DB open; the next process recreates it and becomes the reconciler with the same files, and the holder exits cleanly (reopening is planned).
 17. mtime-regressing copy (`cp -p`, `rsync -a`, `tar x` of an older version): new content indexed (ctime advanced); a bare `touch` does not re-parse links. **Built**: same size, older mtime restored, new link target: the next `check` reports the new content. `touch` is covered in `crates/mdroots-index/tests/reconcile.rs`.
 18. `kill -STOP` the reconciler, save in a peer: one warning, peer fresh from its overlay, no DB writes. `kill -CONT`: reconciler picks up the save. `kill -9`: a peer takes over and re-checks its working set. **Built, adapted**: with the reconciler stopped, a new process opens as a peer within 5 s; after the reconciler is killed, the next process becomes the reconciler with the same files. The warning is planned.
-19. **Replaced.** Kill the reconciler, change files, a peer takes over: the changes arrive by the re-list and re-stat the promoted peer runs on `refresh` (and every later open), and from then on through its watcher. FSEvents replay and the takeover `dir_state` diff, which would avoid the re-list, are M8.
