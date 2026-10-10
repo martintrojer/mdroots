@@ -3,7 +3,9 @@
 //! Fixtures 1–4 and 9–11 build real trees in a temp dir and run [`discover`]
 //! over [`StdProbe`], with the probe's home set to the temp dir (so loose
 //! growth rules apply and no climb leaves the temp dir) and every `read_dir`
-//! checked by [`Counting`]. Repos are made with [git](https://git-scm.com);
+//! checked by [`Counting`]. The probe's clock is fake (frozen unless a
+//! fixture makes it tick), so the walks' wall and rate budgets never depend
+//! on how loaded the machine is. Repos are made with [git](https://git-scm.com);
 //! a fixture that needs git prints a note and passes when git is missing.
 //!
 //! Fixtures 5–8 need a virtual filesystem or a cloud folder, so they run on
@@ -34,7 +36,7 @@ use mdroots_roots::{
 };
 
 /// Serialises the real-filesystem fixtures: parallel tree building would
-/// skew the walks' wall and rate budgets.
+/// skew the one-second check on each [`discover`] call.
 static FS_LOCK: Mutex<()> = Mutex::new(());
 
 const NOW: u64 = 1_000_000_000;
@@ -46,12 +48,18 @@ fn opts() -> DiscoverOptions {
     }
 }
 
-/// [`StdProbe`] with `home()` pinned to a fixture's temp dir; everything else
-/// delegates. (Setting `$HOME` would need `std::env::set_var`, which is
-/// unsafe.)
+/// [`StdProbe`] with `home()` pinned to a fixture's temp dir and a fake
+/// clock; filesystem calls delegate. (Setting `$HOME` would need
+/// `std::env::set_var`, which is unsafe.)
+///
+/// `now()` advances by `tick` per `read_dir` and by nothing else, so the
+/// walks' wall and rate budgets see the same time on every run however
+/// loaded the machine is. A zero tick freezes the clock.
 struct HomeProbe {
     inner: StdProbe,
     home: PathBuf,
+    tick: Duration,
+    now: Mutex<Duration>,
 }
 
 impl Probe for HomeProbe {
@@ -65,6 +73,7 @@ impl Probe for HomeProbe {
         self.inner.mount(p)
     }
     fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, FsStat)>> {
+        *self.now.lock().unwrap_or_else(|e| e.into_inner()) += self.tick;
         self.inner.read_dir(p)
     }
     fn read_link(&self, p: &Path) -> io::Result<PathBuf> {
@@ -83,7 +92,7 @@ impl Probe for HomeProbe {
         Some(self.home.clone())
     }
     fn now(&self) -> Duration {
-        self.inner.now()
+        *self.now.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -95,12 +104,20 @@ struct Fx {
 }
 
 impl Fx {
+    /// A fixture whose probe clock is frozen.
     fn new() -> Fx {
+        Fx::ticking(Duration::ZERO)
+    }
+
+    /// A fixture whose probe clock advances `tick` per `read_dir`.
+    fn ticking(tick: Duration) -> Fx {
         let tmp = tempfile::tempdir().expect("tempdir");
         let home = tmp.path().canonicalize().expect("canonicalize tempdir");
         let probe = Counting::new(HomeProbe {
             inner: StdProbe,
             home: home.clone(),
+            tick,
+            now: Mutex::new(Duration::ZERO),
         });
         Fx {
             _tmp: tmp,
@@ -357,6 +374,29 @@ fn fixture_03_notes_folder_over_the_loose_md_budget_is_lazy() {
     let r = row(&reg, &fx.path("notes")).expect("registered");
     assert_eq!(r.verdict_source, VerdictSource::Budget);
     assert_eq!(r.mode, RootMode::Lazy);
+}
+
+#[test]
+fn fixture_03_slow_listings_abort_the_loose_walk_on_wall_time() {
+    let _l = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // The dense folder of the first fixture 3, but every listing takes 20 ms
+    // of probe time: 41 dirs need 820 ms, over the 300 ms loose wall budget.
+    // (Under 50 dirs, so the rate check never runs.)
+    let fx = Fx::ticking(Duration::from_millis(20));
+    for d in 0..40 {
+        fx.files(&format!("notes/d{d:02}"), 150, 100);
+    }
+    let mut reg = MemRegistry::new();
+    let d = fx.run("3 (slow)", &mut reg, "notes/d00/f0000.md");
+    // The start dir's own walk fits; growing to notes/ runs out of wall time,
+    // so the start dir stays the root.
+    assert_eq!(d.mode, RootMode::Loose);
+    assert_eq!(d.root, Some(fx.path("notes/d00")));
+    assert_eq!(
+        explain(&d),
+        "loose root rejected at ~/notes: walk aborted (wall)"
+    );
+    assert_eq!(d.md.len(), 100);
 }
 
 #[test]

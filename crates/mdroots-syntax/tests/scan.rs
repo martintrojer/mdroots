@@ -135,7 +135,8 @@ fn code_mentions() {
     none("`foo bar`", LinkKind::CodeMention);
     none("`https://x.com/a`", LinkKind::CodeMention);
     none("`main`", LinkKind::CodeMention);
-    none("`x:99999999999`", LinkKind::Url);
+    // An overflowing line on a token that is not path-like: no link at all.
+    assert_eq!(md("`x:99999999999`").links().count(), 0);
     let l = one("`a.rs:99999999999`", LinkKind::CodeMention);
     assert_eq!((l.target.path.as_str(), l.target.line), ("a.rs", None));
     // Inline code used as link text is the link, not a mention.
