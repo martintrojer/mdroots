@@ -60,7 +60,7 @@ on are internal and pinned to the exact version.
   (`[a, [b, c]]` gives `a` and `b, c`); a block-scalar list item (`- |`) is
   its text; map list items (`{…}`) are placeholders, so they never become
   tags or aliases; scan and parser are combined in linear time (20k keys in
-  about 20 ms instead of 0.6 s). Ported from ramble, a TUI markdown reader
+  about 20 ms instead of 0.6 s). Ported from [ramble](https://github.com/martintrojer/ramble), a TUI markdown reader
   by the same author.
 - `Options::code_dirs`: extra directories code mentions (`` `src/main.rs:12` ``)
   resolve against, after the note's directory and before the root.
@@ -70,7 +70,7 @@ on are internal and pinned to the exact version.
 ## 0.2.0
 
 Language server:
-- Picks up files changed on disk by another editor, git or sync without a
+- Picks up files changed on disk by another editor, [git](https://git-scm.com) or sync without a
   save: a native watcher in `mdroots lsp`, only for the process that writes a
   root's cache, only on local marker, VCS and loose roots (never on virtual
   or remote filesystems).
@@ -113,7 +113,8 @@ What is still missing or unvalidated: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 First release: root discovery that never walks a virtual, remote or huge
 tree; parsing and link resolution for zk, Obsidian,
-[marksman](https://github.com/artempyanykh/marksman), Foam, Dendron, Logseq,
-org-mode and plain relative paths; a per-root
+[marksman](https://github.com/artempyanykh/marksman), [Foam](https://foambubble.github.io),
+[Dendron](https://www.dendron.so), Logseq, [org-mode](https://orgmode.org)
+and plain relative paths; a per-root
 [SQLite](https://sqlite.org) cache with one writer per root; the `mdroots`
 CLI (`check`, `roots`, `resolve`, `backlinks`) and `mdroots lsp`.

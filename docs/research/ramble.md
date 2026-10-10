@@ -78,15 +78,15 @@ Kept, by design:
 
 | ramble code (commit) | Use | Why not |
 |---|---|---|
-| `src/app/watch.rs` + `tests/watch.rs` (`75b8285`) | lessons for the watcher: editors replace by rename, compare content not events, kick once after `watch()` so a write between load and watch is seen | built in M6 without porting (`crates/mdroots/src/watch.rs` reconciles by stat and content); the FSEvents replay lesson waits for replay ([ROADMAP](../ROADMAP.md) §3) |
-| `src/lsp/uri.rs` `uri_to_path`, `canonical_uri` (`75b8285`) | URI ↔ path in `mdroots-lsp` | `mdroots-lsp` decodes `file:` URIs with [lsp-types](https://github.com/gluon-lang/lsp-types)' `fluent-uri`; zk's undeclared UTF-32 columns matter only to ramble's optional LSP backend |
+| `src/app/watch.rs` + `tests/watch.rs` (`75b8285`) | lessons for the watcher: editors replace by rename, compare content not events, kick once after `watch()` so a write between load and watch is seen | built without porting (`crates/mdroots/src/watch.rs` reconciles by stat and content); the FSEvents replay lesson waits for replay ([ROADMAP §3](../ROADMAP.md#3-deferred-work)) |
+| `src/lsp/uri.rs` `uri_to_path`, `canonical_uri` (`75b8285`) | URI ↔ path in `mdroots-lsp` | `mdroots-lsp` decodes `file:` URIs with [lsp-types](https://github.com/gluon-lang/lsp-types)' [`fluent-uri`](https://github.com/yescallop/fluent-uri-rs); zk's undeclared UTF-32 columns matter only to ramble's optional LSP backend |
 | `tests/support/fake_lsp.rs`, `src/lsp/framing.rs` (`75b8285`) | a scripted test client | `mdroots-lsp` tests use `lsp_server::Connection::memory()` and the CLI tests drive the real binary |
-| `src/notebook.rs` `walk_notes`, `src/app/launch.rs` `vcs_root` (`75b8285`) | the `ignore::WalkBuilder` flags and the VCS marker list | used as reference for the M2 walk and marker table |
+| `src/notebook.rs` `walk_notes`, `src/app/launch.rs` `vcs_root` (`75b8285`) | the `ignore::WalkBuilder` flags and the VCS marker list | used as reference for the walk and marker table |
 
 ## Gaps ramble works around
 
-Each is in [ROADMAP](../ROADMAP.md) §3; the API is in
-[specs/library.md](../specs/library.md) §3.2–§3.3.
+Each is in [ROADMAP §3](../ROADMAP.md#3-deferred-work); the API is in
+[library spec §3](../specs/library.md#3-public-api-sketch).
 
 - **`subscribe` sends changed paths only.** ramble needs only "something
   under this root changed" and re-answers the page; it cannot tell a
@@ -95,7 +95,7 @@ Each is in [ROADMAP](../ROADMAP.md) §3; the API is in
   front matter lines and the excerpt.
 - **Unfenced front matter is a `ParseOptions` switch, not a workspace
   option.** ramble parses with `unfenced_frontmatter` off (a
-  [Logseq](https://logseq.com), MultiMarkdown or JSON header is prose to
+  [Logseq](https://logseq.com), [MultiMarkdown](https://fletcherpenney.net/multimarkdown/) or JSON header is prose to
   it); a workspace always parses with the default (on), so ramble gets no
   matching `DocLink` for a link inside such a header and resolves it
   locally.
