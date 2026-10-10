@@ -2,8 +2,9 @@
 //! with the rows zk 0.15.6 produced for it (checked live in ramble's
 //! lsp_zk_e2e). No access to real vaults.
 
-use std::collections::BTreeSet;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mdroots_core::{Cancel, MemStore, StdFs};
@@ -11,7 +12,7 @@ use mdroots_resolve::keys::ResolveStep;
 use mdroots_resolve::ladder::LinkStatus;
 use mdroots_syntax::{Confidence, Context, Link, LinkKind};
 use zkdiff::{
-    Category, MdRecord, ZkData, ZkRow, comparable_href, compared, diff, go_clean, md_key,
+    Category, MdRecord, ZkData, ZkRow, comparable_href, compared, diff, go_clean, load_zk, md_key,
     md_records, normalize_href, zk_join,
 };
 
@@ -57,6 +58,96 @@ fn data(notes: &[&str], rows: Vec<ZkRow>) -> ZkData {
 
 fn cats(r: &zkdiff::Report) -> Vec<Category> {
     r.outcomes.iter().map(|o| o.category).collect()
+}
+
+#[test]
+fn load_zk_preserves_uri_characters_without_writing_files() {
+    struct FixtureDir(PathBuf);
+    impl Drop for FixtureDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn snapshot(dir: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                snapshot(&path, files);
+            } else {
+                files.insert(path.clone(), fs::read(path).unwrap());
+            }
+        }
+    }
+
+    // Keep fixtures in this workspace, not in the system temp directory.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = FixtureDir(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!("zkdiff-load-zk-{}-{nonce}", std::process::id())),
+    );
+    let cases = ["plain", "a?b", "c#d", "e%41", "eA"];
+    for name in cases {
+        let zk_dir = root.0.join(name).join(".zk");
+        fs::create_dir_all(&zk_dir).unwrap();
+        let conn = rusqlite::Connection::open(zk_dir.join("notebook.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY, path TEXT);
+             CREATE TABLE links (
+                 id INTEGER PRIMARY KEY, source_id INTEGER, target_id INTEGER,
+                 href TEXT, external INTEGER, snippet_start INTEGER, snippet_end INTEGER
+             );
+             INSERT INTO notes VALUES (2, 'target.md');
+             INSERT INTO links VALUES (1, 1, 2, 'target', 0, 7, 15);",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO notes VALUES (1, ?1)", [format!("{name}.md")])
+            .unwrap();
+        // Close the rollback-journal DB before snapshotting or loading it.
+        drop(conn);
+    }
+    let mut before = BTreeMap::new();
+    snapshot(&root.0, &mut before);
+
+    // Collect every result so a failure shows both URI truncation and the
+    // silent redirect from e%41 to its sibling eA.
+    let loaded: Vec<_> = cases
+        .iter()
+        .map(|name| {
+            load_zk(&root.0.join(name))
+                .map(|z| (z.notes, z.rows))
+                .map_err(|e| e.to_string())
+        })
+        .collect();
+    let mut after = BTreeMap::new();
+    snapshot(&root.0, &mut after);
+    assert_eq!(
+        after, before,
+        "load_zk must not write or create stray files"
+    );
+
+    let expected: Vec<Result<_, String>> = cases
+        .iter()
+        .map(|name| {
+            let source = format!("{name}.md");
+            Ok((
+                BTreeSet::from([source.clone(), "target.md".into()]),
+                vec![ZkRow {
+                    snippet_start: 7,
+                    snippet_end: 15,
+                    ..zk(1, &source, "target", Some("target.md"))
+                }],
+            ))
+        })
+        .collect();
+    assert_eq!(
+        loaded, expected,
+        "each requested vault must load its own DB"
+    );
 }
 
 #[test]

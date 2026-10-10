@@ -261,7 +261,13 @@ impl Report {
 /// note path and link row (ordered by `links.id`).
 pub fn load_zk(vault: &Path) -> rusqlite::Result<ZkData> {
     let db = vault.join(".zk/notebook.db");
-    let uri = format!("file:{}?mode=ro&immutable=1", db.display());
+    // Escape '%' first so literal escapes cannot redirect to another vault.
+    let path = db
+        .to_string_lossy()
+        .replace('%', "%25")
+        .replace('?', "%3F")
+        .replace('#', "%23");
+    let uri = format!("file:{path}?mode=ro&immutable=1");
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
         | OpenFlags::SQLITE_OPEN_URI
         | OpenFlags::SQLITE_OPEN_NO_MUTEX;
