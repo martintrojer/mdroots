@@ -308,14 +308,43 @@ fn a_later_change_restarts_the_debounce() {
     c.open(&uri, &text);
     c.ready(&uri);
     assert_eq!(c.diagnostics(&uri).len(), 1);
-    c.change(&uri, 2, &text.replace("(missing-note)", "(a.md)"));
-    std::thread::sleep(Duration::from_millis(250));
-    let last = Instant::now();
-    c.change(&uri, 3, &text);
-    // One publish, of the last text, 500 ms after the last change.
-    assert_eq!(c.diagnostics(&uri).len(), 1);
-    assert!(last.elapsed() >= Duration::from_millis(500), "restarted");
-    c.shutdown().unwrap();
+    let fixed = text.replace("(missing-note)", "(a.md)");
+    // Two changes 250 ms apart: one publish, of the last version, 500 ms
+    // after the last change. A client delayed past the first debounce
+    // gets a publish of the first version too; that round proves
+    // nothing, so it is tried again.
+    for round in 0..5 {
+        let (first, second) = (2 + 2 * round, 3 + 2 * round);
+        c.change(&uri, first, &fixed);
+        // Once this answers, the server has handled the first change: its
+        // deadline is before `synced` + 500 ms, so a debounce that is not
+        // restarted publishes before `last` + 500 ms.
+        let (_, seen) = c.request_seeing("textDocument/hover", json!({}));
+        std::thread::sleep(Duration::from_millis(250));
+        let last = Instant::now();
+        c.change(&uri, second, &text);
+        let mut late = seen.iter().any(|m| {
+            matches!(m, Message::Notification(n) if n.method == "textDocument/publishDiagnostics")
+        });
+        let d = loop {
+            if let Message::Notification(n) = c.recv()
+                && n.method == "textDocument/publishDiagnostics"
+                && n.params["uri"] == uri.as_str()
+            {
+                match n.params["version"].as_i64() {
+                    Some(v) if v == i64::from(second) => break n.params["diagnostics"].clone(),
+                    _ => late = true,
+                }
+            }
+        };
+        if late {
+            continue;
+        }
+        assert_eq!(d.as_array().unwrap().len(), 1, "{d:?}");
+        assert!(last.elapsed() >= Duration::from_millis(500), "restarted");
+        return c.shutdown().unwrap();
+    }
+    panic!("every round was delayed past the debounce");
 }
 
 #[test]
@@ -350,6 +379,64 @@ fn a_file_not_on_disk_gets_no_diagnostics_and_no_error() {
         Message::Response(r) => assert_eq!(r.id, id),
         m => panic!("unexpected {m:?}"),
     }
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn a_buffer_opened_before_its_file_exists_is_served_once_saved() {
+    let v = Vault::corpus("zk-min");
+    let mut c = Client::start();
+    c.initialize(json!({}));
+    let uri = v.uri("new.md");
+    let text = "# New\n\n[x](missing)\n";
+    c.open(&uri, text);
+    // The open is handled before the file exists.
+    c.request("textDocument/hover", json!({}));
+    // The editor writes the file, then tells the server.
+    v.write("new.md", text);
+    c.notify(
+        "textDocument/didSave",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    let d = c.diagnostics(&uri);
+    assert_eq!(codes(&d), ["broken-link"], "{d:?}");
+    let symbols = ok(c.request(
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": uri } }),
+    ));
+    assert_eq!(symbols[0]["name"], "New", "{symbols:?}");
+    // Its root opens in the background, as after a didOpen.
+    c.ready(&uri);
+    let info = ok(c.request(
+        "workspace/executeCommand",
+        command("mdroots.info", json!([uri])),
+    ));
+    let info = info.as_str().expect("mdroots.info text");
+    assert!(
+        info.starts_with(&format!("root: {}\n", v.dir.display())),
+        "{info}"
+    );
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn a_buffer_opened_before_its_file_exists_is_served_after_the_next_change() {
+    let v = Vault::corpus("zk-min");
+    let mut c = Client::start();
+    c.initialize(json!({}));
+    let uri = v.uri("new.md");
+    c.open(&uri, "# New\n");
+    c.request("textDocument/hover", json!({}));
+    v.write("new.md", "# New\n");
+    c.change(&uri, 2, "# New\n\n[x](missing)\n");
+    let d = c.diagnostics(&uri);
+    assert_eq!(codes(&d), ["broken-link"], "{d:?}");
+    c.ready(&uri);
+    let symbols = ok(c.request(
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": uri } }),
+    ));
+    assert_eq!(symbols[0]["name"], "New", "{symbols:?}");
     c.shutdown().unwrap();
 }
 

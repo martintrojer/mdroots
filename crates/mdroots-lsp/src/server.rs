@@ -44,8 +44,9 @@ const COMMANDS: [&str; 4] = [
 const PROGRESS_AFTER: Duration = Duration::from_secs(1);
 
 /// An open document. `ws` is `None` when the file is not on disk (an
-/// unsaved new buffer): such a document gets no diagnostics. Until its
-/// root's workspace is open (`ready`), `ws` is a single-file workspace
+/// unsaved new buffer): such a document gets no diagnostics, and its
+/// workspace is looked up again on its next `didChange` or `didSave`.
+/// Until its root's workspace is open (`ready`), `ws` is a single-file workspace
 /// ([`Workspace::open_single`]) that only this document holds.
 struct Doc {
     uri: Uri,
@@ -620,6 +621,12 @@ impl Server {
                 if let Ok(p) = serde_json::from_value::<DidSaveTextDocumentParams>(n.params) {
                     let key = p.text_document.uri.as_str().to_owned();
                     self.due.remove(&key);
+                    // A buffer saved for the first time: its file exists
+                    // now, so it gets a workspace, then refreshes as any.
+                    if let Some(d) = self.docs.get(&key).filter(|d| d.ws.is_none()) {
+                        let (uri, version, text) = (d.uri.clone(), d.version, d.text.clone());
+                        self.update(uri, version, text);
+                    }
                     match self.docs.get(&key).map(|d| (d.ws.clone(), d.ready)) {
                         Some((Some(ws), true)) => self.refresh(&[ws]),
                         Some((Some(ws), false)) => {
@@ -751,33 +758,45 @@ impl Server {
     }
 
     /// Records the document's new text and sets it as the workspace
-    /// overlay. A new document whose root is not open yet gets a
-    /// single-file workspace at once and its root is opened in the
-    /// background. Returns whether the document is tracked (a `file:` URI).
+    /// overlay. A new document, or one not on disk until now, whose root
+    /// is not open yet gets a single-file workspace at once and its root is
+    /// opened in the background. Returns whether the document is tracked (a
+    /// `file:` URI).
     fn update(&mut self, uri: Uri, version: i32, text: String) -> bool {
         let Some(path) = uri::to_path(&uri) else {
             return false;
         };
         let key = uri.as_str().to_owned();
-        let (ws, ready) = match self.docs.get(&key) {
-            Some(d) => (d.ws.clone(), d.ready),
-            None => match self.workspaces.get(&path) {
-                Some(ws) => (Some(ws), true),
-                None => match Workspace::open_single(&path, self.workspaces.options()) {
-                    Ok(ws) => {
-                        self.submit(&path);
-                        (Some(ws), false)
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "mdroots-lsp: {}: no workspace: {}",
-                            path.display(),
-                            e.message()
-                        );
-                        (None, false)
-                    }
-                },
-            },
+        let known = self.docs.get(&key);
+        let (ws, ready) = match known {
+            Some(Doc {
+                ws: Some(ws),
+                ready,
+                ..
+            }) => (Some(ws.clone()), *ready),
+            _ => {
+                // Said once per document, not on every change.
+                let quiet = known.is_some();
+                match self.workspaces.get(&path) {
+                    Some(ws) => (Some(ws), true),
+                    None => match Workspace::open_single(&path, self.workspaces.options()) {
+                        Ok(ws) => {
+                            self.submit(&path);
+                            (Some(ws), false)
+                        }
+                        Err(e) => {
+                            if !quiet {
+                                eprintln!(
+                                    "mdroots-lsp: {}: no workspace: {}",
+                                    path.display(),
+                                    e.message()
+                                );
+                            }
+                            (None, false)
+                        }
+                    },
+                }
+            }
         };
         if let Some(ws) = &ws {
             log_err("overlay", ws.set_overlay(&path, &text));
