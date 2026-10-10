@@ -1625,12 +1625,28 @@ mod json {
                         Some('t') => out.push('\t'),
                         Some('r') => out.push('\r'),
                         Some('u') => {
-                            let hex: String = (0..4)
-                                .filter_map(|_| chars.next())
-                                .map(|(_, c)| c)
-                                .collect();
-                            let c = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32);
-                            out.push(c.unwrap_or('\u{fffd}'));
+                            let hex4 = |chars: &mut std::str::CharIndices| {
+                                let hex: String = (0..4)
+                                    .filter_map(|_| chars.next())
+                                    .map(|(_, c)| c)
+                                    .collect();
+                                u32::from_str_radix(&hex, 16).ok()
+                            };
+                            let mut u = hex4(&mut chars);
+                            // A high surrogate takes a following `\u` low
+                            // surrogate with it; unpaired, it stays U+FFFD and
+                            // whatever follows is read on its own.
+                            if let Some(hi @ 0xD800..=0xDBFF) = u {
+                                let mut ahead = chars.clone();
+                                if ahead.next().map(|(_, c)| c) == Some('\\')
+                                    && ahead.next().map(|(_, c)| c) == Some('u')
+                                    && let Some(lo @ 0xDC00..=0xDFFF) = hex4(&mut ahead)
+                                {
+                                    chars = ahead;
+                                    u = Some(0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00));
+                                }
+                            }
+                            out.push(u.and_then(char::from_u32).unwrap_or('\u{fffd}'));
                         }
                         Some(c) => out.push(c),
                         None => break,

@@ -146,6 +146,34 @@ fn json_object() {
 }
 
 #[test]
+fn json_surrogate_pairs_decode_and_lone_surrogates_become_replacement() {
+    let doc = md("{\"title\": \"Smile \\uD83D\\uDE00\"\n}\n");
+    let f = fm(&doc);
+    assert_eq!(f.error, None);
+    assert_eq!(f.title(), Some("Smile 😀"));
+
+    let doc = md("{\"aliases\": [\"\\ud83d\\ude00 face\", \"x\"]\n}\n");
+    assert_eq!(fm(&doc).aliases(), ["😀 face", "x"]);
+
+    // A lone surrogate, high or low, is U+FFFD like any other bad escape;
+    // the character after it survives.
+    for (raw, want) in [
+        (r"a\uD83Db", "a\u{fffd}b"),
+        (r"a\uD83D", "a\u{fffd}"),
+        (r"a\uD83D\u0041", "a\u{fffd}A"),
+        (r"a\uD83D\uD83D\uDE00", "a\u{fffd}😀"),
+        (r"a\uDE00b", "a\u{fffd}b"),
+        (r"a\uDE00\uD83D", "a\u{fffd}\u{fffd}"),
+        (r"a\uD83D\tb", "a\u{fffd}\tb"),
+    ] {
+        let doc = md(&format!("{{\"title\": \"{raw}\"\n}}\n"));
+        let f = fm(&doc);
+        assert_eq!(f.error, None, "{raw}");
+        assert_eq!(f.title(), Some(want), "{raw}");
+    }
+}
+
+#[test]
 fn invalid_yaml_sets_error_and_the_rest_still_parses() {
     let src = "---\ntitle: X\n author: [\n\tbad: tab\nid: z1\n---\n\n# After\n\n[[later]]\n";
     let doc = md(src);
