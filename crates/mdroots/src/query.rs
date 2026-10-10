@@ -1,32 +1,178 @@
 //! Note queries with combinable filters, in the shape of `zk list`: tag
 //! expressions, dates, link-graph filters, sort and limit. The CLI's
 //! `mdroots notes` is a thin layer over [`NoteQuery`].
+//!
+//! The syntax follows [zk](https://github.com/zk-org/zk) (its
+//! [filtering docs](https://zk-org.github.io/zk/notes/note-filtering.html)):
+//!
+//! - Tags ([`TagExpr`]): `,` is and, ` OR ` or `|` is or and binds tighter,
+//!   so `a OR b, NOT c` is `(a or b) and not c`. A `NOT ` or `-` prefix
+//!   negates one tag; a negated tag cannot sit in an or group (zk refuses it
+//!   too). `*` and `?` are globs. Names compare case-insensitively; a
+//!   leading `#` is dropped. Keywords are upper case, so tags named `or` or
+//!   `not` still work.
+//! - Dates ([`parse_date`]): see there. Times without an offset are UTC
+//!   (zk uses local time; mdroots has no time-zone database).
+//! - Sort ([`parse_sort`]): `KEY[+|-]`, zk's keys and shortcuts. Without a
+//!   sort, notes come by title A–Z, as zk's always-appended `title ASC`.
+//!
+//! Where mdroots differs from zk: `--related` is a filter here as in zk, so
+//! the shared-neighbour score of [`Workspace::related`] is not the order;
+//! titles sort case-insensitively (zk compares bytes).
 
-use std::path::PathBuf;
-use std::time::SystemTime;
+use std::cmp::Ordering;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::{Error, NoteSummary, Workspace};
+use mdroots_core::{Cancel, ErrorKind};
+use mdroots_resolve::ladder::LinkStatus;
+use mdroots_syntax::{Context, Link, LinkKind};
+
+use crate::{Error, Freshness, NoteSummary, Workspace};
+
+// ---------------------------------------------------------------------------
+// Tag expressions.
 
 /// A parsed tag expression in zk's syntax: `a,b` (and), `a OR b` / `a|b`,
 /// `NOT a` / `-a`, globs (`year/201*`); names compare case-insensitively.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TagExpr {
-    _private: (),
+    /// And of clauses.
+    clauses: Vec<Clause>,
+}
+
+/// One comma-separated part: either an or of globs, or one negated glob.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Clause {
+    negate: bool,
+    /// Lowercase glob patterns.
+    any: Vec<String>,
 }
 
 impl TagExpr {
     /// Parse `s`; the error names the problem and its byte column.
     pub fn parse(s: &str) -> Result<TagExpr, String> {
-        let _ = s;
-        todo!("U2")
+        let mut clauses = Vec::new();
+        for (start, part) in split_at(s, 0, |rest| rest.starts_with(',').then_some(1)) {
+            let terms = split_at(part, start, or_separator);
+            let mut clause = Clause {
+                negate: false,
+                any: Vec::new(),
+            };
+            let several = terms.len() > 1;
+            for (col, term) in terms {
+                let (negate, name, col) = term_parts(term, col)?;
+                if negate && several {
+                    return Err(format!("column {col}: cannot negate a tag in an OR group"));
+                }
+                clause.negate = negate;
+                clause.any.push(name.to_lowercase());
+            }
+            clauses.push(clause);
+        }
+        Ok(TagExpr { clauses })
     }
 
     /// Whether a note with `tags` matches.
     pub fn matches(&self, tags: &[String]) -> bool {
-        let _ = tags;
-        todo!("U2")
+        let lower: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
+        self.clauses.iter().all(|c| {
+            let hit = c.any.iter().any(|g| lower.iter().any(|t| glob(g, t)));
+            hit != c.negate
+        })
     }
 }
+
+/// ` OR ` or `|` at the start of `rest`: its length.
+fn or_separator(rest: &str) -> Option<usize> {
+    if rest.starts_with('|') {
+        Some(1)
+    } else if rest.starts_with(" OR ") {
+        Some(4)
+    } else {
+        None
+    }
+}
+
+/// `s` (starting at byte column `base` of the whole expression) split on
+/// the separator `sep` recognises: `(column, part)` pairs.
+fn split_at(s: &str, base: usize, sep: impl Fn(&str) -> Option<usize>) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    let mut i = 0;
+    while i < s.len() {
+        if let Some(n) = sep(&s[i..]) {
+            out.push((base + from, &s[from..i]));
+            i += n;
+            from = i;
+        } else {
+            i += s[i..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    out.push((base + from, &s[from..]));
+    out
+}
+
+/// One term: (negated, tag name, column of the name).
+fn term_parts(term: &str, col: usize) -> Result<(bool, &str, usize), String> {
+    let lead = term.len() - term.trim_start().len();
+    let mut rest = term.trim();
+    let mut col = col + lead;
+    let mut negate = false;
+    if let Some(r) = rest.strip_prefix('-') {
+        negate = true;
+        col += 1;
+        rest = r;
+    } else if let Some(r) = rest.strip_prefix("NOT ") {
+        negate = true;
+        col += 4;
+        rest = r;
+    }
+    let lead = rest.len() - rest.trim_start().len();
+    rest = rest.trim_start();
+    col += lead;
+    if let Some(r) = rest.strip_prefix('#') {
+        col += 1;
+        rest = r;
+    }
+    if rest.is_empty() {
+        return Err(format!("column {col}: expected a tag"));
+    }
+    Ok((negate, rest, col))
+}
+
+/// Whether `text` matches `pat` (`*` any run, `?` one character).
+fn glob(pat: &str, text: &str) -> bool {
+    let p: Vec<char> = pat.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while ti < t.len() {
+        match p.get(pi) {
+            Some('*') => {
+                star = Some((pi, ti));
+                pi += 1;
+            }
+            Some(&c) if c == '?' || c == t[ti] => {
+                pi += 1;
+                ti += 1;
+            }
+            _ => match star {
+                Some((sp, st)) => {
+                    pi = sp + 1;
+                    ti = st + 1;
+                    star = Some((sp, st + 1));
+                }
+                None => return false,
+            },
+        }
+    }
+    p[pi..].iter().all(|&c| c == '*')
+}
+
+// ---------------------------------------------------------------------------
+// Sort.
 
 /// A sort key and direction (`KEY[+|-]`, zk's defaults: dates newest first,
 /// path and title A–Z).
@@ -38,6 +184,37 @@ pub enum SortKey {
     Created,
     Modified,
 }
+
+impl SortKey {
+    /// zk's intrinsic direction: `true` (ascending) for title and path.
+    pub fn default_ascending(self) -> bool {
+        matches!(self, SortKey::Title | SortKey::Path)
+    }
+}
+
+/// Parse zk's `KEY[+|-]`: `title`/`t`, `path`/`p`, `created`/`c`,
+/// `modified`/`m`; `+` ascending, `-` descending, none: the key's default.
+pub fn parse_sort(s: &str) -> Result<(SortKey, bool), String> {
+    let s = s.trim();
+    let (name, dir) = match s.strip_suffix('+') {
+        Some(n) => (n, Some(true)),
+        None => match s.strip_suffix('-') {
+            Some(n) => (n, Some(false)),
+            None => (s, None),
+        },
+    };
+    let key = match name.to_lowercase().as_str() {
+        "title" | "t" => SortKey::Title,
+        "path" | "p" => SortKey::Path,
+        "created" | "c" => SortKey::Created,
+        "modified" | "m" => SortKey::Modified,
+        _ => return Err(format!("unknown sort key: {name}")),
+    };
+    Ok((key, dir.unwrap_or_else(|| key.default_ascending())))
+}
+
+// ---------------------------------------------------------------------------
+// The query.
 
 /// What [`Workspace::query`] returns notes for. All filters combine (and).
 #[derive(Debug, Clone, Default)]
@@ -67,18 +244,491 @@ pub struct NoteQuery {
     pub limit: Option<usize>,
 }
 
-/// Parse a date filter value: `YYYY-MM-DD`, an RFC 3339 time, or zk's
-/// relative forms (`today`, `yesterday`, `last week`, `2 days ago`, …).
-pub fn parse_date(s: &str, now: SystemTime) -> Result<SystemTime, String> {
-    let _ = (s, now);
-    todo!("U2")
+impl NoteQuery {
+    fn uses_graph(&self) -> bool {
+        self.orphan
+            || self.missing_backlink
+            || !self.link_to.is_empty()
+            || !self.linked_by.is_empty()
+            || !self.related.is_empty()
+    }
 }
 
 impl Workspace {
     /// The notes matching `q`, sorted and limited as it says. Graph filters
     /// on a lazy root are an error (the answer would be partial).
+    ///
+    /// Date bounds: `*_after` is inclusive, `*_before` exclusive; a note
+    /// without the time never matches a bound on it. The created time is the
+    /// frontmatter `date` (else `created`) value, else the file's creation
+    /// time when known.
     pub fn query(&self, q: &NoteQuery) -> Result<Vec<NoteSummary>, Error> {
-        let _ = (self, q);
-        todo!("U2")
+        if q.uses_graph() && self.freshness() == Freshness::Lazy {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "link-graph filters need a full index (this root is lazy)",
+            ));
+        }
+        let include = self.prefixes(&q.paths);
+        let exclude = self.prefixes(&q.exclude);
+        let matched = match &q.matching {
+            Some(m) => Some(self.matching_paths(m)?),
+            None => None,
+        };
+        let orphans = match q.orphan {
+            true => Some(paths_of(self.orphans()?)),
+            false => None,
+        };
+        let missing = match q.missing_backlink {
+            true => Some(
+                self.missing_backlinks()?
+                    .into_iter()
+                    .map(|(_, to)| to)
+                    .collect::<BTreeSet<_>>(),
+            ),
+            false => None,
+        };
+        let link_to = match q.link_to.is_empty() {
+            true => None,
+            false => Some(self.linking_to(&q.link_to)?),
+        };
+        let linked_by = match q.linked_by.is_empty() {
+            true => None,
+            false => Some(self.linked_from(&q.linked_by)?),
+        };
+        let related = match q.related.is_empty() {
+            true => None,
+            false => {
+                let mut set = BTreeSet::new();
+                for p in &q.related {
+                    set.extend(self.related(p)?.into_iter().map(|(n, _)| n.path));
+                }
+                Some(set)
+            }
+        };
+        let within =
+            |set: &Option<BTreeSet<PathBuf>>, p: &Path| set.as_ref().is_none_or(|s| s.contains(p));
+        let in_range =
+            |t: Option<SystemTime>, after: Option<SystemTime>, before: Option<SystemTime>| {
+                if after.is_none() && before.is_none() {
+                    return true;
+                }
+                t.is_some_and(|t| after.is_none_or(|a| t >= a) && before.is_none_or(|b| t < b))
+            };
+
+        let root = self.root().path;
+        let mut rows: Vec<(NoteSummary, Option<SystemTime>)> = Vec::new();
+        for n in self.notes() {
+            let p = n.path.as_path();
+            if (!include.is_empty() && !include.iter().any(|i| p.starts_with(i)))
+                || exclude.iter().any(|x| p.starts_with(x))
+                || (q.tagless && !n.tags.is_empty())
+                || !q.tag.iter().all(|e| e.matches(&n.tags))
+                || !within(&matched, p)
+                || !within(&orphans, p)
+                || !within(&missing, p)
+                || !within(&link_to, p)
+                || !within(&linked_by, p)
+                || !within(&related, p)
+                || !in_range(n.modified, q.modified_after, q.modified_before)
+            {
+                continue;
+            }
+            let created = self.created(&root, &n);
+            if !in_range(created, q.created_after, q.created_before) {
+                continue;
+            }
+            rows.push((n, created));
+        }
+
+        let (key, asc) = q.sort.unwrap_or((SortKey::Title, true));
+        rows.sort_by(|(a, ac), (b, bc)| {
+            let primary = match key {
+                SortKey::Title => directed(by_title(a, b), asc),
+                SortKey::Path => directed(a.path.cmp(&b.path), asc),
+                SortKey::Created => by_time(*ac, *bc, asc),
+                SortKey::Modified => by_time(a.modified, b.modified, asc),
+            };
+            primary
+                .then_with(|| by_title(a, b))
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        let mut out: Vec<NoteSummary> = rows.into_iter().map(|(n, _)| n).collect();
+        if let Some(l) = q.limit {
+            out.truncate(l);
+        }
+        Ok(out)
+    }
+
+    /// `paths` canonical where they exist (as given otherwise).
+    fn prefixes(&self, paths: &[PathBuf]) -> Vec<PathBuf> {
+        paths
+            .iter()
+            .map(|p| self.fs().canonicalize(p).unwrap_or_else(|_| p.clone()))
+            .collect()
+    }
+
+    fn matching_paths(&self, m: &str) -> Result<BTreeSet<PathBuf>, Error> {
+        let hits = self.full_text(m, usize::MAX, &Cancel::new())?;
+        Ok(hits.into_iter().map(|h| h.path).collect())
+    }
+
+    /// Indexed notes with a counted link to any of `targets` (self-links
+    /// excluded).
+    fn linking_to(&self, targets: &[PathBuf]) -> Result<BTreeSet<PathBuf>, Error> {
+        let mut out = BTreeSet::new();
+        for t in targets {
+            let rel = self.rel(t)?;
+            let store = self.store();
+            for (from, _) in store.backlinks(&rel) {
+                if from != rel {
+                    out.insert(self.abs(&from));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Indexed notes any of `sources` links to with a counted link (every
+    /// candidate of an ambiguous link; self-links excluded).
+    fn linked_from(&self, sources: &[PathBuf]) -> Result<BTreeSet<PathBuf>, Error> {
+        let mut out = BTreeSet::new();
+        for s in sources {
+            let rel = self.rel(s)?;
+            let store = self.store();
+            for (l, r) in store.links(&rel) {
+                if !counts(&l) || !matches!(r.status, LinkStatus::Resolved | LinkStatus::Ambiguous)
+                {
+                    continue;
+                }
+                for t in r.targets {
+                    if t != rel && store.document(&t).is_some() {
+                        out.insert(self.abs(&t));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The note's created time: the frontmatter `date`, else `created`,
+    /// parsed; else the summary's.
+    fn created(&self, root: &Path, n: &NoteSummary) -> Option<SystemTime> {
+        let rel = n.path.strip_prefix(root).ok()?;
+        let rel = crate::workspace::slash(rel);
+        let store = self.store();
+        let fm = store.document(&rel).and_then(|d| d.frontmatter());
+        let from_fm = fm.and_then(|fm| {
+            let dates = fm.dates();
+            ["date", "created"].iter().find_map(|k| {
+                dates
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case(k))
+                    .and_then(|(_, v)| parse_absolute(v))
+            })
+        });
+        from_fm.or_else(|| summary_created(n))
+    }
+}
+
+/// `NoteSummary::created` once the field exists (the parallel created-time
+/// unit adds it); until then unknown.
+fn summary_created(_n: &NoteSummary) -> Option<SystemTime> {
+    None
+}
+
+/// As the backlink index counts links: not footnotes, not in code.
+fn counts(l: &Link) -> bool {
+    l.kind != LinkKind::Footnote
+        && matches!(
+            l.context,
+            Context::Prose | Context::Heading | Context::Html | Context::Frontmatter
+        )
+}
+
+fn paths_of(v: Vec<NoteSummary>) -> BTreeSet<PathBuf> {
+    v.into_iter().map(|n| n.path).collect()
+}
+
+fn directed(o: Ordering, asc: bool) -> Ordering {
+    if asc { o } else { o.reverse() }
+}
+
+fn by_title(a: &NoteSummary, b: &NoteSummary) -> Ordering {
+    a.title
+        .to_lowercase()
+        .cmp(&b.title.to_lowercase())
+        .then_with(|| a.title.cmp(&b.title))
+}
+
+/// Unknown times last in either direction.
+fn by_time(a: Option<SystemTime>, b: Option<SystemTime>, asc: bool) -> Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => directed(a.cmp(&b), asc),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dates.
+
+const DAY: i64 = 86_400;
+
+/// Parse a date filter value: `YYYY-MM-DD`, an RFC 3339 time, or zk's
+/// relative forms (`today`, `yesterday`, `last week`, `2 days ago`, …).
+///
+/// Absolute forms: `YYYY`, `YYYY-MM`, `YYYY-MM-DD`,
+/// `YYYY-MM-DD[T ]HH:MM[:SS[.frac]]`, optionally ending in `Z` or `±HH:MM`
+/// (RFC 3339). Without an offset the time is UTC. Relative forms (case
+/// insensitive): `now`; `today` and `yesterday` (start of the day);
+/// `N UNIT[s] ago`, `last N UNITs`, `last UNIT` with UNIT one of minute,
+/// hour, day, week, month, year and N digits or `a`/`an`/`one`…`twelve`
+/// (`last two weeks`); `Nd`/`Nw` (`7d`); `last WEEKDAY` (the start of the
+/// latest such day before today).
+pub fn parse_date(s: &str, now: SystemTime) -> Result<SystemTime, String> {
+    let t = s.trim();
+    parse_absolute(t)
+        .or_else(|| parse_relative(&t.to_lowercase(), now))
+        .ok_or_else(|| format!("unrecognised date: {s:?}"))
+}
+
+/// The day `s` names (see [`parse_date`]) as a `[start, end)` range of one
+/// UTC day, for zk's `--created DAY` / `--modified DAY`.
+pub fn day_range(s: &str, now: SystemTime) -> Result<(SystemTime, SystemTime), String> {
+    let t = to_secs(parse_date(s, now)?);
+    let start = t.div_euclid(DAY) * DAY;
+    Ok((from_secs(start, 0), from_secs(start + DAY, 0)))
+}
+
+fn parse_absolute(s: &str) -> Option<SystemTime> {
+    let b = s.as_bytes();
+    let year = num(b, 0, 4)?;
+    if b.len() == 4 {
+        return civil(year, 1, 1).map(|d| from_secs(d * DAY, 0));
+    }
+    if b.get(4) != Some(&b'-') {
+        return None;
+    }
+    let month = num(b, 5, 2)?;
+    if b.len() == 7 {
+        return civil(year, month, 1).map(|d| from_secs(d * DAY, 0));
+    }
+    if b.get(7) != Some(&b'-') {
+        return None;
+    }
+    let day = num(b, 8, 2)?;
+    let days = civil(year, month, day)?;
+    if b.len() == 10 {
+        return Some(from_secs(days * DAY, 0));
+    }
+    if !matches!(b.get(10), Some(b'T' | b't' | b' ')) || b.get(13) != Some(&b':') {
+        return None;
+    }
+    let (h, m) = (num(b, 11, 2)?, num(b, 14, 2)?);
+    let mut i = 16;
+    let mut sec = 0;
+    let mut nanos = 0u32;
+    if b.get(i) == Some(&b':') {
+        sec = num(b, i + 1, 2)?;
+        i += 3;
+        if b.get(i) == Some(&b'.') {
+            let start = i + 1;
+            i = start;
+            while b.get(i).is_some_and(u8::is_ascii_digit) {
+                i += 1;
+            }
+            if i == start {
+                return None;
+            }
+            let frac = &s[start..i.min(start + 9)];
+            nanos = frac.parse::<u32>().ok()? * 10u32.pow(9 - frac.len() as u32);
+        }
+    }
+    if h > 23 || m > 59 || sec > 60 {
+        return None;
+    }
+    let offset = match &b[i..] {
+        [] | [b'Z' | b'z'] => 0,
+        [sign @ (b'+' | b'-'), _, _, b':', _, _] => {
+            let (oh, om) = (num(b, i + 1, 2)?, num(b, i + 4, 2)?);
+            if oh > 23 || om > 59 {
+                return None;
+            }
+            let o = oh * 3600 + om * 60;
+            if *sign == b'+' { o } else { -o }
+        }
+        _ => return None,
+    };
+    Some(from_secs(
+        days * DAY + h * 3600 + m * 60 + sec - offset,
+        nanos,
+    ))
+}
+
+fn parse_relative(s: &str, now: SystemTime) -> Option<SystemTime> {
+    let now_s = to_secs(now);
+    let today = now_s.div_euclid(DAY) * DAY;
+    let words: Vec<&str> = s.split_whitespace().collect();
+    match words.as_slice() {
+        ["now"] => return Some(now),
+        ["today"] => return Some(from_secs(today, 0)),
+        ["yesterday"] => return Some(from_secs(today - DAY, 0)),
+        ["last", w] if weekday(w).is_some() => {
+            let want = weekday(w)?;
+            let cur = (today.div_euclid(DAY) + 4).rem_euclid(7); // 1970-01-01: Thursday
+            let back = match (cur - want).rem_euclid(7) {
+                0 => 7,
+                n => n,
+            };
+            return Some(from_secs(today - back * DAY, 0));
+        }
+        _ => {}
+    }
+    let (n, unit) = match words.as_slice() {
+        [n, unit, "ago"] => (count(n)?, *unit),
+        ["last", n, unit] => (count(n)?, *unit),
+        ["last", unit] => (1, *unit),
+        [w] => {
+            let (digits, unit) = w.split_at(w.len().checked_sub(1)?);
+            let unit = match unit {
+                "d" => "day",
+                "w" => "week",
+                _ => return None,
+            };
+            (digits.parse().ok()?, unit)
+        }
+        _ => return None,
+    };
+    let unit = unit.strip_suffix('s').unwrap_or(unit);
+    let secs = match unit {
+        "minute" => 60,
+        "hour" => 3600,
+        "day" => DAY,
+        "week" => 7 * DAY,
+        "month" => return months_back(now_s, n, now),
+        "year" => return months_back(now_s, n.checked_mul(12)?, now),
+        _ => return None,
+    };
+    Some(from_secs(
+        now_s.checked_sub(n.checked_mul(secs)?)?,
+        sub_nanos(now),
+    ))
+}
+
+/// `now` moved back `n` calendar months, the day clamped to the month.
+fn months_back(now_s: i64, n: i64, now: SystemTime) -> Option<SystemTime> {
+    let days = now_s.div_euclid(DAY);
+    let tod = now_s.rem_euclid(DAY);
+    let (y, m, d) = from_days(days);
+    let total = y * 12 + (m - 1) - n;
+    let (y, m) = (total.div_euclid(12), total.rem_euclid(12) + 1);
+    let d = d.min(month_len(y, m));
+    Some(from_secs(civil(y, m, d)? * DAY + tod, sub_nanos(now)))
+}
+
+fn weekday(w: &str) -> Option<i64> {
+    let days = [
+        "sunday",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+    ];
+    days.iter().position(|d| *d == w).map(|i| i as i64)
+}
+
+fn count(w: &str) -> Option<i64> {
+    let words = [
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+        "twelve",
+    ];
+    match w {
+        "a" | "an" => Some(1),
+        _ => words
+            .iter()
+            .position(|x| *x == w)
+            .map(|i| i as i64 + 1)
+            .or_else(|| w.parse().ok()),
+    }
+}
+
+/// The `len` ASCII digits at `at`.
+fn num(b: &[u8], at: usize, len: usize) -> Option<i64> {
+    let d = b.get(at..at + len)?;
+    d.iter()
+        .all(u8::is_ascii_digit)
+        .then(|| d.iter().fold(0i64, |acc, c| acc * 10 + i64::from(c - b'0')))
+}
+
+fn is_leap(y: i64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+fn month_len(y: i64, m: i64) -> i64 {
+    match m {
+        2 if is_leap(y) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+/// Days since 1970-01-01 of a valid civil date (proleptic Gregorian).
+fn civil(y: i64, m: i64, d: i64) -> Option<i64> {
+    if !(1..=12).contains(&m) || d < 1 || d > month_len(y, m) {
+        return None;
+    }
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
+}
+
+/// The civil date of a day count since 1970-01-01.
+fn from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    (y, m, d)
+}
+
+fn from_secs(secs: i64, nanos: u32) -> SystemTime {
+    let base = if secs >= 0 {
+        UNIX_EPOCH + Duration::from_secs(secs.unsigned_abs())
+    } else {
+        UNIX_EPOCH - Duration::from_secs(secs.unsigned_abs())
+    };
+    base + Duration::from_nanos(u64::from(nanos))
+}
+
+/// Whole seconds since the epoch, rounded down.
+fn to_secs(t: SystemTime) -> i64 {
+    match t.duration_since(UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
+        Err(e) => {
+            let d = e.duration();
+            let s = i64::try_from(d.as_secs()).unwrap_or(i64::MAX);
+            if d.subsec_nanos() > 0 { -s - 1 } else { -s }
+        }
+    }
+}
+
+fn sub_nanos(t: SystemTime) -> u32 {
+    match t.duration_since(UNIX_EPOCH) {
+        Ok(d) => d.subsec_nanos(),
+        Err(e) => (1_000_000_000 - e.duration().subsec_nanos()) % 1_000_000_000,
     }
 }
