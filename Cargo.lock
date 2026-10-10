@@ -431,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "mdroots"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "mdroots-core",
  "mdroots-index",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "mdroots-cli"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "insta",
  "lsp-server",
@@ -458,7 +458,7 @@ dependencies = [
 
 [[package]]
 name = "mdroots-core"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "mdroots-resolve",
  "mdroots-syntax",
@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "mdroots-index"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "mdroots-core",
  "mdroots-roots",
@@ -478,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "mdroots-lsp"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "crossbeam-channel",
  "lsp-server",
@@ -490,7 +490,7 @@ dependencies = [
 
 [[package]]
 name = "mdroots-resolve"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "mdroots-syntax",
  "serde_json",
@@ -500,7 +500,7 @@ dependencies = [
 
 [[package]]
 name = "mdroots-roots"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "ignore",
  "mdroots-core",
@@ -510,7 +510,7 @@ dependencies = [
 
 [[package]]
 name = "mdroots-syntax"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "insta",
  "proptest",
