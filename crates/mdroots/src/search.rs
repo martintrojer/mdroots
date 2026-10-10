@@ -6,14 +6,16 @@
 //! naive scan of the current text with the same rules: lowercase, tokens
 //! are runs of letters and digits, every query term must appear (a term of
 //! several tokens as a phrase), and the last term also matches as a prefix.
-//! Both fold diacritics (`cafe` finds `café`), as FTS5's `unicode61
-//! remove_diacritics 2` tokenizer does.
+//! Both fold diacritics as FTS5's `unicode61 remove_diacritics 2`
+//! tokenizer does (`cafe` finds `café` and `cafe\u{301}`; kana keep their
+//! dakuten).
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use mdroots_core::{Cancel, Error};
 use mdroots_index::Role;
+use unicode_normalization::char::is_combining_mark;
 
 use crate::workspace::Workspace;
 
@@ -155,20 +157,58 @@ fn has_phrase(toks: &[String], phrase: &[String], prefix: bool) -> bool {
     })
 }
 
-/// Runs of letters and digits, lowercase, diacritics removed (NFD, then
-/// combining marks dropped).
+/// Tokens as FTS5's `unicode61 remove_diacritics 2` makes them: runs of
+/// letters and digits, lowercase. A diacritic ([`is_diacritic`]) is dropped
+/// without ending the token; a letter whose decomposition is an ASCII
+/// letter plus diacritics folds to that letter (`é` to `e`, but `ά` and
+/// `ガ` stay); any other combining mark ends the token (`カ\u{3099}` is
+/// `カ`).
 fn tokens(s: &str) -> Vec<String> {
+    let mut toks = Vec::new();
+    let mut tok = String::new();
+    for c in s.chars() {
+        if is_diacritic(c) {
+            continue;
+        }
+        if c.is_alphanumeric() && !is_combining_mark(c) {
+            tok.extend(c.to_lowercase().filter(|c| !is_diacritic(*c)).map(fold));
+        } else if !tok.is_empty() {
+            toks.push(std::mem::take(&mut tok));
+        }
+    }
+    if !tok.is_empty() {
+        toks.push(tok);
+    }
+    toks
+}
+
+/// `c` without its diacritics when it decomposes to an ASCII letter and
+/// [`is_diacritic`] marks; else `c`.
+fn fold(c: char) -> char {
     use unicode_normalization::UnicodeNormalization;
-    use unicode_normalization::char::is_combining_mark;
-    s.split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .map(|t| {
-            t.nfd()
-                .filter(|c| !is_combining_mark(*c))
-                .collect::<String>()
-                .to_lowercase()
-        })
-        .collect()
+    let mut d = std::iter::once(c).nfd();
+    match d.next() {
+        Some(base) if base.is_ascii_alphabetic() && d.all(is_diacritic) => base,
+        _ => c,
+    }
+}
+
+/// The combining marks SQLite's `unicode61` tokenizer removes with
+/// `remove_diacritics 2` (`sqlite3Fts5UnicodeIsdiacritic`).
+fn is_diacritic(c: char) -> bool {
+    matches!(
+        c,
+        '\u{300}'..='\u{304}'
+            | '\u{306}'..='\u{30c}'
+            | '\u{30f}'
+            | '\u{311}'
+            | '\u{31b}'
+            | '\u{323}'..='\u{328}'
+            | '\u{32d}'
+            | '\u{32e}'
+            | '\u{330}'
+            | '\u{331}'
+    )
 }
 
 /// `s` trimmed with whitespace runs collapsed to one space, at most

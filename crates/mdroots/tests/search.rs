@@ -221,3 +221,54 @@ fn accents_fold_in_both_paths_and_the_line_is_the_first_match() {
         assert_eq!(hits[0].line, 4, "role {:?}", ws.role());
     }
 }
+
+/// The naive scan folds like FTS5's `unicode61 remove_diacritics 2`: a
+/// combining diacritic (U+0300..U+0331) is dropped without splitting the
+/// token, a letter folds only to an ASCII base (kana keep their dakuten),
+/// and other combining marks separate tokens.
+#[test]
+fn the_db_and_the_naive_scan_fold_alike() {
+    let (tmp, dir) = zkvault();
+    let notes = [
+        ("fold/decomposed.md", "cafe\u{301}s\n"),
+        ("fold/precomposed.md", "Café crème\n"),
+        ("fold/kana.md", "ガ\n"),
+        ("fold/kana-decomposed.md", "カ\u{3099}\n"),
+        ("fold/overline.md", "a\u{305}b\n"),
+        ("fold/dotted.md", "İstanbul\n"),
+        ("fold/greek.md", "ά\n"),
+    ];
+    fs::create_dir_all(dir.join("fold")).unwrap();
+    for (rel, text) in notes {
+        fs::write(dir.join(rel), text).unwrap();
+    }
+    let note = dir.join("fold/kana.md");
+    let db = Workspace::open_for(&note, std_opts().cache_dir(tmp.path().join("cache"))).unwrap();
+    assert_eq!(db.role(), Some(Role::Reconciler));
+    let mem = Workspace::open_for(&note, std_opts().index(IndexMode::Memory)).unwrap();
+    let names = |hits: &[Hit]| -> BTreeSet<String> {
+        hits.iter()
+            .filter_map(|h| h.path.strip_prefix(dir.join("fold")).ok())
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect()
+    };
+    for (q, want) in [
+        ("cafes", &["decomposed.md"][..]),
+        ("cafe\u{301}s", &["decomposed.md"]),
+        ("cafe", &["decomposed.md", "precomposed.md"]),
+        ("café", &["decomposed.md", "precomposed.md"]),
+        ("CAFÉ crème", &["precomposed.md"]),
+        ("カ", &["kana-decomposed.md"]),
+        ("ガ", &["kana.md"]),
+        ("ab", &[]),
+        ("b", &["overline.md"]),
+        ("istanbul", &["dotted.md"]),
+        ("α", &[]),
+        ("ά", &["greek.md"]),
+    ] {
+        let (d, m) = (names(&search(&db, q)), names(&search(&mem, q)));
+        let want: BTreeSet<String> = want.iter().map(|s| s.to_string()).collect();
+        assert_eq!(d, want, "db {q:?}");
+        assert_eq!(m, want, "memory {q:?}");
+    }
+}
