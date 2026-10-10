@@ -3,18 +3,19 @@
 Related: [roots](roots.md) (discovery, nesting, flock roles), [library](library.md) (crates, API), [DECISIONS](../DECISIONS.md) (D3, D4, D5, D7, D8, D9), [differential results](../research/zk-differential.md), measurement scripts in [`bench/`](../../bench/).
 
 Goal: the user never thinks about the index. No init or reindex command; a
-`kill -9` loses at most ~50 ms of work; ten editors starting at once answer
-within milliseconds from the cache. (Background catch-up while serving is
-planned for M8; the index is brought up to date synchronously on open, on
-`refresh`, and by the opt-in watcher, §1.3. `mdroots lsp` runs that open on a
-background thread and serves the opened file alone meanwhile, [library](library.md)
-§3.6.)
+`kill -9` loses at most one uncommitted batch (≤ 200 files / ≤ 50 ms, §1.1);
+ten editors starting at once answer within milliseconds from the cache. The
+index is brought up to date synchronously on open, on `refresh`, and by the
+opt-in watcher (§1.3); `mdroots lsp` runs that open on a background thread
+and serves the opened file alone meanwhile ([library §3.6](library.md#36-embedding-the-server)).
+Unbuilt mechanics are collected in the [Planned design](#planned-design) appendix.
 
 ## 0. Testbed
 
 Two [zk](https://github.com/zk-org/zk) notebooks, both local APFS [git](https://git-scm.com) repos: **vault A** (~730 notes, also has
-`.obsidian/`) and **vault B** (~210-note research vault). mdroots only reads
-them; state lives in the cache dir (D5) and rename/edit tests run on a copy.
+`.obsidian/`) and **vault B** (~210-note research vault). They are the
+author's private vaults, not in the repo; `tests/corpus` holds scrubbed
+shapes of them. mdroots only reads them; state lives in the cache dir (D5) and rename/edit tests run on a copy.
 Counts skip hidden and editor temp files.
 
 | | vault A | vault B |
@@ -28,7 +29,7 @@ Counts skip hidden and editor temp files.
 | org `[[t][d]]` / `[[file:…]]` | 376 / 96 (96 point outside the root) | 0 |
 | link-like text in code (fenced / inline) | 0 / 18 | 20 lines / 91 |
 | bare path-like tokens / exist on disk | 2,423 / 2 | 471 / 192 (mostly frontmatter values) |
-| zk unresolved internal / share resolved | 57 / 94.7% | 138 / 93.5% |
+| zk unresolved internal / share resolved | 56 / 94.7% | 138 / 93.5% |
 
 | Baseline (`initialize` → first result) | [marksman](https://github.com/artempyanykh/marksman) | zk lsp (prebuilt `notebook.db`) |
 |---|---|---|
@@ -36,7 +37,7 @@ Counts skip hidden and editor temp files.
 | RSS | 139–143 MB | 33–34 MB |
 | doc/workspace symbols | yes | not implemented |
 
-pulldown-cmark parses at ~1.1 GB/s, but opening a file costs ~100 µs on macOS (20k files ≈ 2 s), so warm start needs the DB.
+[pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) parses at ~1.1 GB/s, but opening a file costs ~100 µs on macOS (20k files ≈ 2 s), so warm start needs the DB.
 
 The data shows: resolution must try several strategies (two vaults by one
 author differ); `#+LINK` abbreviations are external; not indexed ≠ missing, so
@@ -61,7 +62,7 @@ One writer per root (the flock reconciler), readers never write, no daemon (D3);
 
 ### 1.2 Schema
 
-As built (`SCHEMA = 2`, `crates/mdroots-index/src/db.rs`), created with `CREATE … IF NOT EXISTS` inside one `BEGIN IMMEDIATE` by whichever process opens the DB first:
+The schema (`SCHEMA = 2`, `crates/mdroots-index/src/db.rs`), created with `CREATE … IF NOT EXISTS` inside one `BEGIN IMMEDIATE` by whichever process opens the DB first:
 ```sql
 files(id INTEGER PRIMARY KEY AUTOINCREMENT,   -- ids never reused
       path TEXT UNIQUE NOT NULL,              -- root-relative, '/'-separated
@@ -83,7 +84,7 @@ FTS5 syntax: it splits on whitespace, drops terms without a letter or digit,
 quotes each term (so `AND`, `NEAR(`, `-x` or `"` match as text), ANDs them
 and lets the last match as a prefix. Results are ranked by `bm25`, then
 path, each with FTS5's `snippet()` of about 12 tokens. Only the reconciler
-writes the table; who reads it is in [library](library.md) §3.2.
+writes the table; who reads it is in [library §3.2](library.md#32-a-workspace-mdroots).
 
 **File version** = `fstat` of the fd the content was read from (`stat`, then
 `read` returning the fd's stat); if `(ino, ctime_ns, size)` differs between
@@ -102,36 +103,21 @@ For each path, in order:
 | otherwise | read: new bytes → `Upsert` (logs `add` or `mod`); same bytes, new stat (`touch`) → `Stat` (stat columns only, no log entry) |
 | stat or read error other than not-found | keep the row as it is; no content for that path |
 
-Content equality replaces a hash, since the bytes are stored anyway. There is
+Change detection compares content, not a hash: the bytes are stored anyway. There is
 no `parser_ver`: every process parses the stored bytes, so a parser upgrade
 needs no re-index.
 
-**Planned (M8): derived tables.** So that a process no longer needs every
-note in memory, the schema gains tables built from the parse, with indexed
-lookups. Deferred because the measured gap is small and the target vaults
-(~730 and ~210 notes) are far below it; the numbers are in D9 and
-[ROADMAP](../ROADMAP.md) §4 item 5. The tables:
-```sql
-keys(file_id, kind, key)       -- kind: stem | path | slug | id | alias; INDEX(kind, key)
-links(file_id, range, context, kind, target_raw, target_kind, target_key)
-                               -- target_key normalised as in §2.4; INDEX(target_kind, target_key)
-frontmatter(file_id, key, value)
-dir_state(path PRIMARY KEY, mtime_ns, nentries)
-```
-plus `meta` keys `reconciled_at`, `fsevents_last_id`, `fsevents_volume_uuid`
-and the voted conventions. Derived rows depend on the parser, so they bring a
-`parser_ver` column: rows parsed by an older parser are re-parsed in the
-background, and an older binary leaves newer parses of unchanged content
-alone. Only a schema change gets a new filename (`<id>.v<schema>.db`).
+There are no derived tables (keys, links, frontmatter); the planned ones are
+in the [appendix](#derived-tables).
 
 ### 1.3 Finding what changed
 
 Indexed set: `.md`, `.markdown` and `.org` files from the root's listing,
-minus dot-prefixed files/dirs and editor temp files (`.m-reflow-*`,
-`.m-preview-*`, `.#*`, `*~`, `*.swp`, `4913`). Other files can still be link
+minus dot-prefixed names and editor temp files (`*~`, `#*#`, `*.swp`,
+`4913`; [roots §1 stage 4](roots.md#stage-4-budgeted-walk)). Other files can still be link
 targets via `stat` (§2.3).
 
-**As built**, a workspace syncs with the disk at three points, all
+A workspace syncs with the disk at three points, all
 synchronous in the thread that runs them:
 
 - **`Workspace::open_for`.** The reconciler uses the file list discovery just
@@ -139,7 +125,7 @@ synchronous in the thread that runs them:
   `list_root` for the root's mode: a budgeted walk (marker, VCS and loose
   roots), a git index scan (index-driven, tracked-only),
   the enumerator (vcs-enumerated), or, for a lazy root, the working set of the
-  opened file's directory ([roots](roots.md) §3). The opened file is always
+  opened file's directory ([roots §3](roots.md#3-lazy-and-vcs-enumerated-modes)). The opened file is always
   read when it has no row. Changes made while no mdroots process ran are
   caught here, by the re-list and re-stat.
 - **`Workspace::refresh(&cancel)`.** A peer first tries to become the
@@ -177,8 +163,9 @@ the one-shot CLI commands never do. A workspace watches only if all hold:
   directory, vcs-enumerated roots never walk, and lazy and single-file roots
   are never watched;
 - the root's filesystem classifies as local: never virtual, remote or cloud
-  (so never on [EdenFS](https://github.com/facebook/sapling); checked on a
-  file in a large EdenFS checkout, which opens lazy and does not watch).
+  (so never on a virtual filesystem such as
+  [EdenFS](https://github.com/facebook/sapling), whose roots open lazy and
+  are not watched).
 
 [notify](https://crates.io/crates/notify) 8 (FSEvents on macOS, inotify on
 Linux) watches the root recursively. A thread named `mdroots-watch`
@@ -197,47 +184,19 @@ Explicit `refresh` and `refresh_paths` calls send nothing. `mdroots lsp`
 re-publishes the diagnostics of open documents from it, and ignores
 `didChangeWatchedFiles` for a watching workspace, so the disk has one owner.
 Measured: a note changed on disk by another program republishes in about
-226 ms, with no save.
+226 ms, with no save. Offline changes are caught by the re-list on open;
+FSEvents replay and other change sources are [planned](#change-sources).
 
-**Planned (M8)**, all reconciler-only:
-
-| Source | Cost | Acted on by |
-|---|---|---|
-| FSEvents replay from `meta.fsevents_last_id` (macOS) | ~ms | reconciler at start: changes made while no mdroots ran, no walk |
-| [Watchman](https://facebook.github.io/watchman/) `since` clock, if it already watches the root | ~ms | reconciler; never start a watch ourselves on a virtual FS |
-| `dir_state` diff + file `stat` | ~1 µs/file, ~10 ms at 10k | reconciler fallback: readdir only dirs whose mtime changed |
-
-**FSEvents replay** (M8). `notify` hard-codes `kFSEventStreamEventIdSinceNow`,
-so replay needs `sinceWhen = fsevents_last_id` through `fsevent-sys` or
-direct FFI, and the workspace forbids unsafe code; until then the re-list on
-open covers offline changes. Replay may report only directories. On
-`MustScanSubDirs`, `UserDropped`, `KernelDropped`, `EventIdsWrapped`, a
-different volume UUID, or purged history, fall back to the `dir_state` diff
-for that subtree (or the root). The new event ID is committed only after
-`HistoryDone`, in the same transaction as the batch it covers.
-
-With a background thread (M8), reconcile becomes a priority queue: the open
-file and its directory; link targets of open buffers (`QOS_CLASS_UTILITY`);
-files newer than `reconciled_at`; rows with an old `parser_ver`; a throttled
-verification sweep at most once a day. Background work runs at
-`QOS_CLASS_BACKGROUND`; Linux uses `nice` + idle `ioprio`.
 
 ### 1.4 Reads and peer freshness
-- **As built.** Every query reads the process's `MemStore` (one `RwLock`),
+- Every query reads the process's `MemStore` (one `RwLock`),
   with overlays laid over the disk content. The one query that reads the DB
   is `full_text` in the reconciler (the FTS table, [library](library.md)
   §3.2). A peer learns of the reconciler's writes on its next `refresh`, which
   re-reads the DB rows. `change_log` is written (add/mod/del per path,
-  trimmed to ~10k) but no reader follows it yet.
-- **Planned (M8), with derived tables.** Queries become indexed lookups
-  (`links WHERE target_kind=? AND target_key=?`, `keys WHERE kind=? AND key=?`,
-  FTS); zk-style `LIKE '%x%'` stays off the diagnostics path. Each process
-  keeps a capped **hot cache** (`stem/title/id/alias → file_id`) for
-  completion, updated from `change_log WHERE seq > :last_seen_seq` when
-  `PRAGMA data_version` moved (~1.2 µs when unchanged). A peer below the
-  oldest `seq` rebuilds its hot cache; a new `generation` restarts `seq` and
-  drops cursor and hot cache. Diagnostics become incremental: a changed file
-  affects its own links and the links whose `target_key` matches its keys.
+  trimmed to ~10k) but no reader follows it.
+- Indexed lookups, a hot cache and incremental diagnostics are
+  [planned](#reads-with-derived-tables).
 
 ### 1.5 Short-lived instances
 Common: `nvim file.md` then `:q` after 2 s, CI, commit-message editors.
@@ -255,56 +214,38 @@ Common: `nvim file.md` then `:q` after 2 s, CI, commit-message editors.
 - A dead reconciler's flock is dropped by the kernel; its committed batches persist (WAL).
 - `mdroots lsp` replies to `initialize` before opening any workspace; a
   root starts opening on a background thread on the first `didOpen` of a file
-  in it, and the file is served alone until then ([library](library.md) §3.6).
-  Measured on a cold 3,000-note root: first diagnostics after 9 ms, the
-  root's after 2.8 s.
-- Planned (M8): background sweeps of an existing DB only after ~300 ms alive;
-  on exit, `wal_checkpoint(PASSIVE)` only if the WAL exceeds 4 MB. Never
-  VACUUM, optimize, or block on other processes.
+  in it, and the file is served alone until then (timings in
+  [library §3.6](library.md#36-embedding-the-server)).
+- Nothing runs VACUUM or optimize, and no process blocks on another.
+  Sweeps and an exit checkpoint are [planned](#background-work).
 
 ### 1.6 Failures and races
 | Case | Outcome |
 |---|---|
 | Two processes find no DB | the flock holder creates it (`BEGIN IMMEDIATE` + `CREATE … IF NOT EXISTS`) and writes it; peers index in memory meanwhile |
-| Ten start at once | discovery is serialised under `discover.lock`; one registry row; one reconciler, the others peers (fixtures 12, 13 in [roots](roots.md) §7) |
+| Ten start at once | discovery is serialised under `discover.lock`; one registry row; one reconciler, the others peers ([roots §7](roots.md#7-fixtures), fixtures 12, 13) |
 | Peer wants freshness, no flock holder | `refresh` tries `LOCK_EX\|LOCK_NB` and becomes the reconciler |
 | File restored with older mtime | new inode or newer ctime → re-read; new bytes → upsert (fixture 17) |
 | Reconciler killed or cancelled mid-batch | the open transaction rolls back; committed batches stay; the next reconciler re-stats every file anyway |
-| Reconciler stopped (SIGSTOP) | peers still open and answer from the DB without waiting (fixture 18). Planned: a stale `reconciled_at` warning and in-memory point-checks |
+| Reconciler stopped (SIGSTOP) | peers still open and answer from the DB without waiting (fixture 18). A stale-reconciler warning is [planned](#background-work) |
 | `SQLITE_BUSY` | `busy_timeout` 2 s on every connection |
 | Cache dir deleted under a running process | the next process recreates it and becomes the reconciler; the old process keeps serving from memory (fixture 16) |
 | Different schema | separate DB files by name (`<id>.v1.db` and `<id>.v2.db` never meet); a file with a different `meta.schema` is `Corrupt`. GC deletes old-schema files (§1.7) |
-| DB corruption | the reconciler runs `PRAGMA quick_check` when it opens the DB or takes it over on promotion. On failure, or `Corrupt` from opening or mid-sync, it builds a new generation `<id>.v2-<gen8>.db` (`gen8` = the first 8 hex digits of its new `meta.generation`), fills it, and records it in the registry's `db_file` only after that first sync succeeds. The corrupt file is never renamed or unlinked while open; GC deletes it later. A peer that opens a corrupt file serves from an empty in-memory stand-in (it indexes like a peer of an empty DB) and never fails `open_for`. On `refresh` and `refresh_paths` every process re-reads the registry row and reopens when it names another file (fixture 15 in [roots](roots.md) §7) |
+| DB corruption | the reconciler runs `PRAGMA quick_check` when it opens the DB or takes it over on promotion. On failure, or `Corrupt` from opening or mid-sync, it builds a new generation `<id>.v2-<gen8>.db` (`gen8` = the first 8 hex digits of its new `meta.generation`), fills it, and records it in the registry's `db_file` only after that first sync succeeds. The corrupt file is never renamed or unlinked while open; GC deletes it later. A peer that opens a corrupt file serves from an empty in-memory stand-in (it indexes like a peer of an empty DB) and never fails `open_for`. On `refresh` and `refresh_paths` every process re-reads the registry row and reopens when it names another file ([roots §7](roots.md#7-fixtures), fixture 15) |
 | GC while peers run | GC deletes a root's DB files only while it holds `LOCK_EX\|LOCK_NB` on the root's `.open`; any process with the root open holds `LOCK_SH`, so the root is skipped until the next run (fixture 14) |
-| Planned: WAL growth (leaked read txn) | periodic `wal_checkpoint(PASSIVE)`, `journal_size_limit`, warning above a cap |
 
 ### 1.7 Files and connections
-Location (`mdroots_index::cache_dir`, D5): the first candidate that is on a
-local filesystem (`statfs` `MNT_LOCAL`, or by type name on Linux; not a cloud
-folder) and writable, of `$XDG_CACHE_HOME/mdroots`,
-`~/Library/Caches/mdroots` (macOS) or `~/.cache/mdroots` (other),
-`$XDG_RUNTIME_DIR/mdroots`, `/var/tmp/mdroots-$UID` (owner checked); else
-in-memory. Each candidate's filesystem is classified on its nearest existing
-ancestor before anything is created; the chosen dir is created or reset to
-mode `0700`, because it holds copies of the user's notes. Empty environment
-variables count as unset. `Options::cache_dir(path)` replaces the chain (the
-CLI sets it from `MDROOTS_CACHE_DIR`, for every command including `lsp`);
+Location: `mdroots_index::cache_dir` picks the first local, writable
+candidate of the D5 chain, else the index stays in memory. Each candidate's
+filesystem is classified on its nearest existing ancestor before anything is
+created; empty environment variables count as unset. The chosen dir is
+created or reset to mode `0700`, because it holds copies of the user's
+notes. `Options::cache_dir(path)` replaces the chain (the CLI sets it from
+`MDROOTS_CACHE_DIR`, for every command including `lsp`);
 `Options::index(IndexMode::Memory)` never touches the cache dir; an
 `Options` with an explicit `fs`/`probe` (in-memory test trees) and no cache
-dir stays in memory.
-
-| File | Held by | Rule |
-|---|---|---|
-| `roots.v1.db` | registry (SQLite, WAL) | versioned filename; root rows plus each root's DB file name |
-| `discover.lock` | discovering process | global, held around discovery |
-| `roots/<id>.v<schema>.db` | SQLite (WAL) | one per root and schema |
-| `roots/<id>.v<schema>-<gen8>.db` | SQLite (WAL) | a generation built after corruption; the registry's `db_file` names the live one |
-| `roots/<id>.v<schema>.lock` | reconciler, `LOCK_EX\|LOCK_NB` | elects the reconciler; never deleted |
-| `roots/<id>.v<schema>.open` | every process with the DB open, `LOCK_SH` | GC needs `LOCK_EX\|LOCK_NB`, because unlinking an open SQLite DB can corrupt it; never deleted |
-
-One lock scope per root and schema: `<id>.v<schema>.lock` and `.open` cover
-every generation file of that root and schema, so a rebuild creates no lock
-files.
+dir stays in memory. File and lock names, and one lock scope per root and
+schema: [roots §5](roots.md#files).
 
 **GC** (`mdroots_index::gc`, `crates/mdroots-index/src/gc.rs`) runs at most
 daily per cache dir: the process that sets `meta.gc_at` in `roots.v1.db`
@@ -331,8 +272,7 @@ hourly per root.
 
 Each workspace with a DB holds one connection, behind a mutex, used by open,
 `refresh`, `refresh_paths` and the reconciler's `full_text`; other queries
-never touch it. Only the reconciler writes through it. Planned: a capped
-read pool once more queries read SQLite.
+never touch it. Only the reconciler writes through it.
 
 ## 2. Liberal link model (D7)
 
@@ -356,11 +296,14 @@ read pool once more queries read SQLite.
 ### 2.2 Context decides meaning
 | Context | Indexed | Completion | Goto | References | Diagnostics | Rename rewrites |
 |---|---|---|---|---|---|---|
-| prose, heading | yes | yes | yes | yes | yes (explicit forms) | yes |
-| frontmatter value | yes | in fm | yes | yes | no | `[[…]]` yes; plain values only if resolved |
-| html `href`/`src` | yes | no | yes | yes | warn only | yes |
-| code block / inline code | tagged `code` | no | if it resolves | separate "mentions in code" group | never | no (code action offers it) |
-| comment (`<!-- -->`, [Obsidian](https://obsidian.md) `%%…%%`) | tagged | no | yes | hidden | never | no |
+| prose, heading | yes | yes | yes | yes | explicit forms | yes |
+| frontmatter value | yes | in fm | yes | yes | explicit forms (`[[…]]`); plain values are implicit, never | `[[…]]` yes; plain values only if resolved |
+| html `href`/`src` | yes | no | yes | yes | yes | yes |
+| code block / inline code | tagged `code` | no | if it resolves | no (backlinks leave code out) | never | no |
+| comment (`<!-- -->`, [Obsidian](https://obsidian.md) `%%…%%`) | tagged | no | yes | no | never | no |
+
+Every diagnosed broken link is reported at the root's broken-link severity
+(§3.3), whatever its context.
 
 Goto works in code (a `[[note]]` in a README fence is worth jumping to);
 diagnostics never do (`[[{{filename-stem}}]]`, Lean `[[]]`). Fences follow CommonMark (``` or `~~~`, ≥ 3, close ≥ open,
@@ -388,18 +331,18 @@ resolved lazily, only for the open buffer and reference queries.
 One function used by every feature. Normalise first: expand `#+LINK` (result
 is external), URL-decode, strip `.md`/`.markdown`/`.org`, strip
 `#anchor`/`::search`, NFC, case-fold on case-insensitive FS. The same
-normalisation produces `keys` and `links.target_key`, so steps 1–8 are indexed lookups.
+normalisation produces the in-memory lookup keys, so steps 1–8 are key lookups.
 
 **The first step with at least one hit stops the ladder**; later steps are not consulted.
 
-1. relative to the linking file (CommonMark, Gollum)
+1. relative to the linking file (CommonMark, [Gollum](https://github.com/gollum/gollum))
 2. relative to the root (zk `wiki` format, Obsidian "absolute")
-3. site-rooted `/x/y` → root-relative, then under the docs dir (`docs/`, `content/`, `src/`) when a mkdocs/Hugo/Docusaurus marker exists
-4. stem (Obsidian shortest path, Foam, marksman)
+3. site-rooted `/x/y` → root-relative, then under the docs dir when a docs-tool marker exists: mkdocs `docs_dir` (default `docs/`), Docusaurus `docs/`, Hugo `content/`
+4. stem (Obsidian shortest path, [Foam](https://foambubble.github.io/foam/), marksman)
 5. frontmatter `id`, org `:ID:`, id prefix of filename (`202101011200 title.md`)
 6. frontmatter `title`, then H1, by slug
 7. frontmatter `aliases`
-8. dialect transforms: [Logseq](https://logseq.com) `a/b` → `a___b.md` / `a%2Fb.md` (Dendron `a.b.c` is covered by stem)
+8. dialect transforms: [Logseq](https://logseq.com) `a/b` → `a___b.md` / `a%2Fb.md` ([Dendron](https://www.dendron.so) `a.b.c` is covered by stem)
 9. zk partial match (filename/path contains): not indexable, so goto, hover and completion only, never diagnostics; a hint, not rewritten on rename
 
 **Ties** at the stopping step: pick the closest by path distance (Obsidian), flag `ambiguous`, emit an info diagnostic with related locations, list all in goto. Vault A's 39 duplicate stems never tie because its links stop at step 2.
@@ -416,24 +359,29 @@ Against zk, every zk-resolved link in both vaults agrees ([zk-differential](../r
 ## 3. Dialects without configuration (D8)
 
 ### 3.1 Markers
-| Dialect | Marker | Reads (optional) | Specifics |
+A marker is a file or directory whose existence names the dialect. A tool's
+config is read only when its marker is present and the setting changes an
+answer; it is never required or written, and a missing or malformed config
+falls back to the vote and the defaults.
+
+| Dialect | Marker | Reads | Specifics |
 |---|---|---|---|
-| zk | `.zk/` | `config.toml`: `[format.markdown]` link-format/hashtags/colon-tags/multiword-tags, `[note] extension`, group `paths`, `[lsp.diagnostics] dead-link` | id-prefixed filenames, partial match, `#multi word#`, `:colon:` tags; never touches `notebook.db` |
-| Obsidian | `.obsidian/` | `app.json` (`useMarkdownLinks`, `newLinkFormat`, `attachmentFolderPath`), daily-notes plugin | shortest-path stem, `#^block`, `![[embed]]`, `aliases`, nested tags, `%%comments%%` |
-| marksman | `.marksman.toml` | `core.title_from_heading`, `completion.wiki.style` | title-slug |
+| zk | `.zk/` | `config.toml`: `[format.markdown]` `hashtags`, `colon-tags`, `multiword-tags`, `link-format`, `link-drop-extension`; `[lsp.diagnostics] dead-link` | id-prefixed filenames, partial match, `#multi word#`, `:colon:` tags; never touches `notebook.db` |
+| Obsidian | `.obsidian/` | `app.json`: `useMarkdownLinks`, `newLinkFormat` | shortest-path stem, `#^block`, `![[embed]]`, `aliases`, nested tags, `%%comments%%` |
+| marksman | `.marksman.toml` | — | title-slug |
 | Foam | `.foam/`, `.vscode/foam.json` | — | stem; generated link reference definitions at file end count as one link |
-| Dendron | `dendron.yml` | vaults (= sub-roots) | dot hierarchy, `[[alias\|note]]`, fm `id`, epoch-ms dates |
-| Logseq | `logseq/config.edn` | `:file/name-format` | `___`/`%2F` namespaces, `pages/` + `journals/`, `key:: value`, bullets |
-| org / org-roam | `.org` files, `.orgids`, `org-roam.db` | per-file `#+LINK` | `#+TITLE`, `#+FILETAGS`, `:ID:`, `[[id:]]`, `[[file:]]` |
-| Gollum / GitHub wiki | `Home.md` + `_Sidebar.md` | — | same dir first, `[[text\|Page]]`, spaces ↔ dashes |
-| mkdocs / Docusaurus / Hugo / Jekyll / mdBook | `mkdocs.yml`, `docusaurus.config.*`, `hugo.toml`/`config.toml`+`content/`, `_config.yml`, `book.toml` | docs dir, `SUMMARY.md` | site-rooted links, `slug`/`permalink`, shortcodes, `SUMMARY.md` order |
-| Zettlr | `.ztr-directory` | — | `[[id]]` against 14-digit ids |
+| Dendron | `dendron.yml` | — | dot hierarchy, `[[alias\|note]]`, fm `id`, epoch-ms dates |
+| [Logseq](https://logseq.com) | `logseq/config.edn` | — | `___`/`%2F` namespaces, `pages/` + `journals/`, `key:: value`, bullets |
+| [org-mode](https://orgmode.org) / [org-roam](https://www.orgroam.com) | `.org` files, `.orgids`, `org-roam.db` | per-file `#+LINK` | `#+TITLE`, `#+FILETAGS`, `:ID:`, `[[id:]]`, `[[file:]]` |
+| Gollum / GitHub wiki | `Home.md` + `_Sidebar.md` | — | same dir first, `[[text\|Page]]` |
+| [mkdocs](https://www.mkdocs.org) / [Docusaurus](https://docusaurus.io) / [Hugo](https://gohugo.io) / [Jekyll](https://jekyllrb.com) / [mdBook](https://rust-lang.github.io/mdBook/) | `mkdocs.yml`, `docusaurus.config.*`, `hugo.toml`/`config.toml`+`content/`, `_config.yml`, `book.toml` | `mkdocs.yml`: `docs_dir` | site-rooted links, `slug`/`permalink`, shortcodes |
+| [Zettlr](https://www.zettlr.com) | `.ztr-directory` | — | `[[id]]` against 14-digit ids |
 
 Several markers (vault A: `.zk`, `.obsidian`) are merged, not ranked; the ladder accepts every style.
 
 ### 3.2 Vote and link style
 
-**As built.** `MemStore::vote` runs the `mdroots_resolve::dialect::Vote` over
+`MemStore::vote` runs the `mdroots_resolve::dialect::Vote` over
 the current notes (overlays win; a lazy working set votes over what it holds):
 every note's headings and tags, and its links in referencing contexts (not code
 or comments) that are not External, each with the ladder step that resolved it.
@@ -443,14 +391,16 @@ change (overlay, refresh, watcher update) drops it. It is per process, not
 stored. It yields:
 - the insert style: the most common step among file-relative, root-relative,
   stem and title over resolved explicit links, ties to root-relative
-  (vault A: root-relative; vault B: stem);
+  (vault A: root-relative; vault B: stem). A wiki link without a `/` counts
+  as stem even when it resolved at the root-relative step: root-relative
+  means a path with a slash;
 - wiki vs Markdown share; `.md` suffix share among Markdown links;
 - `#tag` seen: ≥ 3 distinct tags in ≥ 2 files (to beat `#include`);
 - H1-as-title if ≥ 70% of docs have exactly one H1;
 - the resolved share.
 
 **Link style for inserted links** (`link_style`, used by `Workspace::link_to`
-and extract-note, [library](library.md) §3.2). Precedence:
+and extract-note, [library §3.2](library.md#32-a-workspace-mdroots)). Precedence:
 1. A zk config (`.zk` marker) wins, also over an
    Obsidian one in the same root. `[format.markdown]
    link-format = "wiki"` gives `[[dir/stem]]` (zk's wiki links are
@@ -468,10 +418,13 @@ and extract-note, [library](library.md) §3.2). Precedence:
    root-relative when the insert style is root-relative (else `[[stem]]` or
    file-relative), and the `.md` suffix when at least half the Markdown links
    carry it.
-4. A root without explicit links: Markdown links relative to the file, with
+4. A root without explicit links gets its marker's default: `[[stem]]` for
+   Obsidian, Markdown links relative to the file without `.md` for zk (zk
+   before Obsidian), otherwise Markdown links relative to the file with
    `.md`.
 
-Planned: piped-wiki order and tag syntaxes beyond `#tag`. Extract-note
+Piped-wiki order and tag syntaxes beyond `#tag` are not voted
+([ROADMAP](../ROADMAP.md)). Extract-note
 names files by the GitHub slug of the title. Creating notes from templates
 is out of scope: mdroots is a scanner.
 
@@ -488,10 +441,11 @@ Never diagnosed: code, comments, implicit links, external links (incl.
 **Policy as implemented** (`DiagnosticPolicy` in `mdroots-core`, used by
 every front end). Computing the share resolves every link of the root, so
 `MemStore::policy(lazy)` computes it once and keeps it until the next
-content change (an overlay, a refresh, a watcher update); a file that is not
-a note appearing on disk shows in the share only after such a change.
+content change (an overlay, a refresh, a watcher update).
+The share is cached, so a new non-note target file (say, a PDF) counts as
+resolving only after the next content change, refresh or watcher update.
 Measured on a synthetic 3,000-note notebook (release build): diagnostics for
-every file 26 s before the cache, 46–65 ms with it.
+every file in 46–65 ms.
 
 - **Share.** Counted over the root's explicit links in referencing contexts
   (not code or comments), external links excluded. Resolved, ambiguous and
@@ -517,15 +471,15 @@ document is parsed (buffer or disk) and each link target has been looked up in
 its index and, where missing, `stat`ed. `mdroots lsp` re-publishes the open
 documents of a workspace after each `refresh`, and, for a watching workspace,
 after each watcher-driven change (§1.3). Re-publishing only the affected
-documents (by following `change_log`) is planned. In lazy roots ([roots](roots.md)), only
+documents (by following `change_log`) is [planned](#reads-with-derived-tables). In lazy roots ([roots §3](roots.md#3-lazy-and-vcs-enumerated-modes)), only
 `stat`-checkable links (relative, root-relative) are diagnosed.
 
 ## 4. Frontmatter
 
 ### 4.1 Formats and parsing
 - YAML `---…---` (or `...` close), TOML `+++…+++`, JSON `{…}`; org `#+KEY:` and `:PROPERTIES:`; Logseq `key:: value` at the top; [MultiMarkdown](https://fletcherpenney.net/multimarkdown/) `Key: value` only with no other frontmatter and a matching first line.
-- Tolerant: unparsable YAML → info diagnostic, the rest still indexed. Scalars and string lists kept; nested maps flattened (`a.b`).
-- **Key case**: stored as written; mapping to a standard meaning is case-insensitive. On collision (`Title`/`title`, `title`/`linkTitle`) the exact lowercase standard name wins, else first in document order; the other gets an info diagnostic.
+- Tolerant: unparsable YAML → `InvalidFrontmatter` info diagnostic, the rest still indexed. Scalars and string lists kept; nested maps flattened (`a.b`).
+- **Key case**: stored as written; mapping to a standard meaning is case-insensitive. On collision (`Title`/`title`, `title`/`linkTitle`) the exact standard name wins (in the order listed in §4.2), else the first case-insensitive match. An info diagnostic on the loser is [planned](#frontmatter-features).
 - **Placeholders** `—`, `–`, `-`, `n/a`, `N/A`, `TBD`, `none`, `""`, `~`, `null` mean no value: stored, but not links, ids or titles, and not offered in completion (vault B: 51 values).
 - **Comma-joined lists**: a value containing `, ` is split and each part tried as an implicit link; links only if every non-placeholder part resolves, else a plain string (vault B: 39 files like `"gen/a.html, gen/a.txt"`). Tags split without the resolve check.
 - **Library API** (`mdroots_syntax::Frontmatter`): `entries()` gives the flattened `a.b` keys with placeholders mapped to `Value::Null`. `fields()` gives the top-level entries as written, in source order, before flattening: one `Field { key, value, range }` per entry, duplicate keys included. `FieldValue` is `Scalar` (source text on one line, `null` included), `List`, or `Map` with the child fields; `display()` shows a list joined with `, ` and a map as `{…}`. `range` covers the entry's lines in the document. Keys found only by the parser (TOML tables and dotted keys, YAML flow maps) take the inner block, and their children take the parent's range. JSON fields are the flattened entries. Org fields take the block range. `parsed()` is false when a non-blank block yields no key. `inner()` is the text between the fences (for unfenced formats, the whole range). TOML values on the parser path come out as TOML writes them (`1.0`, a nested array as `[1, 2]`).
@@ -544,11 +498,9 @@ documents (by following `change_log`) is planned. In lazy roots ([roots](roots.m
 | state | `draft`, `publish`, `status`, `stage`, `type` | hover badge, value filters |
 | relations | any value with `[[…]]`, or a string/comma list that resolves as a path | real links: goto, backlinks, rename |
 
-### 4.3 Schema-free features (from `frontmatter(file_id, key, value)`)
-- key completion ranked by frequency in the root; value completion per key from used values (placeholders excluded)
-- hover on a key: "used in 138/210 notes; top values …"
-- references on a value: every note with the same value
-- **missing-key hint** only when the key is in ≥ 95% of sibling notes in the same dir; no schema file. Excludes dirs named `cache`, `generated`, `_site`, `public`, `out` or listed in `.mdrootsignore`. Fires 7× in vault B and 3× in vault A.
+### 4.3 Schema-free features
+Not built: key and value completion, hover on a key, references on a value
+and the missing-key hint ([Planned design](#frontmatter-features)).
 
 ## 5. Testing
 
@@ -560,29 +512,104 @@ capability check (it waits 30 s on unimplemented methods), and `phys_footprint`.
 
 ### 5.1 Differential and churn tests
 1. **Resolution parity**: per link, compare with zk's `links.target_id` → `notes.path` (`sqlite3 -readonly`) and marksman's `textDocument/definition`. Buckets: agree, mdroots-only, other-only (fix or justify). Results: [zk-differential](../research/zk-differential.md).
-2. **Diagnostics parity**: vs marksman `publishDiagnostics` (58 files in vault A, triage each) and zk `target_id IS NULL AND external = 0` (57 / 138). Expected differences: `#+LINK` abbreviations, gitignored targets on disk.
+2. **Diagnostics parity**: vs marksman `publishDiagnostics` (58 files in vault A, triage each) and zk `target_id IS NULL AND external = 0` (56 / 138). Expected differences: `#+LINK` abbreviations, gitignored targets on disk.
 3. **Feature smoke**: symbols, hover, reference counts on the 10 most-linked notes vs marksman; differences explained by context rules.
 4. **Timing and memory**: cold (cache wiped), warm, warm after checkout of 50 files, 10 parallel instances; `phys_footprint` at N=10.
 5. **Kill loop**: `kill -9` the reconciler at random batch boundaries; DB converges to a clean index. Rename/edit storms with 3 peers.
-6. **Freshness rule**, each checked against a clean index: `cp -p`/`rsync -a`/`tar x` of an older version replaces indexed content; `touch` updates stat columns only; a file changing between stat and read is re-read. Built: `crates/mdroots-index/tests/reconcile.rs` and [roots](roots.md) fixture 17. With derived tables (M8): a `parser_ver` bump re-parses each row once and an older reconciler does not undo it.
+6. **Freshness rule**, each checked against a clean index: `cp -p`/`rsync -a`/`tar x` of an older version replaces indexed content; `touch` updates stat columns only; a file changing between stat and read is re-read. Built: `crates/mdroots-index/tests/reconcile.rs` and [roots](roots.md) fixture 17. With [derived tables](#derived-tables): a `parser_ver` bump re-parses each row once and an older reconciler does not undo it.
 7. **GC while peers run**: with 3 peers open, schema cleanup, GC and forced rebuild unlink nothing while `<id>.open` is shared; peers detect the new generation and reopen. Built: [roots](roots.md) fixtures 14 and 15, plus `crates/mdroots-index/tests/gc.rs` and `crates/mdroots/tests/gc.rs`. Not built: the repeat with the cache dir deleted.
-8. **Single writer**: 3 editors on one root. No peer writes (built: a peer's `refresh` leaves `PRAGMA data_version` unchanged, `crates/mdroots/tests/workspace.rs`). One peer save = one overlay parse + one reconciler parse/write. Cross-editor visibility p99 within the ~100–500 ms budget. FSEvents replay after offline edits, including a forced `MustScanSubDirs` (M8). The native watcher is covered by `crates/mdroots/tests/watch.rs` and the server's republish test.
+8. **Single writer**: 3 editors on one root. No peer writes (built: a peer's `refresh` leaves `PRAGMA data_version` unchanged, `crates/mdroots/tests/workspace.rs`). One peer save = one overlay parse + one reconciler parse/write. Cross-editor visibility p99 within the ~100–500 ms budget. [FSEvents replay](#change-sources) after offline edits, including a forced `MustScanSubDirs`. The native watcher is covered by `crates/mdroots/tests/watch.rs` and the server's republish test.
 9. **Org**: vault A's 11 `#+LINK` files give zero diagnostics and hover shows expanded URLs; fixtures for `[[t][d]]` in `.md` and multi-line `[[…]]`.
-10. **Code context**: fenced `[[…]]` in a README, a zk template, Lean `[[]]` → zero diagnostics, goto still works; 44 gitignored targets quiet; `.m-reflow-*` never indexed.
-11. **Frontmatter**: `"—"` makes no links; 39 comma-joined values give two links each; a `Title`/`title` collision resolves to `title` with an info diagnostic.
+10. **Code context**: fenced `[[…]]` in a README, a zk template, Lean `[[]]` → zero diagnostics, goto still works; 44 gitignored targets quiet; dot-prefixed editor temp files never indexed.
+11. **Frontmatter**: `"—"` makes no links; 39 comma-joined values give two links each; a `Title`/`title` collision resolves to `title` (the info diagnostic is planned).
 
 ### 5.2 Thresholds still to validate
 | Threshold | Where | Known so far |
 |---|---|---|
 | > 98% → error, < 80% → hint | §3.3 | vaults 94.7% / 93.5%: both get warnings without their zk config |
-| missing-key hint at ≥ 95% | §4.3 | 7 / 3 hints, mostly generated dirs |
+| missing-key hint at ≥ 95% | [Planned design](#frontmatter-features) | 7 / 3 hints, mostly generated dirs |
 | batch ≤ 200 files / ≤ 50 ms | §1.1 | — |
-| ~300 ms before sweeps of an existing DB (M8) | §1.5 | — |
-| cold < 250 ms with background QoS | §0, §1.3 | walk + parse 104–129 ms on vault A without QoS limits |
-| `change_log` 10k entries (M8: hot-cache cap) | §1.2, §1.4 | — |
-| WAL > 4 MB exit checkpoint; periodic interval and cap | §1.5, §1.6 | — |
+| ~300 ms before sweeps of an existing DB | [Planned design](#background-work) | — |
+| cold < 250 ms with background QoS | §0, [Planned design](#background-work) | walk + parse 104–129 ms on vault A without QoS limits |
+| `change_log` 10k entries (also the planned hot-cache cap) | §1.2, §1.4 | — |
+| WAL > 4 MB exit checkpoint; periodic interval and cap | [Planned design](#background-work) | — |
 | `busy_timeout=2s` | §1.6 | 10 processes at once on one root: no `SQLITE_BUSY` reached a caller ([roots](roots.md) fixture 12) |
 | tag vote ≥ 3 in ≥ 2 files; H1-as-title 70% | §3.2 | — |
 | 7-day hysteresis for root and lazy decisions | [roots](roots.md) | — |
 
-Order of work: [library](library.md) §7.
+What is not built or not validated: [ROADMAP](../ROADMAP.md).
+
+## Planned design
+
+Not built. [ROADMAP](../ROADMAP.md) orders the work and says why each item waits.
+
+### Derived tables
+So that a process no longer needs every note in memory, the schema gains
+tables built from the parse, with indexed lookups. Deferred because the
+measured gap is small and the target vaults (~730 and ~210 notes) are far
+below it (D9).
+```sql
+keys(file_id, kind, key)       -- kind: stem | path | slug | id | alias; INDEX(kind, key)
+links(file_id, range, context, kind, target_raw, target_kind, target_key)
+                               -- target_key normalised as in §2.4; INDEX(target_kind, target_key)
+frontmatter(file_id, key, value)
+dir_state(path PRIMARY KEY, mtime_ns, nentries)
+```
+plus `meta` keys `reconciled_at`, `fsevents_last_id`, `fsevents_volume_uuid`
+and the voted conventions. Derived rows depend on the parser, so they bring a
+`parser_ver` column: rows parsed by an older parser are re-parsed in the
+background, and an older binary leaves newer parses of unchanged content
+alone. Only a schema change gets a new filename (`<id>.v<schema>.db`).
+
+### Reads with derived tables
+Queries become indexed lookups (`links WHERE target_kind=? AND
+target_key=?`, `keys WHERE kind=? AND key=?`, FTS); zk-style `LIKE '%x%'`
+stays off the diagnostics path. Each process keeps a capped **hot cache**
+(`stem/title/id/alias → file_id`) for completion, updated from `change_log
+WHERE seq > :last_seen_seq` when `PRAGMA data_version` moved (~1.2 µs when
+unchanged). A peer below the oldest `seq` rebuilds its hot cache; a new
+`generation` restarts `seq` and drops cursor and hot cache. Diagnostics
+become incremental: a changed file affects its own links and the links whose
+`target_key` matches its keys, and only the affected open documents are
+re-published. A capped read pool replaces the single connection once more
+queries read SQLite.
+
+### Change sources
+All reconciler-only:
+
+| Source | Cost | Acted on by |
+|---|---|---|
+| FSEvents replay from `meta.fsevents_last_id` (macOS) | ~ms | reconciler at start: changes made while no mdroots ran, no walk |
+| [Watchman](https://facebook.github.io/watchman/) `since` clock, if it already watches the root | ~ms | reconciler; never start a watch ourselves on a virtual FS |
+| `dir_state` diff + file `stat` | ~1 µs/file, ~10 ms at 10k | reconciler fallback: readdir only dirs whose mtime changed |
+
+`notify` hard-codes `kFSEventStreamEventIdSinceNow`, so replay needs
+`sinceWhen = fsevents_last_id` through `fsevent-sys` or direct FFI, and the
+workspace forbids unsafe code. Replay may report only directories. On
+`MustScanSubDirs`, `UserDropped`, `KernelDropped`, `EventIdsWrapped`, a
+different volume id, or purged history, fall back to the `dir_state` diff
+for that subtree (or the root). The new event ID is committed only after
+`HistoryDone`, in the same transaction as the batch it covers. On Linux, a
+takeover runs one `dir_state` diff before starting inotify.
+
+### Background work
+With a background thread, reconcile becomes a priority queue: the open file
+and its directory; link targets of open buffers (`QOS_CLASS_UTILITY`); files
+newer than `reconciled_at`; rows with an old `parser_ver`; a throttled
+verification sweep at most once a day. Background work runs at
+`QOS_CLASS_BACKGROUND`; Linux uses `nice` + idle `ioprio`. Sweeps of an
+existing DB start only after ~300 ms alive. On exit,
+`wal_checkpoint(PASSIVE)` runs only if the WAL exceeds 4 MB; the reconciler
+also checkpoints periodically and sets `journal_size_limit`, with a warning
+above a cap, because a leaked read transaction blocks checkpoints. A peer
+seeing a stale `reconciled_at` logs one warning and point-checks in memory.
+Any cache read error after open becomes a miss (parse the file, never fail
+the request).
+
+### Frontmatter features
+From the `frontmatter` table:
+- key completion ranked by frequency in the root; value completion per key from used values (placeholders excluded);
+- hover on a key: "used in 138/210 notes; top values …";
+- references on a value: every note with the same value;
+- **missing-key hint** only when the key is in ≥ 95% of sibling notes in the same dir; no schema file. Excludes dirs named `cache`, `generated`, `_site`, `public`, `out` or listed in `.mdrootsignore`. Would fire 7× in vault B and 3× in vault A;
+- an info diagnostic on the losing key of a collision (§4.1).
