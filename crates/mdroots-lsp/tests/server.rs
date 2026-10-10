@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -15,6 +16,9 @@ use tempfile::TempDir;
 
 type ServeResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+/// Each publishDiagnostics the server sent: (uri, version, when).
+type Published = Arc<Mutex<Vec<(String, Option<i64>, Instant)>>>;
+
 /// A running server and the client end of its connection.
 struct Client {
     conn: Connection,
@@ -23,6 +27,8 @@ struct Client {
     next_id: i32,
     /// Messages read ahead by [`Client::ready`], handed out first.
     backlog: RefCell<VecDeque<Message>>,
+    /// When the server sent each publishDiagnostics.
+    published: Published,
 }
 
 impl Client {
@@ -34,15 +40,50 @@ impl Client {
 
     /// A client whose server is not running yet: messages sent now are
     /// all queued when it starts.
+    ///
+    /// A relay thread passes the server's messages on, stamping each
+    /// publishDiagnostics as it is sent: a slow test thread still sees
+    /// when the server published.
     fn new() -> Client {
         let (server, client) = Connection::memory();
+        let published = Published::default();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let (from_server, stamps) = (client.receiver, Arc::clone(&published));
+        std::thread::spawn(move || {
+            for m in from_server {
+                if let Message::Notification(n) = &m
+                    && n.method == "textDocument/publishDiagnostics"
+                {
+                    let uri = n.params["uri"].as_str().unwrap_or_default().to_owned();
+                    let version = n.params["version"].as_i64();
+                    stamps.lock().unwrap().push((uri, version, Instant::now()));
+                }
+                if tx.send(m).is_err() {
+                    break;
+                }
+            }
+        });
         Client {
-            conn: client,
+            conn: Connection {
+                sender: client.sender,
+                receiver: rx,
+            },
             server: None,
             server_conn: Some(server),
             next_id: 1,
             backlog: RefCell::default(),
+            published,
         }
+    }
+
+    /// When the server sent its first publishDiagnostics of `version` of
+    /// `uri`; call once that publish has been received.
+    fn published_at(&self, uri: &str, version: i32) -> Instant {
+        let published = self.published.lock().unwrap();
+        let mut at = published
+            .iter()
+            .filter(|(u, v, _)| u == uri && *v == Some(i64::from(version)));
+        at.next().expect("a publish of that version").2
     }
 
     /// Starts the server with an in-memory index: tests never touch the
@@ -312,7 +353,8 @@ fn a_later_change_restarts_the_debounce() {
     // Two changes 250 ms apart: one publish, of the last version, 500 ms
     // after the last change. A client delayed past the first debounce
     // gets a publish of the first version too; that round proves
-    // nothing, so it is tried again.
+    // nothing, so it is tried again. The publish is timed when the server
+    // sent it, not when this thread got to it.
     for round in 0..5 {
         let (first, second) = (2 + 2 * round, 3 + 2 * round);
         c.change(&uri, first, &fixed);
@@ -341,7 +383,8 @@ fn a_later_change_restarts_the_debounce() {
             continue;
         }
         assert_eq!(d.as_array().unwrap().len(), 1, "{d:?}");
-        assert!(last.elapsed() >= Duration::from_millis(500), "restarted");
+        let at = c.published_at(&uri, second);
+        assert!(at >= last + Duration::from_millis(500), "restarted");
         return c.shutdown().unwrap();
     }
     panic!("every round was delayed past the debounce");
