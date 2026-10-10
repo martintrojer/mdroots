@@ -2,11 +2,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use mdroots_core::fs::clean_path;
+use mdroots_core::walk::is_hidden_or_temp as is_temp;
+pub(crate) use mdroots_core::walk::is_note;
 use mdroots_core::{Cancel, Diagnostic, Error, ErrorKind, FileSystem, MemStore};
 use mdroots_resolve::ResolveStep;
 use mdroots_resolve::dialect::{Setting, explain};
@@ -1202,7 +1205,7 @@ impl Workspace {
     /// A root-relative path (possibly `../`-relative) as a clean absolute
     /// path.
     pub(crate) fn abs(&self, rel: &str) -> PathBuf {
-        clean(&self.inner.root.path.join(rel))
+        clean_path(&self.inner.root.path.join(rel))
     }
 }
 
@@ -1231,21 +1234,6 @@ pub(crate) fn working_set(
         .collect();
     out.push(opened.to_owned());
     out
-}
-
-fn is_temp(name: &str) -> bool {
-    name.starts_with('.')
-        || name.ends_with('~')
-        || (name.len() > 1 && name.starts_with('#') && name.ends_with('#'))
-}
-
-pub(crate) fn is_note(name: &str) -> bool {
-    name.rsplit_once('.').is_some_and(|(stem, ext)| {
-        !stem.is_empty()
-            && ["md", "markdown", "org"]
-                .iter()
-                .any(|e| ext.eq_ignore_ascii_case(e))
-    })
 }
 
 pub(crate) fn title(rel: &str, doc: &Document) -> String {
@@ -1341,21 +1329,6 @@ fn set_code_dirs(store: &mut MemStore, dirs: &[PathBuf]) {
         .filter_map(|d| outside_rel(Some(&root), d))
         .collect();
     store.set_code_dirs(rel);
-}
-
-/// `p` with `.` and `..` removed lexically.
-fn clean(p: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for c in p.components() {
-        match c {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 fn now_ms() -> u64 {

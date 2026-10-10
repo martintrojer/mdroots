@@ -4,9 +4,9 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use mdroots_core::Error;
+use mdroots_core::memstore::heading_index;
 use mdroots_resolve::ladder::LinkStatus;
-use mdroots_resolve::normalize::percent_decode;
-use mdroots_syntax::{Anchor, Document, slug};
+use mdroots_syntax::{Anchor, Document};
 
 use crate::workspace::Workspace;
 
@@ -65,28 +65,4 @@ impl Workspace {
 fn heading_of(doc: &Document, anchor: &Anchor) -> Option<Range<usize>> {
     let i = heading_index(doc, anchor)?;
     doc.headings().nth(i).map(|h| h.range.clone())
-}
-
-/// The index (in [`Document::headings`] order) of the first heading
-/// `anchor` names in `doc`: a heading anchor by slug, the slug of the
-/// anchor, `{#id}`/`:ID:` or `:CUSTOM_ID:`; a custom-id anchor by the last
-/// two. The anchor is tried as written and percent-decoded.
-pub(crate) fn heading_index(doc: &Document, anchor: &Anchor) -> Option<usize> {
-    let (a, by_slug) = match anchor {
-        Anchor::Heading(a) => (a, true),
-        Anchor::CustomId(a) => (a, false),
-        _ => return None,
-    };
-    let dec = percent_decode(a);
-    let forms: Vec<&str> = match dec == *a {
-        true => vec![a],
-        false => vec![a, &dec],
-    };
-    doc.headings().position(|h| {
-        forms.iter().any(|s| {
-            (by_slug && (h.slug == *s || slug::github(s) == h.slug))
-                || h.id.as_deref() == Some(s)
-                || h.custom_id.as_deref() == Some(s)
-        })
-    })
 }

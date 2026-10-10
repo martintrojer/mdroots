@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use mdroots_core::{
-    AnchorStatus, Cancel, ErrorKind, FileSystem, FsKind, MemFs, MemStore, Meta, StdFs,
+    AnchorStatus, Cancel, DiagCode, DiagnosticPolicy, ErrorKind, FileSystem, FsKind, MemFs,
+    MemStore, Meta, StdFs,
 };
 use mdroots_resolve::dialect::{LinkStyle, link_style};
 use mdroots_resolve::keys::{KeyKind, KeyLookup, ResolveStep};
@@ -33,8 +34,29 @@ fn link(s: &MemStore, from: &str, raw: &str) -> (Link, Resolution) {
     hits.swap_remove(0)
 }
 
-fn raws(links: &[Link]) -> Vec<&str> {
-    links.iter().map(|l| l.target.raw.as_str()).collect()
+/// Raw targets of the links in `rel` that the diagnostics policy reports
+/// with `code`, in source order.
+fn diagnosed(s: &MemStore, rel: &str, code: DiagCode) -> Vec<String> {
+    let links = s.links(rel);
+    DiagnosticPolicy::for_store(s, false)
+        .diagnostics(s, rel)
+        .into_iter()
+        .filter(|d| d.code == code)
+        .map(|d| {
+            let (l, _) = links.iter().find(|(l, _)| l.range == d.range).unwrap();
+            l.target.raw.clone()
+        })
+        .collect()
+}
+
+/// Broken links in `rel`.
+fn broken(s: &MemStore, rel: &str) -> Vec<String> {
+    diagnosed(s, rel, DiagCode::BrokenLink)
+}
+
+/// Links in `rel` to one note in which their anchor is missing.
+fn broken_anchors(s: &MemStore, rel: &str) -> Vec<String> {
+    diagnosed(s, rel, DiagCode::BrokenAnchor)
 }
 
 fn froms(back: &[(String, Link)]) -> Vec<&str> {
@@ -70,15 +92,15 @@ fn zkvault_resolutions() {
     // The broken link.
     let (_, r) = link(&s, "reference/composting.md", "reference/does-not-exist");
     assert_eq!(r.status, LinkStatus::Broken);
-    assert!(raws(&s.broken("reference/composting.md")).contains(&"reference/does-not-exist"));
+    assert!(broken(&s, "reference/composting.md").contains(&"reference/does-not-exist".to_owned()));
 
     // Org `[[T:1][x]]` expands through #+LINK to another scheme.
     let (_, r) = link(&s, "org-archive/old.org", "https://t/1");
     assert_eq!(r.status, LinkStatus::External);
 
     // Wiki candidates in inline code and fences are never broken.
-    assert!(s.broken("reference/gardening.md").is_empty());
-    assert!(s.broken("org-archive/old.org").is_empty());
+    assert!(broken(&s, "reference/gardening.md").is_empty());
+    assert!(broken(&s, "org-archive/old.org").is_empty());
 
     // Piped wiki: the left side resolves.
     let (l, r) = link(&s, "README.md", "reference/composting");
@@ -110,11 +132,11 @@ fn notesvault_resolutions() {
     // `[[project-scope]]` inside the README fence: a link, but never broken.
     let (l, _) = link(&s, "README.md", "project-scope");
     assert_eq!(l.context, Context::CodeBlock);
-    assert!(s.broken("README.md").is_empty());
+    assert!(broken(&s, "README.md").is_empty());
     // Nor does it make README a referrer of project-scope.
     assert!(s.backlinks("notes/project-scope.md").is_empty());
 
-    assert_eq!(raws(&s.broken("references/paper-2.md")), ["missing-paper"]);
+    assert_eq!(broken(&s, "references/paper-2.md"), ["missing-paper"]);
 
     // Backlinks list every referrer, in referencing contexts only
     // (note-b is listed for its prose `[[note-a|A]]`, not its inline code).
@@ -163,8 +185,8 @@ fn stem_from_another_directory_and_backlink_pair() {
     assert_eq!(froms(&s.backlinks("b/two.md")), ["a/one.md"]);
     assert_eq!(froms(&s.backlinks("a/one.md")), ["b/two.md"]);
     // Code and inline-code candidates are not broken; footnotes never are.
-    assert!(s.broken("a/one.md").is_empty());
-    assert_eq!(raws(&s.broken("b/two.md")), ["gone"]);
+    assert!(broken(&s, "a/one.md").is_empty());
+    assert_eq!(broken(&s, "b/two.md"), ["gone"]);
 }
 
 /// Backlinks of every note as (source, raw target, range).
@@ -297,12 +319,12 @@ fn anchors_are_checked_separately_from_file_status() {
         s.check_anchor(&r.targets[0], l.target.anchor.as_ref().unwrap()),
         AnchorStatus::Missing
     );
-    assert!(s.broken("a.md").is_empty());
+    assert!(broken(&s, "a.md").is_empty());
 
     // Missing headings and block ids, in prose only; the ambiguous u.md and
     // the unindexed html target are never listed.
     assert_eq!(
-        raws(&s.broken_anchors("a.md")),
+        broken_anchors(&s, "a.md"),
         ["b.md#missing", "#nowhere", "b#^nope"]
     );
     assert_eq!(
@@ -315,7 +337,7 @@ fn anchors_are_checked_separately_from_file_status() {
     );
 
     // Org custom ids; search anchors are not checked.
-    assert_eq!(raws(&s.broken_anchors("org/o.org")), ["file:b.org::#nope"]);
+    assert_eq!(broken_anchors(&s, "org/o.org"), ["file:b.org::#nope"]);
     assert_eq!(
         s.check_anchor("org/b.org", &Anchor::Search("*Nope".into())),
         AnchorStatus::NotChecked
@@ -330,12 +352,12 @@ fn anchors_are_checked_separately_from_file_status() {
     // it no longer has).
     s.set_overlay("b.md", "# Intro\n\n## Missing\n\ntext ^blk\n\nmore ^nope\n");
     assert_eq!(
-        raws(&s.broken_anchors("a.md")),
+        broken_anchors(&s, "a.md"),
         ["b.md#custom", "b.md#visible", "#nowhere"]
     );
     s.clear_overlay("b.md");
     assert_eq!(
-        raws(&s.broken_anchors("a.md")),
+        broken_anchors(&s, "a.md"),
         ["b.md#missing", "#nowhere", "b#^nope"]
     );
 }
@@ -607,7 +629,7 @@ fn apply_contents_replaces_adds_and_removes_in_place() {
         .with_file("/a.md", "[[b]]\n")
         .with_file("/c.md", "# C\n");
     let mut s = mem(fs);
-    assert_eq!(raws(&s.broken("a.md")), ["b"]);
+    assert_eq!(broken(&s, "a.md"), ["b"]);
     let changed = s.apply_contents(vec![
         change("b.md", Some(b"# B\n")),
         change("c.md", None),
@@ -618,7 +640,7 @@ fn apply_contents_replaces_adds_and_removes_in_place() {
     assert_eq!(changed, ["b.md", "c.md"]);
     assert_eq!(s.files().collect::<Vec<_>>(), ["a.md", "b.md"]);
     // The caches were dropped: the link now resolves and has a backlink.
-    assert!(s.broken("a.md").is_empty());
+    assert!(broken(&s, "a.md").is_empty());
     assert_eq!(froms(&s.backlinks("b.md")), ["a.md"]);
 }
 

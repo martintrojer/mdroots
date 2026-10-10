@@ -22,6 +22,8 @@ use std::time::Duration;
 use ignore::Match;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use mdroots_core::Cancel;
+pub use mdroots_core::walk::pruned_dir;
+use mdroots_core::walk::{is_hidden_or_temp, is_note};
 
 use crate::markers::{MarkerClass, markers_at};
 use crate::probe::{FsStat, MountInfo, Probe};
@@ -124,33 +126,6 @@ impl Default for WalkOptions {
     }
 }
 
-/// Directory names never descended. [Buck2](https://buck2.build) writes
-/// `buck-out`, [Bazel](https://bazel.build) `bazel-out`.
-const PRUNE_DIRS: &[&str] = &[
-    "node_modules",
-    "target",
-    ".venv",
-    "venv",
-    "__pycache__",
-    "dist",
-    "build",
-    "buck-out",
-    "bazel-out",
-    ".direnv",
-    ".cache",
-    "Pods",
-    "DerivedData",
-    ".next",
-    "vendor",
-];
-
-/// Whether the walk never descends a directory named `name` (the prune
-/// list; hidden names are skipped separately).
-pub fn pruned_dir(name: &str) -> bool {
-    PRUNE_DIRS.contains(&name)
-}
-
-const NOTE_EXTS: &[&str] = &["md", "markdown", "org"];
 const IGNORE_CAP: usize = 256 * 1024;
 const MDROOTSIGNORE: &str = ".mdrootsignore";
 /// Gitignore-syntax ignore files, in add order (later wins).
@@ -161,20 +136,10 @@ const RATE_DIRS: usize = 50;
 const RATE_MIN_DIRS: usize = 5;
 const RATE_WINDOW: Duration = Duration::from_millis(100);
 
-fn is_note(name: &str) -> bool {
-    name.rsplit_once('.').is_some_and(|(stem, ext)| {
-        !stem.is_empty() && NOTE_EXTS.iter().any(|e| ext.eq_ignore_ascii_case(e))
-    })
-}
-
 /// Hidden and editor temp files ([Vim](https://www.vim.org) writes `4913` to
 /// test whether a directory is writable).
 fn is_temp(name: &str) -> bool {
-    name.starts_with('.')
-        || name.ends_with('~')
-        || (name.len() > 1 && name.starts_with('#') && name.ends_with('#'))
-        || name.ends_with(".swp")
-        || name == "4913"
+    is_hidden_or_temp(name) || name.ends_with(".swp") || name == "4913"
 }
 
 fn median(v: &[f64]) -> Option<f64> {
@@ -486,7 +451,7 @@ impl Walker<'_> {
         if st.is_symlink || st.dev != self.root_dev || self.opts.skip.iter().any(|s| s == abs) {
             return false;
         }
-        if st.is_dir && (name.starts_with('.') || PRUNE_DIRS.contains(&name)) {
+        if st.is_dir && (name.starts_with('.') || pruned_dir(name)) {
             return false;
         }
         if st.is_file && is_temp(name) {

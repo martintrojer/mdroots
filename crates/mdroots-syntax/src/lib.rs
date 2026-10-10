@@ -19,6 +19,9 @@ pub use model::{
     Value,
 };
 
+pub use scan::strip_position;
+pub use structure::scheme;
+
 /// Parse `text` with default options for `dialect`.
 pub fn parse(text: &str, dialect: Dialect) -> Document {
     parse_with(text, &ParseOptions::new(dialect))

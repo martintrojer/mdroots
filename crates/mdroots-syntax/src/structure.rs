@@ -18,7 +18,7 @@ use crate::{frontmatter, markdown_options, org, scan, slug};
 /// Parse `src` into a document (no lossy flag).
 pub(crate) fn parse_document(src: String, opts: &ParseOptions) -> Document {
     let (mut elements, regions, fm, abbrevs) = match opts.dialect {
-        Dialect::Org => org::parse_org(&src, opts),
+        Dialect::Org => org::parse_org(&src),
         _ => {
             let pass = markdown_with(&src, opts.unfenced_frontmatter);
             (
@@ -363,8 +363,9 @@ pub(crate) fn by_scheme(dest: &str) -> Confidence {
     }
 }
 
-/// RFC 3986 scheme of at least two chars (so `C:\x` is not one).
-fn scheme(dest: &str) -> Option<&str> {
+/// RFC 3986 scheme (`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`) before the
+/// first `:`, at least two characters so `C:` drive letters stay paths.
+pub fn scheme(dest: &str) -> Option<&str> {
     let (s, _) = dest.split_once(':')?;
     let mut chars = s.chars();
     let ok = s.len() >= 2

@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 use mdroots_roots::probe::{FsClass, Probe, classify};
 
+use crate::{create_missing, set_private};
+
 /// Name of the file created and removed to prove a candidate is writable.
 const WRITE_TEST: &str = ".mdroots-write-test";
 
@@ -140,16 +142,6 @@ fn check(probe: &dyn Probe, env: &CacheEnv, c: &Candidate) -> Result<(), String>
     probe_then_make_private(&c.path)
 }
 
-/// Create `path` and its missing parents, each new one mode 0700 (before
-/// umask). An existing dir keeps its mode.
-fn create_missing(path: &Path) -> io::Result<()> {
-    let mut b = std::fs::DirBuilder::new();
-    b.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-    b.create(path)
-}
-
 /// Prove `dir` writable, then make it 0700, so a dir rejected here keeps its
 /// mode. A dir its owner made unwritable (0500, 0000) is made 0700 to probe
 /// it again; if that probe fails too, its mode is put back.
@@ -180,17 +172,6 @@ fn write_probe(dir: &Path) -> Result<(), (&'static str, io::Error)> {
     let file = dir.join(WRITE_TEST);
     std::fs::write(&file, b"").map_err(|e| ("not writable", e))?;
     std::fs::remove_file(&file).map_err(|e| ("remove write test", e))
-}
-
-#[cfg(unix)]
-fn set_private(p: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700))
-}
-
-#[cfg(not(unix))]
-fn set_private(_: &Path) -> io::Result<()> {
-    Ok(())
 }
 
 /// Create `path` in a shared dir such as `/var/tmp`, where another user may

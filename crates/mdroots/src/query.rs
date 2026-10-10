@@ -28,9 +28,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use mdroots_core::memstore::counts;
 use mdroots_core::{Cancel, ErrorKind};
 use mdroots_resolve::ladder::LinkStatus;
-use mdroots_syntax::{Context, Link, LinkKind};
 
 use crate::{Error, Freshness, NoteSummary, Workspace};
 
@@ -552,15 +552,6 @@ impl Workspace {
         }
         Ok(all.unwrap_or_default())
     }
-}
-
-/// As the backlink index counts links: not footnotes, not in code.
-fn counts(l: &Link) -> bool {
-    l.kind != LinkKind::Footnote
-        && matches!(
-            l.context,
-            Context::Prose | Context::Heading | Context::Html | Context::Frontmatter
-        )
 }
 
 fn paths_of(v: Vec<NoteSummary>) -> BTreeSet<PathBuf> {

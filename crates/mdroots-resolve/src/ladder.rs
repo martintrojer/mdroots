@@ -7,7 +7,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use mdroots_syntax::{Confidence, Link, LinkKind};
+use mdroots_syntax::{Confidence, Link, LinkKind, strip_position};
 
 use crate::env::ResolveEnv;
 use crate::keys::{KeyKind, KeyLookup, ResolveStep, title_slug};
@@ -100,7 +100,7 @@ impl<'a> ResolveCtx<'a> {
     /// components exactly, or case-folded on a case-insensitive fs when
     /// both are valid UTF-8; `None` when outside.
     fn strip_root(&self, abs: &Path, root: &Path) -> Option<String> {
-        let (abs, root) = (clean(abs), clean(root));
+        let (abs, root) = (clean_path(abs), clean_path(root));
         let same = |a: Component, r: Component| {
             let (a, r) = (a.as_os_str(), r.as_os_str());
             a == r
@@ -524,8 +524,10 @@ fn path_str(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
-/// Lexically clean an absolute path (drop `.`, fold `..`).
-fn clean(p: &Path) -> PathBuf {
+/// `p` with `.` dropped and each `..` removing the component before it
+/// (a `..` at `/` stays at `/`; a leading `..` of a relative path is
+/// dropped). Purely lexical.
+pub fn clean_path(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
         match c {
@@ -542,7 +544,7 @@ fn clean(p: &Path) -> PathBuf {
 /// `abs` relative to the root, climbing with `..` when outside it (both
 /// cleaned lexically first); `None` without a root.
 pub fn outside_rel(root: Option<&Path>, abs: &Path) -> Option<String> {
-    let (root, abs) = (clean(root?), clean(abs));
+    let (root, abs) = (clean_path(root?), clean_path(abs));
     let r: Vec<_> = root.components().collect();
     let a: Vec<_> = abs.components().collect();
     let common = r.iter().zip(&a).take_while(|(x, y)| x == y).count();
@@ -571,7 +573,7 @@ fn code_mention(from: &str, link: &Link, ctx: &ResolveCtx) -> Resolution {
     let stripped = if path != text && !path.is_empty() {
         Some(path)
     } else {
-        strip_position(text)
+        strip_position(text).map(|(p, _)| p)
     };
     let dir = parent(from);
     for cand in std::iter::once(text).chain(stripped) {
@@ -618,41 +620,9 @@ fn locate(t: &str, dir: &str, ctx: &ResolveCtx) -> Option<(String, ResolveStep)>
         .find(|(p, _)| !p.is_empty() && ctx.env.is_file(p))
 }
 
-/// `path:LINE:COL` or `path:LINE` (positive integers) → `path`.
-fn strip_position(text: &str) -> Option<&str> {
-    let num = |s: &str| {
-        !s.is_empty()
-            && s.bytes().all(|b| b.is_ascii_digit())
-            && s.parse::<u64>().is_ok_and(|n| n > 0)
-    };
-    let (head, last) = text.rsplit_once(':')?;
-    if !num(last) {
-        return None;
-    }
-    if let Some((path, line)) = head.rsplit_once(':')
-        && num(line)
-        && !path.is_empty()
-    {
-        return Some(path);
-    }
-    (!head.is_empty()).then_some(head)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn position_suffixes() {
-        // Donated from ramble 75b8285 src/app/codepath.rs `position_suffixes`.
-        assert_eq!(strip_position("a.rs:12"), Some("a.rs"));
-        assert_eq!(strip_position("a.rs:12:3"), Some("a.rs"));
-        assert_eq!(strip_position("a.rs:0"), None);
-        assert_eq!(strip_position("a.rs:x"), None);
-        assert_eq!(strip_position("a.rs:"), None);
-        assert_eq!(strip_position(":3"), None);
-        assert_eq!(strip_position("a.rs"), None);
-    }
 
     #[test]
     fn joins_and_distance() {

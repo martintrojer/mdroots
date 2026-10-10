@@ -7,6 +7,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 
+pub use mdroots_resolve::ladder::clean_path;
+
 /// What core needs to know about a file or directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Meta {
@@ -233,7 +235,7 @@ impl MemFs {
     /// Mark `path` dataless (a cloud placeholder), creating an empty file
     /// there if it does not exist. Reads still return its bytes.
     pub fn with_dataless(self, path: &str) -> Self {
-        let p = abs(Path::new(path));
+        let p = abs_path(Path::new(path));
         if self.node(&p).is_err() {
             self.write(path, b"");
         }
@@ -245,13 +247,13 @@ impl MemFs {
     }
 
     pub fn with_dir(self, path: &str) -> Self {
-        self.mkdir_p(&abs(Path::new(path)));
+        self.mkdir_p(&abs_path(Path::new(path)));
         self
     }
 
     /// Create or overwrite a file through a shared handle.
     pub fn write(&self, path: &str, bytes: &[u8]) {
-        let p = abs(Path::new(path));
+        let p = abs_path(Path::new(path));
         if let Some(parent) = p.parent() {
             self.mkdir_p(parent);
         }
@@ -301,7 +303,7 @@ impl MemFs {
     }
 
     fn node(&self, p: &Path) -> io::Result<Node> {
-        let p = abs(p);
+        let p = abs_path(p);
         if p == Path::new("/") {
             return Ok(Node {
                 path: p,
@@ -346,7 +348,7 @@ fn dir_meta(ino: u64) -> Meta {
 }
 
 /// `p` as a lexically cleaned absolute path under `/`.
-fn abs(p: &Path) -> PathBuf {
+pub fn abs_path(p: &Path) -> PathBuf {
     let mut out = PathBuf::from("/");
     for c in p.components() {
         match c {
@@ -397,7 +399,7 @@ impl FileSystem for MemFs {
 
     /// The cleaned absolute path, with stored case when it exists.
     fn canonicalize(&self, p: &Path) -> io::Result<PathBuf> {
-        Ok(self.node(p).map(|n| n.path).unwrap_or_else(|_| abs(p)))
+        Ok(self.node(p).map(|n| n.path).unwrap_or_else(|_| abs_path(p)))
     }
 
     fn case_sensitive(&self, _dir: &Path) -> bool {

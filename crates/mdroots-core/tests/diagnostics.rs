@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use mdroots_core::memstore::counts;
 use mdroots_core::{
-    Cancel, DiagCode, Diagnostic, DiagnosticPolicy, MemFs, MemStore, Severity, StdFs,
+    AnchorStatus, Cancel, DiagCode, Diagnostic, DiagnosticPolicy, MemFs, MemStore, Severity, StdFs,
 };
+use mdroots_resolve::ladder::LinkStatus;
 use mdroots_syntax::Confidence;
 
 fn mem(fs: MemFs) -> MemStore {
@@ -245,13 +247,28 @@ fn zkvault_matches_memstore() {
                 .map(|d| d.range.clone())
                 .collect()
         };
-        let want: Vec<_> = s.broken(f).into_iter().map(|l| l.range).collect();
-        assert_eq!(ranges(DiagCode::BrokenLink), want, "{f}");
-        let want: Vec<_> = s
-            .broken_anchors(f)
+        // Explicit links in referencing contexts, as the store resolves them.
+        let explicit: Vec<_> = s
+            .links(f)
             .into_iter()
-            .filter(|l| l.confidence == Confidence::Explicit)
-            .map(|l| l.range)
+            .filter(|(l, _)| l.confidence == Confidence::Explicit && counts(l))
+            .collect();
+        let want: Vec<_> = explicit
+            .iter()
+            .filter(|(_, r)| r.status == LinkStatus::Broken)
+            .map(|(l, _)| l.range.clone())
+            .collect();
+        assert_eq!(ranges(DiagCode::BrokenLink), want, "{f}");
+        let want: Vec<_> = explicit
+            .iter()
+            .filter(|(l, r)| {
+                let (Some(anchor), [target]) = (&l.target.anchor, r.targets.as_slice()) else {
+                    return false;
+                };
+                r.status == LinkStatus::Resolved
+                    && s.check_anchor(target, anchor) == AnchorStatus::Missing
+            })
+            .map(|(l, _)| l.range.clone())
             .collect();
         assert_eq!(ranges(DiagCode::BrokenAnchor), want, "{f}");
         links += ranges(DiagCode::BrokenLink).len();

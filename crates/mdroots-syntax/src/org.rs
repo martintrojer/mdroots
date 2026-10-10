@@ -7,7 +7,7 @@ use std::ops::Range;
 
 use crate::model::{
     Anchor, Confidence, Context, Element, Frontmatter, FrontmatterFormat, Heading, Link, LinkKind,
-    LinkTarget, ParseOptions, Tag, TagSyntax, Value,
+    LinkTarget, Tag, TagSyntax, Value,
 };
 use crate::regions::Regions;
 use crate::slug;
@@ -28,10 +28,7 @@ pub(crate) type Abbrevs = HashMap<String, String>;
 /// Headings, links, regions, the keyword frontmatter and the `#+LINK`
 /// abbreviations of an org document (the scan applies the latter to the
 /// links it finds in code and comments).
-pub(crate) fn parse_org(
-    src: &str,
-    _opts: &ParseOptions,
-) -> (Vec<Element>, Regions, Option<Frontmatter>, Abbrevs) {
+pub(crate) fn parse_org(src: &str) -> (Vec<Element>, Regions, Option<Frontmatter>, Abbrevs) {
     let base = if src.starts_with('\u{feff}') { 3 } else { 0 };
     let lines = split_lines(src, base);
     let text = |l: &Line| &src[l.start..l.text_end];
@@ -548,13 +545,10 @@ fn is_prefix(p: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Dialect;
 
     fn ctx(src: &str, needle: &str) -> Context {
         let at = src.find(needle).expect("needle");
-        parse_org(src, &ParseOptions::new(Dialect::Org))
-            .1
-            .context_at(at)
+        parse_org(src).1.context_at(at)
     }
 
     #[test]
@@ -592,7 +586,7 @@ mod tests {
     #[test]
     fn tildes_in_links_are_not_code() {
         let src = "[[file:~/a]] and [[file:~/b]]\n";
-        let (els, regions, _, _) = parse_org(src, &ParseOptions::new(Dialect::Org));
+        let (els, regions, _, _) = parse_org(src);
         let links = els.iter().filter(|e| matches!(e, Element::Link(_))).count();
         assert_eq!(links, 2);
         assert!(regions.segments().all(|(_, c)| c != Context::InlineCode));
@@ -600,7 +594,7 @@ mod tests {
 
     #[test]
     fn link_in_inline_code_is_left_to_scan() {
-        let (els, regions, _, _) = parse_org("a =x [[y]] z= b\n", &ParseOptions::new(Dialect::Org));
+        let (els, regions, _, _) = parse_org("a =x [[y]] z= b\n");
         assert!(els.iter().all(|e| !matches!(e, Element::Link(_))));
         assert_eq!(regions.context_at(5), Context::InlineCode);
     }

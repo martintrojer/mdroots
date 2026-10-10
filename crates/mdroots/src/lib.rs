@@ -40,7 +40,7 @@ pub use mdroots_roots::probe::{FsStat, MountInfo, Probe};
 pub use mdroots_syntax as syntax;
 
 pub use goto::Goto;
-pub use links::markdown_destination;
+pub use links::{markdown_destination, relative_path};
 pub use notes::Preview;
 pub use rename::{TextEdit, WorkspaceEdit};
 pub use search::Hit;

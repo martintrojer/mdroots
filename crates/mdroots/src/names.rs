@@ -5,12 +5,7 @@
 use crate::{LinkStatus, ResolveStep, RootMode, Severity};
 
 pub fn severity(s: Severity) -> &'static str {
-    match s {
-        Severity::Error => "error",
-        Severity::Warning => "warning",
-        Severity::Info => "info",
-        Severity::Hint => "hint",
-    }
+    mdroots_resolve::dialect::severity_name(s)
 }
 
 pub fn mode(m: RootMode) -> &'static str {

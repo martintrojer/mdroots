@@ -19,9 +19,10 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use mdroots_core::Cancel;
+use mdroots_core::walk::is_note;
 
 use crate::gitindex::{MAX_INDEX_BYTES, scan};
-use crate::loose::{find_loose_root, is_denied};
+use crate::loose::{abort_name, find_loose_root, is_denied, show};
 use crate::markers::{
     Climb, FoundMarker, MarkerClass, StopReason, climb, markers_at, mdrootsignore_matches,
 };
@@ -395,14 +396,9 @@ fn inside_marker_root(probe: &dyn Probe, rec: &RootRecord) -> bool {
     })
 }
 
+/// A note path from the git index: its file name is a note.
 fn keep_md(p: &str) -> bool {
-    p.rsplit_once('.').is_some_and(|(stem, ext)| {
-        !stem.is_empty()
-            && !stem.ends_with('/')
-            && ["md", "markdown", "org"]
-                .iter()
-                .any(|e| ext.eq_ignore_ascii_case(e))
-    })
+    is_note(p.rsplit('/').next().unwrap_or(p))
 }
 
 /// `n` with `,` thousands separators.
@@ -416,10 +412,6 @@ fn thousands(n: u64) -> String {
         out.push(c);
     }
     out
-}
-
-fn abort_name(a: Abort) -> String {
-    format!("{a:?}").to_lowercase()
 }
 
 /// The git index of the repo at `root`: `.git/index`, or `<gitdir>/index`
@@ -512,11 +504,7 @@ pub fn list_root(
 impl Ctx<'_> {
     /// `dir` for messages: `~/...` under home, else absolute.
     fn show(&self, dir: &Path) -> String {
-        match self.home.as_deref().and_then(|h| dir.strip_prefix(h).ok()) {
-            Some(rel) if rel.as_os_str().is_empty() => "~".into(),
-            Some(rel) => format!("~/{}", rel.display()),
-            None => dir.display().to_string(),
-        }
+        show(dir, self.home.as_deref())
     }
 
     /// Stages 2–4 after a stage-1 miss.

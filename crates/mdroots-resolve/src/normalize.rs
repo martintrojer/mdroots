@@ -4,6 +4,7 @@
 //! `scheme`, `percent_decode` and the `file:` forms are donated from ramble
 //! d394783 `src/nav.rs`.
 
+pub use mdroots_syntax::scheme;
 use mdroots_syntax::{Anchor, Link, LinkKind};
 use unicode_normalization::UnicodeNormalization;
 
@@ -94,17 +95,6 @@ pub fn normalize_str(raw: &str, case_sensitive: bool) -> Normalized {
     finish_path(&mut n, path, case_sensitive);
     n.anchor = anchor.as_ref().map(decode_anchor);
     n
-}
-
-/// RFC 3986 scheme (`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`) before the
-/// first `:`, at least two characters so `C:` drive letters stay paths.
-pub fn scheme(raw: &str) -> Option<&str> {
-    let (s, _) = raw.split_once(':')?;
-    let mut chars = s.chars();
-    let ok = s.len() >= 2
-        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
-    ok.then_some(s)
 }
 
 /// Decode `%XX` escapes; a `%` not followed by two hex digits is kept, and

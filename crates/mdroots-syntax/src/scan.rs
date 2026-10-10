@@ -538,7 +538,7 @@ fn code_text(seg: &str, dialect: Dialect) -> Option<Range<usize>> {
 
 /// `path:LINE:COL` or `path:LINE` (positive integers) to `(path, LINE)`.
 // Donated from ramble 75b8285 src/app/codepath.rs (MIT).
-fn strip_position(text: &str) -> Option<(&str, usize)> {
+pub fn strip_position(text: &str) -> Option<(&str, usize)> {
     let num = |s: &str| {
         (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
             .then(|| s.parse::<usize>().ok())
@@ -807,6 +807,18 @@ fn html_link(text: &str, at: usize) -> Option<(Range<usize>, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn position_suffixes() {
+        // Donated from ramble 75b8285 src/app/codepath.rs `position_suffixes`.
+        assert_eq!(strip_position("a.rs:12"), Some(("a.rs", 12)));
+        assert_eq!(strip_position("a.rs:12:3"), Some(("a.rs", 12)));
+        assert_eq!(strip_position("a.rs:0"), None);
+        assert_eq!(strip_position("a.rs:x"), None);
+        assert_eq!(strip_position("a.rs:"), None);
+        assert_eq!(strip_position(":3"), None);
+        assert_eq!(strip_position("a.rs"), None);
+    }
     use crate::structure::markdown;
     use proptest::prelude::*;
 

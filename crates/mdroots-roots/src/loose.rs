@@ -9,7 +9,8 @@
 //! acceptance rules.
 
 use mdroots_core::Cancel;
-use std::path::{Component, Path, PathBuf};
+use mdroots_core::fs::clean_path;
+use std::path::{Path, PathBuf};
 
 use crate::markers::below_virtual_mount;
 use crate::probe::{FsClass, Probe, classify};
@@ -92,24 +93,6 @@ pub fn is_denied(probe: &dyn Probe, dir: &Path) -> Option<&'static str> {
     None
 }
 
-/// `p` with `.` dropped and each `..` removing the component before it
-/// (a `..` at `/` stays at `/`). Purely lexical, like the denylist.
-fn clean(p: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for c in p.components() {
-        match c {
-            Component::CurDir => {}
-            // `/` has no parent, so `pop` leaves it. Relative input stays
-            // relative and callers reject it.
-            Component::ParentDir => {
-                out.pop();
-            }
-            c => out.push(c),
-        }
-    }
-    out
-}
-
 /// The deepest common ancestor of `a` and `b`, component-wise.
 fn common_ancestor(a: &Path, b: &Path) -> PathBuf {
     a.components()
@@ -120,7 +103,7 @@ fn common_ancestor(a: &Path, b: &Path) -> PathBuf {
 }
 
 /// `dir` for messages: `~/...` under home, else absolute.
-fn show(dir: &Path, home: Option<&Path>) -> String {
+pub(crate) fn show(dir: &Path, home: Option<&Path>) -> String {
     match home.and_then(|h| dir.strip_prefix(h).ok()) {
         Some(rel) if rel.as_os_str().is_empty() => "~".into(),
         Some(rel) => format!("~/{}", rel.display()),
@@ -128,7 +111,8 @@ fn show(dir: &Path, home: Option<&Path>) -> String {
     }
 }
 
-fn abort_name(a: Abort) -> String {
+/// The abort reason for messages: `entries`, `md`, `wall`, ...
+pub(crate) fn abort_name(a: Abort) -> String {
     format!("{a:?}").to_lowercase()
 }
 
@@ -198,7 +182,7 @@ pub fn find_loose_root(
         stats: WalkStats::default(),
         abort: None,
     };
-    let file = clean(file);
+    let file = clean_path(file);
     let Some(dir) = file.parent().filter(|d| d.is_absolute()) else {
         return single("no parent directory");
     };
@@ -206,7 +190,7 @@ pub fn find_loose_root(
     for l in link_dirs
         .iter()
         .filter(|l| l.is_absolute())
-        .map(|l| clean(l))
+        .map(|l| clean_path(l))
     {
         if probe.stat(&l).is_ok_and(|s| s.is_dir) {
             start = common_ancestor(&start, &l);

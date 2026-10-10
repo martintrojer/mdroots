@@ -7,22 +7,33 @@ use crate::cancel::Cancel;
 use crate::error::Error;
 use crate::fs::FileSystem;
 
-/// Directories never descended (besides every dot dir): dependency and
-/// build-output dirs of common toolchains, e.g. `buck-out` from
-/// [Buck2](https://buck2.build) and `bazel-out` from [Bazel](https://bazel.build).
-const PRUNED: &[&str] = &[
+/// Directory names never descended: dependency and build-output dirs of
+/// common toolchains, e.g. `buck-out` from [Buck2](https://buck2.build) and
+/// `bazel-out` from [Bazel](https://bazel.build). The dot dirs listed are
+/// skipped as hidden anyway by every walk.
+const PRUNE_DIRS: &[&str] = &[
     "node_modules",
     "target",
-    "buck-out",
-    "bazel-out",
+    ".venv",
+    "venv",
     "__pycache__",
     "dist",
     "build",
-    "venv",
+    "buck-out",
+    "bazel-out",
+    ".direnv",
+    ".cache",
     "Pods",
     "DerivedData",
+    ".next",
     "vendor",
 ];
+
+/// Whether a walk never descends a directory named `name` (the prune
+/// list; hidden names are skipped separately).
+pub fn pruned_dir(name: &str) -> bool {
+    PRUNE_DIRS.contains(&name)
+}
 
 /// Root-relative paths of `*.md`, `*.markdown` and `*.org` files under
 /// `root`, sorted. Skips hidden files and dirs (leading `.`, which covers
@@ -53,7 +64,7 @@ pub fn walk_md(fs: &dyn FileSystem, root: &Path, cancel: &Cancel) -> Result<Vec<
                 false => format!("{rel}/{name}"),
             };
             if meta.is_dir {
-                if !PRUNED.contains(&name.as_str()) {
+                if !pruned_dir(&name) {
                     stack.push(path);
                 }
             } else if meta.is_file && is_note(&name) {
@@ -65,18 +76,20 @@ pub fn walk_md(fs: &dyn FileSystem, root: &Path, cancel: &Cancel) -> Result<Vec<
     Ok(out)
 }
 
-fn is_hidden_or_temp(name: &str) -> bool {
+/// Hidden (leading `.`) or an editor temp name (`*~`, `#*#`).
+pub fn is_hidden_or_temp(name: &str) -> bool {
     name.starts_with('.')
         || name.ends_with('~')
         || (name.len() > 1 && name.starts_with('#') && name.ends_with('#'))
 }
 
-fn is_note(name: &str) -> bool {
-    let Some((stem, ext)) = name.rsplit_once('.') else {
-        return false;
-    };
-    !stem.is_empty()
-        && ["md", "markdown", "org"]
-            .iter()
-            .any(|e| ext.eq_ignore_ascii_case(e))
+/// Whether the file name `name` is a note: a non-empty stem and a `md`,
+/// `markdown` or `org` extension (any case).
+pub fn is_note(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty()
+            && ["md", "markdown", "org"]
+                .iter()
+                .any(|e| ext.eq_ignore_ascii_case(e))
+    })
 }

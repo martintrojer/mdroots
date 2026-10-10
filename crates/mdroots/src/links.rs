@@ -1,14 +1,13 @@
 //! Link insertion in the root's style (docs/specs/index.md §3.2): the
 //! style comes from an existing tool config, else the convention vote.
 
-use std::path::Path;
+use std::path::{Component, Path};
 
 use mdroots_core::{Error, ErrorKind, MemStore};
 use mdroots_resolve::dialect::{LinkStyle, link_style};
 use mdroots_resolve::ladder::LinkStatus;
 use mdroots_syntax::{Dialect, parse};
 
-use crate::rename::relative;
 use crate::workspace::{Workspace, is_note, title};
 
 impl Workspace {
@@ -73,7 +72,7 @@ impl Workspace {
             format!("[{}]({dest})", escape_label(&text))
         };
         let dir = Path::new(&from_rel).parent().unwrap_or(Path::new(""));
-        let file_relative = relative(dir, Path::new(&to_rel));
+        let file_relative = relative_path(dir, Path::new(&to_rel));
         match style {
             LinkStyle::WikiStem => wiki(wiki_target(&store, &from_rel, &to_rel, true)),
             LinkStyle::MarkdownRelative { md_suffix } => {
@@ -120,7 +119,7 @@ fn wiki_target(store: &MemStore, from_rel: &str, to_rel: &str, stem_first: bool)
     }
     c.extend([
         path.clone(),
-        drop_ext(&relative(dir, Path::new(to_rel))).to_owned(),
+        drop_ext(&relative_path(dir, Path::new(to_rel))).to_owned(),
         format!("/{path}"),
     ]);
     first_landing(store, from_rel, to_rel, c, &|t| format!("[[{t}]]"))
@@ -177,6 +176,30 @@ fn drop_ext(path: &str) -> &str {
         true => path.rsplit_once('.').map_or(path, |(s, _)| s),
         false => path,
     }
+}
+
+/// `to` relative to the directory `from`, `/`-separated, both absolute or
+/// both relative to the same dir. `.` is dropped and `..` folded first, so
+/// `from = /r/a/../b` is the directory `/r/b`.
+pub fn relative_path(from: &Path, to: &Path) -> String {
+    let norm = |p: &Path| -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        for c in p.components() {
+            match c {
+                Component::Normal(s) => v.push(s.to_string_lossy().into_owned()),
+                Component::ParentDir => {
+                    v.pop();
+                }
+                _ => {}
+            }
+        }
+        v
+    };
+    let (f, t) = (norm(from), norm(to));
+    let common = f.iter().zip(&t).take_while(|(a, b)| a == b).count();
+    let mut parts: Vec<String> = vec!["..".to_owned(); f.len() - common];
+    parts.extend(t[common..].iter().cloned());
+    parts.join("/")
 }
 
 /// `path` written as a Markdown link destination (not in `<…>`): `%`,

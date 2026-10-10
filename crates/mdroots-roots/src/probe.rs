@@ -13,6 +13,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use mdroots_core::fs::abs_path;
+
 /// What discovery needs to know about one path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FsStat {
@@ -482,19 +484,19 @@ impl FakeProbe {
     }
 
     pub fn dir(mut self, p: impl AsRef<Path>) -> Self {
-        self.st().put(&abs(p.as_ref()), Kind::Dir);
+        self.st().put(&abs_path(p.as_ref()), Kind::Dir);
         self
     }
 
     pub fn file(mut self, p: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> Self {
         self.st()
-            .put(&abs(p.as_ref()), Kind::File(bytes.as_ref().to_vec()));
+            .put(&abs_path(p.as_ref()), Kind::File(bytes.as_ref().to_vec()));
         self
     }
 
     pub fn symlink(mut self, p: impl AsRef<Path>, target: impl AsRef<Path>) -> Self {
         self.st().put(
-            &abs(p.as_ref()),
+            &abs_path(p.as_ref()),
             Kind::Symlink(target.as_ref().to_path_buf()),
         );
         self
@@ -503,7 +505,7 @@ impl FakeProbe {
     /// Everything under `prefix` (component-wise, longest prefix wins) is on
     /// mount `m`.
     pub fn mount(mut self, prefix: impl AsRef<Path>, m: MountInfo) -> Self {
-        let prefix = abs(prefix.as_ref());
+        let prefix = abs_path(prefix.as_ref());
         let st = self.st();
         st.mounts.retain(|(p, _)| *p != prefix);
         st.mounts.push((prefix, m));
@@ -512,7 +514,7 @@ impl FakeProbe {
 
     /// Mark `p` dataless, creating it as an empty file if missing.
     pub fn dataless(mut self, p: impl AsRef<Path>) -> Self {
-        let p = abs(p.as_ref());
+        let p = abs_path(p.as_ref());
         let st = self.st();
         if !st.nodes.contains_key(&p) {
             st.put(&p, Kind::File(Vec::new()));
@@ -524,13 +526,13 @@ impl FakeProbe {
     }
 
     pub fn home(mut self, p: impl AsRef<Path>) -> Self {
-        self.st().home = Some(abs(p.as_ref()));
+        self.st().home = Some(abs_path(p.as_ref()));
         self
     }
 
     /// Each `read_dir` under `prefix` advances `now()` by `cost`.
     pub fn read_dir_cost(mut self, prefix: impl AsRef<Path>, cost: Duration) -> Self {
-        let prefix = abs(prefix.as_ref());
+        let prefix = abs_path(prefix.as_ref());
         let st = self.st();
         st.costs.retain(|(p, _)| *p != prefix);
         st.costs.push((prefix, cost));
@@ -542,7 +544,7 @@ impl FakeProbe {
     /// # Panics
     /// If `p` has not been added.
     pub fn ino(mut self, p: impl AsRef<Path>, ino: u64) -> Self {
-        let p = abs(p.as_ref());
+        let p = abs_path(p.as_ref());
         match self.st().nodes.get_mut(&p) {
             Some(n) => n.ino = ino,
             None => panic!("FakeProbe::ino: {} not added", p.display()),
@@ -555,7 +557,7 @@ impl FakeProbe {
     /// # Panics
     /// If `from` has not been added.
     pub fn rename(mut self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> Self {
-        let (from, to) = (abs(from.as_ref()), abs(to.as_ref()));
+        let (from, to) = (abs_path(from.as_ref()), abs_path(to.as_ref()));
         let st = self.st();
         let moved: Vec<PathBuf> = st
             .nodes
@@ -623,7 +625,7 @@ impl FakeState {
 
     /// `p` with symlinks resolved (the last one only if `follow_last`).
     fn resolve(&self, p: &Path, follow_last: bool) -> io::Result<PathBuf> {
-        let mut pending = abs(p);
+        let mut pending = abs_path(p);
         'restart: for _ in 0..=MAX_SYMLINKS {
             let comps: Vec<_> = pending
                 .components()
@@ -644,7 +646,7 @@ impl FakeState {
                     }) if !last || follow_last => {
                         let mut next = cur.join(t);
                         next.extend(&comps[i + 1..]);
-                        pending = abs(&next);
+                        pending = abs_path(&next);
                         continue 'restart;
                     }
                     Some(Node {
@@ -712,21 +714,6 @@ fn longest<'a, T>(v: &'a [(PathBuf, T)], p: &Path) -> Option<&'a T> {
 
 fn not_found(p: &Path) -> io::Error {
     io::Error::new(io::ErrorKind::NotFound, p.display().to_string())
-}
-
-/// `p` as a lexically cleaned absolute path under `/`.
-fn abs(p: &Path) -> PathBuf {
-    let mut out = PathBuf::from("/");
-    for c in p.components() {
-        match c {
-            Component::Normal(n) => out.push(n),
-            Component::ParentDir => {
-                out.pop();
-            }
-            _ => {}
-        }
-    }
-    out
 }
 
 impl Probe for FakeProbe {

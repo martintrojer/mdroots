@@ -179,7 +179,7 @@ impl DiagnosticPolicy {
     }
 }
 
-/// Explicit links in referencing contexts: the set `MemStore::broken` checks.
+/// Explicit links in referencing contexts.
 fn diagnosable(l: &Link) -> bool {
     l.confidence == Confidence::Explicit && counts(l)
 }

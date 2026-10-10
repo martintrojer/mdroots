@@ -518,7 +518,8 @@ fn style_name(style: LinkStyle) -> String {
     }
 }
 
-fn severity_name(s: Severity) -> &'static str {
+/// `error`, `warning`, `info` or `hint`.
+pub fn severity_name(s: Severity) -> &'static str {
     match s {
         Severity::Error => "error",
         Severity::Warning => "warning",

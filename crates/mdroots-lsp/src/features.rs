@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use lsp_types::{
     CodeAction, CodeActionKind, CodeLens, Command, CompletionItem, CompletionItemKind,
@@ -17,7 +17,7 @@ use lsp_types::{
     ResourceOp, SymbolInformation, SymbolKind, TextDocumentEdit,
 };
 use mdroots::syntax::{Heading, LineIndex, PositionEncoding};
-use mdroots::{Cancel, ErrorKind, LinkStatus, Workspace, markdown_destination};
+use mdroots::{Cancel, ErrorKind, LinkStatus, Workspace, markdown_destination, relative_path};
 
 use crate::{position, uri};
 
@@ -523,7 +523,7 @@ pub(crate) fn completion(c: &Ctx, pos: Position) -> Result<CompletionList, Fail>
                 c.ws.notes()
                     .into_iter()
                     .filter(|n| n.path != c.path)
-                    .map(|n| (relative(&dir, &n.path), n.title))
+                    .map(|n| (relative_path(&dir, &n.path), n.title))
                     .filter(|(p, _)| {
                         p.to_lowercase().contains(&typed)
                             || markdown_destination(p).to_lowercase().contains(&typed)
@@ -566,23 +566,6 @@ fn file_stem(p: &Path) -> String {
     p.file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default()
-}
-
-/// `to` relative to the directory `from`, `/`-separated, both absolute.
-fn relative(from: &Path, to: &Path) -> String {
-    let parts = |p: &Path| -> Vec<String> {
-        p.components()
-            .filter_map(|c| match c {
-                Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
-                _ => None,
-            })
-            .collect()
-    };
-    let (f, t) = (parts(from), parts(to));
-    let common = f.iter().zip(&t).take_while(|(a, b)| a == b).count();
-    let mut out = vec!["..".to_owned(); f.len() - common];
-    out.extend(t[common..].iter().cloned());
-    out.join("/")
 }
 
 /// The note a rename at `pos` renames and the range it covers: a link to
@@ -841,8 +824,9 @@ mod tests {
 
     #[test]
     fn relative_paths() {
-        let r = |a: &str, b: &str| relative(Path::new(a), Path::new(b));
+        let r = |a: &str, b: &str| relative_path(Path::new(a), Path::new(b));
         assert_eq!(r("/v/notes", "/v/concepts/b.md"), "../concepts/b.md");
         assert_eq!(r("/v", "/v/a.md"), "a.md");
+        assert_eq!(r("/v/notes/../concepts", "/v/a.md"), "../a.md");
     }
 }

@@ -27,15 +27,30 @@ use std::path::Path;
 /// and set `dir` itself to 0700 if it already existed, because the cache
 /// holds copies of the user's notes.
 pub(crate) fn create_private_dir(dir: &Path) -> io::Result<()> {
+    create_missing(dir)?;
+    set_private(dir)
+}
+
+/// Create `path` and its missing parents, each new one mode 0700 (before
+/// umask). An existing dir keeps its mode.
+pub(crate) fn create_missing(path: &Path) -> io::Result<()> {
     let mut b = std::fs::DirBuilder::new();
     b.recursive(true);
     #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+    b.create(path)
+}
+
+/// Set `p` to mode 0700 (a no-op off Unix).
+pub(crate) fn set_private(p: &Path) -> io::Result<()> {
+    #[cfg(unix)]
     {
-        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-        b.mode(0o700);
-        b.create(dir)?;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700))
     }
     #[cfg(not(unix))]
-    b.create(dir)
+    {
+        let _ = p;
+        Ok(())
+    }
 }

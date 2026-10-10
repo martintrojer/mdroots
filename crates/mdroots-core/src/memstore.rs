@@ -12,8 +12,7 @@ use mdroots_resolve::keys::{KeyKind, KeyLookup, doc_keys};
 use mdroots_resolve::ladder::{LinkStatus, Resolution, ResolveCtx, resolve};
 use mdroots_resolve::normalize::percent_decode;
 use mdroots_syntax::{
-    Anchor, Confidence, Context, Dialect, Document, Link, LinkKind, ParseOptions, parse_bytes,
-    parse_with, slug,
+    Anchor, Context, Dialect, Document, Link, LinkKind, ParseOptions, parse_bytes, parse_with, slug,
 };
 
 use crate::cancel::Cancel;
@@ -422,18 +421,6 @@ impl MemStore {
         out
     }
 
-    /// Explicit links in referencing contexts whose status is Broken.
-    pub fn broken(&self, root_rel: &str) -> Vec<Link> {
-        let Some(doc) = self.document(root_rel) else {
-            return Vec::new();
-        };
-        doc.links()
-            .filter(|l| l.confidence == Confidence::Explicit && counts(l))
-            .filter(|l| self.resolve_link(root_rel, l, false).status == LinkStatus::Broken)
-            .cloned()
-            .collect()
-    }
-
     /// Whether `anchor` exists in the indexed note `target_root_rel`.
     /// Heading: a heading slug, org `:ID:` or `:CUSTOM_ID:` equal to the
     /// anchor (as written or percent-decoded), or a slug equal to the
@@ -444,25 +431,7 @@ impl MemStore {
             return AnchorStatus::NotChecked;
         };
         let found = match anchor {
-            Anchor::Heading(a) => {
-                let forms = anchor_forms(a);
-                doc.headings().any(|h| {
-                    forms.iter().any(|s| {
-                        h.slug == *s
-                            || slug::github(s) == h.slug
-                            || h.id.as_deref() == Some(s)
-                            || h.custom_id.as_deref() == Some(s)
-                    })
-                })
-            }
-            Anchor::CustomId(a) => {
-                let forms = anchor_forms(a);
-                doc.headings().any(|h| {
-                    forms
-                        .iter()
-                        .any(|s| h.custom_id.as_deref() == Some(s) || h.id.as_deref() == Some(s))
-                })
-            }
+            Anchor::Heading(_) | Anchor::CustomId(_) => heading_index(doc, anchor).is_some(),
             Anchor::Block(b) => has_block_id(doc.source(), b),
             _ => return AnchorStatus::NotChecked,
         };
@@ -470,27 +439,6 @@ impl MemStore {
             true => AnchorStatus::Found,
             false => AnchorStatus::Missing,
         }
-    }
-
-    /// Links (same context filter as [`broken`](Self::broken)) that resolve
-    /// to one note in which their anchor is missing.
-    pub fn broken_anchors(&self, root_rel: &str) -> Vec<Link> {
-        let Some(doc) = self.document(root_rel) else {
-            return Vec::new();
-        };
-        doc.links()
-            .filter(|l| counts(l))
-            .filter(|l| {
-                let Some(anchor) = &l.target.anchor else {
-                    return false;
-                };
-                let r = self.resolve_link(root_rel, l, false);
-                r.status == LinkStatus::Resolved
-                    && r.targets.len() == 1
-                    && self.check_anchor(&r.targets[0], anchor) == AnchorStatus::Missing
-            })
-            .cloned()
-            .collect()
     }
 
     fn options(&self, root_rel: &str) -> ParseOptions {
@@ -572,9 +520,9 @@ impl MemStore {
     }
 }
 
-/// The contexts that reference a note (backlinks, broken links); footnotes
-/// never do.
-pub(crate) fn counts(l: &Link) -> bool {
+/// The contexts that reference a note (backlinks, broken links, rename);
+/// footnotes never do.
+pub fn counts(l: &Link) -> bool {
     l.kind != LinkKind::Footnote
         && matches!(
             l.context,
@@ -582,13 +530,28 @@ pub(crate) fn counts(l: &Link) -> bool {
         )
 }
 
-/// The anchor as written, and percent-decoded when that differs.
-fn anchor_forms(a: &str) -> Vec<String> {
+/// The index (in [`Document::headings`] order) of the first heading
+/// `anchor` names in `doc`: a heading anchor by slug, the slug of the
+/// anchor, `{#id}`/`:ID:` or `:CUSTOM_ID:`; a custom-id anchor by the last
+/// two. The anchor is tried as written and percent-decoded.
+pub fn heading_index(doc: &Document, anchor: &Anchor) -> Option<usize> {
+    let (a, by_slug) = match anchor {
+        Anchor::Heading(a) => (a, true),
+        Anchor::CustomId(a) => (a, false),
+        _ => return None,
+    };
     let dec = percent_decode(a);
-    match dec == a {
-        true => vec![a.to_owned()],
-        false => vec![a.to_owned(), dec],
-    }
+    let forms: Vec<&str> = match dec == *a {
+        true => vec![a],
+        false => vec![a, &dec],
+    };
+    doc.headings().position(|h| {
+        forms.iter().any(|s| {
+            (by_slug && (h.slug == *s || slug::github(s) == h.slug))
+                || h.id.as_deref() == Some(s)
+                || h.custom_id.as_deref() == Some(s)
+        })
+    })
 }
 
 /// `^id` as the last whitespace-separated token of some line.

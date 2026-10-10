@@ -2,15 +2,16 @@
 //! a note moves. Never writes files.
 
 use std::ops::Range;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
+use mdroots_core::memstore::counts;
 use mdroots_core::{Cancel, Error, ErrorKind};
 use mdroots_resolve::ResolveStep;
 use mdroots_resolve::ladder::LinkStatus;
 use mdroots_resolve::normalize::percent_decode;
-use mdroots_syntax::{Context, Document, Link, LinkKind};
+use mdroots_syntax::{Document, Link, LinkKind};
 
-use crate::links::encode_destination;
+use crate::links::{encode_destination, relative_path};
 use crate::workspace::{Workspace, is_note};
 
 /// File changes for an editor to apply: create, then edit, then rename.
@@ -168,15 +169,6 @@ fn refuse(msg: String) -> Error {
     Error::new(ErrorKind::Unsupported, format!("cannot rename: {msg}"))
 }
 
-/// The contexts that reference a note (same rule as backlinks).
-fn counts(l: &Link) -> bool {
-    l.kind != LinkKind::Footnote
-        && matches!(
-            l.context,
-            Context::Prose | Context::Heading | Context::Html | Context::Frontmatter
-        )
-}
-
 /// A `[text][ref]` usage: its definition carries the destination.
 fn is_reference_usage(doc: &Document, l: &Link) -> bool {
     l.kind == LinkKind::Reference && !doc.link_defs().any(|d| d.range == l.range)
@@ -274,7 +266,7 @@ impl Rewrite<'_> {
         let out = match step {
             ResolveStep::FileRelative => {
                 let from_dir = self.root.join(parent(self.from_after));
-                let rel = relative(&from_dir, &self.root.join(&target));
+                let rel = relative_path(&from_dir, &self.root.join(&target));
                 match decoded.starts_with("./") && !rel.starts_with("../") {
                     true => format!("./{rel}"),
                     false => rel,
@@ -350,44 +342,9 @@ fn parent(rel: &str) -> &str {
     rel.rsplit_once('/').map_or("", |(d, _)| d)
 }
 
-/// `to` relative to the directory `from`, `/`-separated, both absolute.
-pub(crate) fn relative(from: &Path, to: &Path) -> String {
-    let norm = |p: &Path| -> Vec<String> {
-        let mut v: Vec<String> = Vec::new();
-        for c in p.components() {
-            match c {
-                Component::Normal(s) => v.push(s.to_string_lossy().into_owned()),
-                Component::ParentDir => {
-                    v.pop();
-                }
-                _ => {}
-            }
-        }
-        v
-    };
-    let (f, t) = (norm(from), norm(to));
-    let common = f.iter().zip(&t).take_while(|(a, b)| a == b).count();
-    let mut parts: Vec<String> = vec!["..".to_owned(); f.len() - common];
-    parts.extend(t[common..].iter().cloned());
-    parts.join("/")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn relative_paths() {
-        assert_eq!(
-            relative(Path::new("/r/a"), Path::new("/r/b/c.md")),
-            "../b/c.md"
-        );
-        assert_eq!(relative(Path::new("/r"), Path::new("/r/c.md")), "c.md");
-        assert_eq!(
-            relative(Path::new("/r/a/b"), Path::new("/r/a/c.md")),
-            "../c.md"
-        );
-    }
 
     #[test]
     fn dest_forms() {

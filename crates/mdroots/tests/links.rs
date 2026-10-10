@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mdroots::{ErrorKind, LinkStyle, NoEnumerator, Options, Workspace};
+use mdroots::{ErrorKind, LinkStyle, NoEnumerator, Options, Workspace, relative_path};
 use mdroots_core::MemFs;
 use mdroots_roots::probe::FakeProbe;
 
@@ -150,6 +150,20 @@ fn wiki_stem_shared_with_a_root_note_is_not_shadowed() {
         let l = link(&w, "/v/one/x.md", to, None);
         assert_eq!(target(&w, "/v/one/x.md", &l), [p(to)], "{l}");
     }
+}
+
+#[test]
+fn relative_paths() {
+    let r = |a: &str, b: &str| relative_path(Path::new(a), Path::new(b));
+    assert_eq!(r("/r/a", "/r/b/c.md"), "../b/c.md");
+    assert_eq!(r("/r", "/r/c.md"), "c.md");
+    assert_eq!(r("/r/a/b", "/r/a/c.md"), "../c.md");
+    // `..` in either path is folded before comparing.
+    assert_eq!(r("/r/a/../b", "/r/c.md"), "../c.md");
+    assert_eq!(r("/r/a", "/r/a/x/../c.md"), "c.md");
+    // Root-relative input, as `link_to` passes it.
+    assert_eq!(r("", "a/b.md"), "a/b.md");
+    assert_eq!(r("x", "a/b.md"), "../a/b.md");
 }
 
 #[test]

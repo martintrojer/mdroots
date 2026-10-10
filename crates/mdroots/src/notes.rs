@@ -5,10 +5,10 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::Path;
 
+use mdroots_core::memstore::heading_index;
 use mdroots_core::{Error, ErrorKind};
 use mdroots_syntax::{Document, Heading, Value};
 
-use crate::goto::heading_index;
 use crate::workspace::{Backlink, NoteSummary, Workspace, title};
 
 /// What a hover or picker shows for a note.
