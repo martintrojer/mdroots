@@ -372,7 +372,7 @@ On the corpus: `check tests/corpus/zkvault` reports 5 hints and exits 0 (78% of 
 
 | Milestone | Scope |
 |---|---|
-| M1 (done) | `mdroots-syntax` with `LineIndex`, fuzzing, insta snapshot tests on the shapes of a ~730-note zk vault and a ~210-note research vault; `mdroots-core` + `mdroots-resolve` with the offline differential against zk's `notebook.db` and marksman ([M1 differential](../research/m1-differential.md)) |
+| M1 (done) | `mdroots-syntax` with `LineIndex`, fuzzing, insta snapshot tests on the shapes of a ~730-note zk vault and a ~210-note research vault; `mdroots-core` + `mdroots-resolve` with the offline differential against zk's `notebook.db` and marksman ([M1 differential](../research/zk-differential.md)) |
 | M2 (done) | `mdroots-roots`: stages 1–4 of [roots](roots.md) §1, loose roots, nested-root registry rules, the registry trait with an in-memory `MemRegistry` and `discover.lock`; safety tests on a counting probe with NFS and EdenFS fakes; discovery fixtures 1–11 |
 | M3 (done) | the `mdroots` facade (`Workspace` over `MemStore` and discovery, §3.2) and the `mdroots` CLI (`check`, `roots`, `resolve`, `backlinks`, §6); the diagnostics policy of [index](index.md) §3.3 in `mdroots-core` |
 | M4 (done) | `mdroots-index`: cache dir choice, flock roles, the per-root DB caching content and stat, reconcile, change log, the SQLite root registry; `list_root` in `mdroots-roots`; the facade serves discovered roots from the DB (D9) with `Workspace::refresh`; many-process fixtures 12, 13, 16, 17, 18 of [roots](roots.md) §7, adapted (no watcher) |

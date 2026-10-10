@@ -25,7 +25,7 @@ real world they are meant for.
    CI: the Neovim smoke test.
 2. **The real-vault differential since M1.** Resolution parity with
    [zk](https://github.com/zk-org/zk) was measured in M1
-   ([m1-differential](research/m1-differential.md)). Not re-run with the real
+   ([zk-differential](research/zk-differential.md)). Not re-run with the real
    binary: diagnostics parity with
    [marksman](https://github.com/artempyanykh/marksman) and zk, feature
    smoke (symbols, hover, reference counts), and timing against both servers

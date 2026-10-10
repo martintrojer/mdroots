@@ -1,6 +1,6 @@
 # Spec: index under churn, liberal links, dialects, frontmatter
 
-Related: [roots](roots.md) (discovery, nesting, flock roles), [library](library.md) (crates, API), [DECISIONS](../DECISIONS.md) (D3, D4, D5, D7, D8, D9), [differential results](../research/m1-differential.md), measurement scripts in [`bench/`](../../bench/).
+Related: [roots](roots.md) (discovery, nesting, flock roles), [library](library.md) (crates, API), [DECISIONS](../DECISIONS.md) (D3, D4, D5, D7, D8, D9), [differential results](../research/zk-differential.md), measurement scripts in [`bench/`](../../bench/).
 
 Goal: the user never thinks about the index. No init or reindex command; a
 `kill -9` loses at most ~50 ms of work; ten editors starting at once answer
@@ -411,7 +411,7 @@ heading slug, `::#id` → `:CUSTOM_ID:`, `::text` → text search in hover only;
 `id:` → `:ID:` index. Targets outside the root are external (vault A's 96
 `file:~/…` links must not produce errors).
 
-Against zk, every zk-resolved link in both vaults agrees ([m1-differential](../research/m1-differential.md)).
+Against zk, every zk-resolved link in both vaults agrees ([zk-differential](../research/zk-differential.md)).
 
 ## 3. Dialects without configuration (D8)
 
@@ -559,7 +559,7 @@ and `zk lsp`). `lspbench.py` still needs `--skip`, per-request `--timeout`, a
 capability check (it waits 30 s on unimplemented methods), and `phys_footprint`.
 
 ### 5.1 Differential and churn tests
-1. **Resolution parity**: per link, compare with zk's `links.target_id` → `notes.path` (`sqlite3 -readonly`) and marksman's `textDocument/definition`. Buckets: agree, mdroots-only, other-only (fix or justify). Results: [m1-differential](../research/m1-differential.md).
+1. **Resolution parity**: per link, compare with zk's `links.target_id` → `notes.path` (`sqlite3 -readonly`) and marksman's `textDocument/definition`. Buckets: agree, mdroots-only, other-only (fix or justify). Results: [zk-differential](../research/zk-differential.md).
 2. **Diagnostics parity**: vs marksman `publishDiagnostics` (58 files in vault A, triage each) and zk `target_id IS NULL AND external = 0` (57 / 138). Expected differences: `#+LINK` abbreviations, gitignored targets on disk.
 3. **Feature smoke**: symbols, hover, reference counts on the 10 most-linked notes vs marksman; differences explained by context rules.
 4. **Timing and memory**: cold (cache wiped), warm, warm after checkout of 50 files, 10 parallel instances; `phys_footprint` at N=10.

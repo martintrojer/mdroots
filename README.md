@@ -12,7 +12,7 @@ relative paths.
 M1 is done: `mdroots-syntax` (parsing, link scan, frontmatter),
 `mdroots-resolve` (resolution ladder), `mdroots-core` (`MemStore`) and
 `tools/zkdiff`, which checks resolution against zk on real vaults
-([results](docs/research/m1-differential.md)).
+([results](docs/research/zk-differential.md)).
 
 M2 is done: `mdroots-roots` finds the root of a file without listing
 trees that are virtual, remote or too big: registry lookup, marker climb,
