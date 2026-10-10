@@ -257,6 +257,13 @@ pub struct NoteSummary {
     /// The file's modification time on disk; `None` when unknown (an
     /// overlay-only note, a failed stat, or a filesystem without times).
     pub modified: Option<SystemTime>,
+    /// When the note was created: its frontmatter `date` (zk's creation
+    /// key), else `created`, when either parses as `YYYY-MM-DD`,
+    /// `YYYY-MM-DD[T ]HH:MM[:SS]` or RFC 3339 (a time without an offset is
+    /// UTC); else the file's birth time ([`FileSystem::created`]). `None` when
+    /// neither is known. Birth times do not survive a copy or a
+    /// `git clone`, which is why the frontmatter wins.
+    pub created: Option<SystemTime>,
 }
 
 /// One link of a document, resolved.
@@ -564,6 +571,34 @@ impl Workspace {
             watch: false,
             code_dirs,
         }))
+    }
+
+    /// Open the notebook containing the directory `dir`: the root found
+    /// the way [`open_for`](Self::open_for) finds it for a note, so `dir`
+    /// may be a subdirectory of a notebook (as `zk` treats a path argument
+    /// as a filter inside the notebook). Discovery starts from the first
+    /// note under `dir` (breadth first, by name, hidden entries skipped);
+    /// when there is none, or the root found does not contain `dir` (the
+    /// note sits in a nested root, or is opened alone), `dir` itself is
+    /// opened with [`open_at`](Self::open_at). The result's root always
+    /// contains `dir`.
+    pub fn open_dir(dir: &Path, opts: Options) -> Result<Workspace, Error> {
+        let (fs, _) = opts.io()?;
+        opts.cancel.check()?;
+        let dir = fs.canonicalize(dir)?;
+        if !fs.stat(&dir)?.is_dir {
+            return Err(Error::new(
+                ErrorKind::Io,
+                format!("not a directory: {}", dir.display()),
+            ));
+        }
+        if let Some(note) = first_note(&*fs, &dir, &opts.cancel)? {
+            let ws = Workspace::open_for(&note, opts.clone())?;
+            if !ws.is_single() && dir.starts_with(&ws.root().path) {
+                return Ok(ws);
+            }
+        }
+        Workspace::open_at(&dir, opts)
     }
 
     fn new(mut p: Parts) -> Self {
@@ -889,6 +924,7 @@ impl Workspace {
                 let path = self.abs(rel);
                 Some(NoteSummary {
                     modified: self.modified(&path),
+                    created: fm_created(doc).or_else(|| self.inner.fs.created(&path)),
                     title: title(rel, doc),
                     tags: tag_names(doc),
                     path,
@@ -917,18 +953,47 @@ impl Workspace {
         }
     }
 
-    /// Each tag with the number of notes carrying it, sorted by name.
+    /// Each tag with the number of notes carrying it. Tags differing only
+    /// in case are one tag (as [`notes_with_tag`](Self::notes_with_tag)
+    /// matches them): its label is the spelling most notes use (on a tie,
+    /// the one met first in path order) and a note counts once. Sorted by
+    /// lowercase name.
     pub fn tags(&self) -> Vec<(String, usize)> {
         let store = self.store();
-        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        // Lowercase name -> (notes, spellings with their note counts in
+        // first-seen order).
+        type Group = (usize, Vec<(String, usize)>);
+        let mut groups: BTreeMap<String, Group> = BTreeMap::new();
         for rel in store.files() {
-            if let Some(doc) = store.document(rel) {
-                for t in tag_names(doc) {
-                    *counts.entry(t).or_default() += 1;
+            let Some(doc) = store.document(rel) else {
+                continue;
+            };
+            let mut seen = BTreeSet::new();
+            for t in tag_names(doc) {
+                let key = t.to_lowercase();
+                let g = groups.entry(key.clone()).or_default();
+                if seen.insert(key) {
+                    g.0 += 1;
+                }
+                match g.1.iter_mut().find(|(s, _)| *s == t) {
+                    Some(s) => s.1 += 1,
+                    None => g.1.push((t, 1)),
                 }
             }
         }
-        counts.into_iter().collect()
+        groups
+            .into_values()
+            .map(|(n, spellings)| {
+                // max_by_key keeps the last maximum: reverse for the first.
+                let label = spellings
+                    .into_iter()
+                    .rev()
+                    .max_by_key(|(_, c)| *c)
+                    .map(|(s, _)| s)
+                    .unwrap_or_default();
+                (label, n)
+            })
+            .collect()
     }
 
     /// Resolve the first link in `link_text` (e.g. `[[note]]`), written in
@@ -1168,6 +1233,147 @@ pub(crate) fn title(rel: &str, doc: &Document) -> String {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default()
         })
+}
+
+/// The first note under `dir`, breadth first, entries by name, hidden
+/// entries skipped; at most [`WORKING_SET_CAP`] directories are listed.
+fn first_note(fs: &dyn FileSystem, dir: &Path, cancel: &Cancel) -> Result<Option<PathBuf>, Error> {
+    let mut queue = std::collections::VecDeque::from([dir.to_path_buf()]);
+    let mut listed = 0;
+    while let Some(d) = queue.pop_front() {
+        cancel.check()?;
+        listed += 1;
+        if listed > WORKING_SET_CAP {
+            break;
+        }
+        let Ok(entries) = fs.read_dir(&d) else {
+            continue;
+        };
+        let mut subdirs = Vec::new();
+        for (name, m) in entries {
+            if is_temp(&name) {
+                continue;
+            }
+            if m.is_file && is_note(&name) {
+                return Ok(Some(d.join(name)));
+            }
+            if m.is_dir {
+                subdirs.push(d.join(name));
+            }
+        }
+        queue.extend(subdirs);
+    }
+    Ok(None)
+}
+
+/// The creation time in the frontmatter: `date`, else `created`.
+fn fm_created(doc: &Document) -> Option<SystemTime> {
+    let fm = doc.frontmatter()?;
+    ["date", "created"].iter().find_map(|k| match fm.get(k)? {
+        mdroots_syntax::Value::Str(s) => parse_fm_date(s),
+        _ => None,
+    })
+}
+
+/// A frontmatter date: `YYYY-MM-DD`, `YYYY-MM-DD[T ]HH:MM[:SS[.frac]]`,
+/// optionally followed by `Z` or `±HH:MM` (RFC 3339). A time without an
+/// offset is UTC. Surrounding quotes and blanks are ignored.
+pub(crate) fn parse_fm_date(s: &str) -> Option<SystemTime> {
+    let s = s.trim().trim_matches(|c| c == '"' || c == '\'');
+    let b = s.as_bytes();
+    let num = |r: Range<usize>| -> Option<i64> {
+        let t = s.get(r)?;
+        t.bytes()
+            .all(|c| c.is_ascii_digit())
+            .then(|| t.parse().ok())?
+    };
+    if b.len() < 10 || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    if !(1..=12).contains(&mo) || d < 1 || d > days_in_month(y, mo) {
+        return None;
+    }
+    let mut secs = days_from_civil(y, mo, d) * 86_400;
+    let mut nanos = 0u32;
+    let mut rest = &s[10..];
+    if let Some(t) = rest.strip_prefix(['T', 't', ' ']) {
+        let tb = t.as_bytes();
+        if tb.len() < 5 || tb[2] != b':' {
+            return None;
+        }
+        let two = |i: usize| -> Option<i64> {
+            let x = t.get(i..i + 2)?;
+            x.bytes()
+                .all(|c| c.is_ascii_digit())
+                .then(|| x.parse().ok())?
+        };
+        let (h, mi) = (two(0)?, two(3)?);
+        let mut used = 5;
+        let mut sec = 0;
+        if tb.get(5) == Some(&b':') {
+            sec = two(6)?;
+            used = 8;
+            if tb.get(8) == Some(&b'.') {
+                let frac: String = t[9..].chars().take_while(char::is_ascii_digit).collect();
+                if frac.is_empty() {
+                    return None;
+                }
+                let digits: String = frac.chars().chain("000000000".chars()).take(9).collect();
+                nanos = digits.parse().ok()?;
+                used = 9 + frac.len();
+            }
+        }
+        if h > 23 || mi > 59 || sec > 60 {
+            return None;
+        }
+        secs += h * 3600 + mi * 60 + sec;
+        rest = &t[used..];
+        match rest.as_bytes() {
+            [] => {}
+            [b'Z' | b'z'] => rest = "",
+            [sign @ (b'+' | b'-'), ..] if rest.len() == 6 && rest.as_bytes()[3] == b':' => {
+                let oh: i64 = rest[1..3].parse().ok()?;
+                let om: i64 = rest[4..6].parse().ok()?;
+                let off = oh * 3600 + om * 60;
+                secs -= if *sign == b'+' { off } else { -off };
+                rest = "";
+            }
+            _ => return None,
+        }
+    }
+    if !rest.is_empty() {
+        return None;
+    }
+    let d = Duration::new(secs.unsigned_abs(), nanos);
+    if secs >= 0 {
+        UNIX_EPOCH.checked_add(d)
+    } else {
+        UNIX_EPOCH
+            .checked_sub(Duration::from_secs(secs.unsigned_abs()))?
+            .checked_add(Duration::new(0, nanos))
+    }
+}
+
+fn days_in_month(y: i64, m: i64) -> i64 {
+    match m {
+        2 if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+/// Days from 1970-01-01 to the proleptic Gregorian date `y-m-d`
+/// (Howard Hinnant's `days_from_civil`).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 fn tag_names(doc: &Document) -> Vec<String> {

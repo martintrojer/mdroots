@@ -530,11 +530,13 @@ pub(crate) fn completion(c: &Ctx, pos: Position) -> Result<CompletionList, Fail>
                 .collect()
         }
         // The partial tag being typed is a tag of the overlay too: drop it
-        // when this note is its only carrier.
+        // when this note is its only carrier. Tags group case-insensitively
+        // (one label per tag), so compare lowercase.
         Want::Tags => {
+            let typed = line[at..].to_lowercase();
             c.ws.tags()
                 .into_iter()
-                .filter(|(t, n)| !(*n == 1 && *t == line[at..]))
+                .filter(|(t, n)| !(*n == 1 && t.to_lowercase() == typed))
                 .map(|(t, n)| {
                     let detail = format!("{n} note{}", if n == 1 { "" } else { "s" });
                     item(t.clone(), t, CompletionItemKind::KEYWORD, Some(detail))
@@ -787,6 +789,43 @@ mod tests {
         assert_eq!(want("  #pro").0, Want::Nothing);
         assert_eq!(want("## x").0, Want::Nothing);
         assert_eq!(want("a#b").0, Want::Nothing);
+    }
+
+    #[test]
+    fn tag_completion_offers_one_spelling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join("a.md"), "# A\n#Rust\n").unwrap();
+        std::fs::write(root.join("b.md"), "# B\n#rust\n").unwrap();
+        std::fs::write(root.join("c.md"), "# C\n#rust #Solo\n").unwrap();
+        let typing = root.join("d.md");
+        std::fs::write(&typing, "# D\n#New\ntext #SOLO #NEW").unwrap();
+        let opts = mdroots::Options::default()
+            .fs(std::sync::Arc::new(mdroots::StdFs))
+            .probe(std::sync::Arc::new(mdroots::StdProbe))
+            .enumerator(std::sync::Arc::new(mdroots::NoEnumerator))
+            .index(mdroots::IndexMode::Memory);
+        let ws = Workspace::open_for(&typing, opts).unwrap();
+        let c = Ctx::new(&ws, typing, PositionEncoding::Utf8).unwrap();
+        let labels = |line: u32, col: u32| -> Vec<(String, Option<String>)> {
+            let Ok(list) = completion(&c, Position::new(line, col)) else {
+                panic!("completion failed");
+            };
+            list.items
+                .into_iter()
+                .map(|i| (i.label, i.detail))
+                .collect()
+        };
+        // `#SOLO` and `#Solo` group; `Solo` has two notes. `New` (label of
+        // `#New`/`#NEW`) is carried by this note alone: typing `#NEW` drops it.
+        assert_eq!(
+            labels(2, 15),
+            [
+                ("rust".to_owned(), Some("3 notes".to_owned())),
+                ("Solo".to_owned(), Some("2 notes".to_owned())),
+            ]
+        );
     }
 
     #[test]

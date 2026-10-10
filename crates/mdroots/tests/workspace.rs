@@ -533,6 +533,105 @@ fn notes_and_tags() {
     assert_eq!(ws.tags(), [("x".to_owned(), 1), ("y".to_owned(), 2)]);
 }
 
+#[test]
+fn tags_group_case_insensitively_under_the_most_common_spelling() {
+    let (_tmp, _root, ws) = temp_repo(&[
+        ("a.md", "# A\n#Rust #Go\n"),
+        ("b.md", "# B\n#rust #go\n"),
+        ("c.md", "# C\n#rust #RUST #zed\n"),
+    ]);
+    // rust: 3 notes, spelled `rust` most; c.md counts once. Go/go tie:
+    // the spelling met first in path order wins. Sorted by lowercase name.
+    assert_eq!(
+        ws.tags(),
+        [
+            ("Go".to_owned(), 2),
+            ("rust".to_owned(), 3),
+            ("zed".to_owned(), 1)
+        ]
+    );
+    assert_eq!(ws.notes_with_tag("RUST").len(), 3);
+}
+
+#[test]
+fn note_summary_created_prefers_the_frontmatter_date() {
+    let (fs, probe) = both(&[
+        ("/c/.mdroots", ""),
+        ("/c/day.md", "---\ndate: 2024-02-29\n---\n"),
+        ("/c/time.md", "---\ndate: \"2024-03-01 10:20\"\n---\n"),
+        ("/c/rfc.md", "---\ndate: 2024-03-01T10:20:30.5+01:00\n---\n"),
+        ("/c/created.md", "---\ncreated: 1969-12-31T23:59:59Z\n---\n"),
+        ("/c/bad.md", "---\ndate: 2023-02-29\n---\n"),
+        ("/c/words.md", "---\ndate: last monday\n---\n"),
+        ("/c/none.md", "# None\n"),
+    ]);
+    let ws =
+        Workspace::open_for(Path::new("/c/none.md"), opts(Arc::new(fs), Arc::new(probe))).unwrap();
+    let at = |secs: u64, nanos: u32| Some(std::time::UNIX_EPOCH + Duration::new(secs, nanos));
+    let created: Vec<(String, Option<std::time::SystemTime>)> = ws
+        .notes()
+        .into_iter()
+        .map(|n| {
+            (
+                n.path.file_name().unwrap().to_string_lossy().into_owned(),
+                n.created,
+            )
+        })
+        .collect();
+    // MemFs has no birth times: no date in the frontmatter is `None`.
+    assert_eq!(
+        created,
+        [
+            ("bad.md".to_owned(), None),
+            (
+                "created.md".to_owned(),
+                Some(std::time::UNIX_EPOCH - Duration::from_secs(1))
+            ),
+            ("day.md".to_owned(), at(1_709_164_800, 0)),
+            ("none.md".to_owned(), None),
+            ("rfc.md".to_owned(), at(1_709_284_830, 500_000_000)),
+            ("time.md".to_owned(), at(1_709_288_400, 0)),
+            ("words.md".to_owned(), None),
+        ]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn note_summary_created_falls_back_to_the_birth_time() {
+    let (_tmp, _root, ws) = temp_repo(&[("a.md", "# A\n")]);
+    let n = ws.notes().into_iter().next().unwrap();
+    let born = std::fs::metadata(&n.path).unwrap().created().unwrap();
+    assert_eq!(n.created, Some(born));
+}
+
+#[test]
+fn open_dir_finds_the_notebook_of_a_subdirectory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap().join("nb");
+    for d in [".git", "a/deep", "empty", ".hidden"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    std::fs::write(root.join("top.md"), "[[n]]\n").unwrap();
+    std::fs::write(root.join("a/deep/n.md"), "# N\n").unwrap();
+    std::fs::write(root.join(".hidden/h.md"), "# H\n").unwrap();
+    // From a subdirectory whose only note is two levels down.
+    let ws = Workspace::open_dir(&root.join("a"), std_opts()).unwrap();
+    assert_eq!(ws.root().path, root);
+    assert_eq!(ws.root().mode, RootMode::Vcs);
+    assert!(ws.files().contains(&root.join("top.md")));
+    // A subdirectory without notes opens itself (nothing to discover from).
+    let ws = Workspace::open_dir(&root.join("empty"), std_opts()).unwrap();
+    assert_eq!(ws.root().path, root.join("empty"));
+    assert!(ws.files().is_empty());
+    // The root itself.
+    let ws = Workspace::open_dir(&root, std_opts()).unwrap();
+    assert_eq!(ws.root().path, root);
+    // A file is not a directory.
+    let e = Workspace::open_dir(&root.join("top.md"), std_opts());
+    assert_eq!(e.err().unwrap().kind(), ErrorKind::Io);
+}
+
 /// A temp git repo with `files`, opened in memory mode.
 fn temp_repo(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, Workspace) {
     let tmp = tempfile::tempdir().unwrap();
