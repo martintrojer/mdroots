@@ -507,8 +507,9 @@ and the missing-key hint ([Planned design](#frontmatter-features)).
 Harnesses in [`bench/`](../../bench/): `mdsurvey.py` (corpus stats),
 `mdresolve.py` (prototype ladder), `lspbench.py` (stdio client timing each
 method to first non-empty result, plus diagnostics and RSS, against `marksman`
-and `zk lsp`). `lspbench.py` still needs `--skip`, per-request `--timeout`, a
-capability check (it waits 30 s on unimplemented methods), and `phys_footprint`.
+and `zk lsp`). `--skip` drops methods, `--timeout` bounds each method's wait
+(retries included), a method missing from the server's capabilities is
+reported `nocap` and never sent, and on macOS it records `phys_footprint`.
 
 ### 5.1 Differential and churn tests
 1. **Resolution parity**: per link, compare with zk's `links.target_id` → `notes.path` (`sqlite3 -readonly`) and marksman's `textDocument/definition`. Buckets: agree, mdroots-only, other-only (fix or justify). Results: [zk-differential](../research/zk-differential.md).

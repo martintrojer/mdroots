@@ -389,8 +389,9 @@ required or written.
   ([index spec §3.2](specs/index.md#32-vote-and-link-style)).
 - Inserted links (`Workspace::link_to`, extract-note) follow the root: an
   existing zk config wins (over Obsidian too), then an Obsidian config, then
-  the vote; a root without explicit links gets file-relative Markdown links
-  with `.md`.
+  the vote; a root with no links to vote on gets file-relative Markdown links
+  without `.md` under a `.zk` marker, `[[stem]]` wiki links under an
+  `.obsidian` marker, else file-relative Markdown links with `.md`.
 
 **Why**
 - Goal: install and forget. zk needs `zk init`; marksman needs a VCS marker

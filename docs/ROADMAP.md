@@ -25,8 +25,7 @@ real world they are meant for.
    [marksman](https://github.com/artempyanykh/marksman) and zk, feature
    smoke (symbols, hover, reference counts), and timing against both servers
    ([index spec §5.1](specs/index.md#51-differential-and-churn-tests),
-   items 2–4). `bench/lspbench.py` first needs `--skip`, per-request
-   timeouts, a capability check and `phys_footprint`.
+   items 2–4).
 3. **Many editors at once.** The memory target is < 35 MB `phys_footprint`
    per process with 10 editors on one root
    ([D3](DECISIONS.md#d3-in-process-no-daemon-one-writer-per-root)). Single

@@ -69,8 +69,10 @@ Prebuilt binaries for macOS (Apple silicon) and Linux (x86_64) are on the
 [releases page](https://github.com/martintrojer/mdroots/releases).
 
 **Neovim 0.12+:** copy [`editors/nvim/lsp/mdroots.lua`](editors/nvim/lsp/mdroots.lua)
-(and optionally [`plugin/mdroots.lua`](editors/nvim/plugin/mdroots.lua)) into
-`~/.config/nvim/` and open a markdown file. `:MdrootsInfo` shows the root and
+and [`plugin/mdroots.lua`](editors/nvim/plugin/mdroots.lua) into
+`~/.config/nvim/` and open a markdown file. The plugin file calls
+`vim.lsp.enable('mdroots')` and adds optional mappings; to skip it, call
+`vim.lsp.enable('mdroots')` in your own config. `:MdrootsInfo` shows the root and
 why ([details](docs/specs/library.md#neovim-012-example)).
 
 ## Use

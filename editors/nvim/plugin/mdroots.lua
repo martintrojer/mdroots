@@ -63,8 +63,7 @@ vim.api.nvim_create_autocmd('LspAttach', {
       map('gO', vim.lsp.buf.document_symbol, 'document symbols')
     end
 
-    -- Live completion as you type [[, ](, # (tags; not a heading's leading #),
-    -- or : in frontmatter.
+    -- Live completion as you type [[, ]( or # (tags; not a heading's leading #).
     if vim.g.mdroots_autocomplete ~= false and client:supports_method('textDocument/completion') then
       vim.lsp.completion.enable(true, client.id, buf, { autotrigger = true })
     end

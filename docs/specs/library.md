@@ -36,7 +36,7 @@ mdroots/
     mdroots-index/    cache dir, flock roles, per-root DB, reconcile, SQLite registry (rusqlite)
     mdroots/          facade: Workspace, Workspaces, re-exports   ← what embedders depend on
     mdroots-lsp/      the language server as a library: mdroots_lsp::serve()
-    mdroots-cli/      the `mdroots` binary: check, roots, resolve, backlinks, search, lsp (§6)
+    mdroots-cli/      the `mdroots` binary: check, notes, tags, roots, resolve, backlinks, search, lsp (§6)
   editors/nvim/       Neovim 0.12+ example config
   bench/              lspbench.py, mdsurvey.py, mdresolve.py, nvim_smoke.lua
   tools/zkdiff/       the offline differential against zk's notebook.db
@@ -144,7 +144,9 @@ let found  = ws.search_notes("qry", 50);                       // Vec<NoteSummar
 let hits   = ws.full_text("some words", 50, &cancel)?;         // Vec<Hit>, full-text, every word must appear
 let tags   = ws.tags();                                        // Vec<(String, usize)>, case-folded, sorted by lowercase name
 let tags   = ws.tags_under(&[dir]);                            // the same over the notes under some paths
-let found  = ws.query(&NoteQuery { tag: vec![TagExpr::parse("a, NOT b")?], ..Default::default() })?; // Vec<NoteSummary>, zk list filters
+let mut q = NoteQuery::default();                              // #[non_exhaustive]: build from default, then set fields
+q.tag = vec![TagExpr::parse("a, NOT b")?];
+let found  = ws.query(&q)?;                                    // Vec<NoteSummary>, zk list filters
 let lone   = ws.orphans()?;                                    // Vec<NoteSummary>: no other note links to them
 let pairs  = ws.missing_backlinks()?;                          // Vec<(from, to)>: from links to, to does not link back
 let near   = ws.related(&note_path)?;                          // Vec<(NoteSummary, shared neighbours)>: two hops, not linked
@@ -415,7 +417,7 @@ Files in [`editors/nvim/`](../../editors/nvim/) (drop into your Neovim config di
 | File | What |
 |---|---|
 | `lsp/mdroots.lua` | config auto-discovered by `vim.lsp.config`: `cmd = {'mdroots','lsp'}`, `filetypes = {markdown, org}`, a `reuse_client` predicate, `workspace_required = false`, a commented `settings = { mdroots = { diagnostics = … } }` block |
-| `plugin/mdroots.lua` | `vim.lsp.enable('mdroots')` plus optional `LspAttach` extras: `gd`, `gO` (LSP symbols), guarded autotrigger completion, codelens, LSP folding, `<leader>ns` search, `<leader>nb` backlinks to loclist, `<leader>nr` rename note, `<leader>nn` extract the visual selection to a new note (the extract-note code action), `:MdrootsInfo`. Codelens, folding and `<leader>nn` are turned on only when the server offers code lenses, folding ranges and the extract-note code action (it does, §3.6) |
+| `plugin/mdroots.lua` | `vim.lsp.enable('mdroots')` plus optional `LspAttach` extras: `gd`, `gO` (LSP symbols), guarded autotrigger completion, codelens, LSP folding, `<leader>ns` search, `<leader>nb` backlinks to loclist, `<leader>nr` rename note, `<leader>nn` extract the visual selection to a new note (the extract-note code action), `:MdrootsInfo`. Codelens and folding are turned on only when the server offers code lenses and folding ranges (it does, §3.6); `<leader>nn` is always mapped |
 
 Choices (checked against the 0.12.5 runtime):
 

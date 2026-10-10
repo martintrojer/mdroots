@@ -17,6 +17,7 @@ repeating it.
 | [ROADMAP.md](ROADMAP.md) | everything not built or not validated, open questions, thresholds to validate |
 | [research/gopls.md](research/gopls.md) | what makes [gopls](https://go.dev/gopls) fast, what mdroots adopts, why no daemon |
 | [research/zk-differential.md](research/zk-differential.md) | mdroots link resolution vs [zk](https://github.com/zk-org/zk)'s `notebook.db` on two real vaults |
+| [research/benchmark.md](research/benchmark.md) | language server timing and memory: mdroots vs zk and marksman on generated notebooks |
 | [research/ramble.md](research/ramble.md) | code ported from ramble, how ramble embeds mdroots, the gaps it works around |
 | [../editors/nvim/](../editors/nvim/) | the Neovim plugin and LSP config (setup: [library spec](specs/library.md#neovim-012-example)) |
 | `crates/*/README.md` | each crate's page on [crates.io](https://crates.io/crates/mdroots) |
