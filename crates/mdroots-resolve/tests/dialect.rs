@@ -6,8 +6,8 @@ use std::path::Path;
 use mdroots_resolve::ResolveEnv;
 use mdroots_resolve::ResolveStep;
 use mdroots_resolve::dialect::{
-    DialectMarker, LinkStyle, RootConventions, Severity, Vote, VoteResult, detect, link_severity,
-    link_style,
+    DialectMarker, LinkStyle, RootConventions, Setting, Severity, Source, Vote, VoteResult, detect,
+    explain, link_severity, link_style,
 };
 use mdroots_syntax::{Dialect, Link, parse};
 
@@ -103,7 +103,6 @@ fn obsidian_app_json() {
     assert_eq!(c.markers, vec![DialectMarker::Obsidian]);
     assert_eq!(c.use_markdown_links, Some(true));
     assert_eq!(c.new_link_format.as_deref(), Some("relative"));
-    assert_eq!(c.attachment_folder, None);
 }
 
 #[test]
@@ -125,10 +124,10 @@ fn malformed_app_json_leaves_obsidian_fields_none() {
         assert_eq!(c.new_link_format, None, "{text}");
     }
     let good = r#" {"a": {"b": [1, -2.5e3, null, "\u00e9"]}, "useMarkdownLinks": false,
-        "attachmentFolderPath": "assets/img"} "#;
+        "newLinkFormat": "\u0072elative"} "#;
     let c = detect(&FakeEnv::new(&[(".obsidian/app.json", good)]));
     assert_eq!(c.use_markdown_links, Some(false));
-    assert_eq!(c.attachment_folder.as_deref(), Some("assets/img"));
+    assert_eq!(c.new_link_format.as_deref(), Some("relative"));
 }
 
 #[test]
@@ -139,22 +138,10 @@ fn app_json_top_level_keys_only() {
         None
     );
     assert_eq!(
-        app(r#"{"attachmentFolderPath":"\uD83D\uDE00"}"#)
-            .attachment_folder
+        app(r#"{"newLinkFormat":"\uD83D\uDE00"}"#)
+            .new_link_format
             .as_deref(),
         Some("😀")
-    );
-    assert_eq!(
-        app(r#"{"attachmentFolderPath":"a\u0062"}"#)
-            .attachment_folder
-            .as_deref(),
-        Some("ab")
-    );
-    assert_eq!(
-        app(r#"{"attachmentFolderPath":"ab"}"#)
-            .attachment_folder
-            .as_deref(),
-        Some("ab")
     );
     assert_eq!(
         app(r#"{"useMarkdownLinks":"yes"}"#).use_markdown_links,
@@ -163,29 +150,13 @@ fn app_json_top_level_keys_only() {
 }
 
 #[test]
-fn edn_key_matches_whole_token_only() {
-    let fmt = |text: &str| detect(&FakeEnv::new(&[("logseq/config.edn", text)])).logseq_name_format;
-    assert_eq!(fmt("{:x:file/name-format :wrong}"), None);
-    assert_eq!(fmt("{:file/name-formatx :wrong}"), None);
-    assert_eq!(
-        fmt("{:file/name-format :triple-lowbar}").as_deref(),
-        Some("triple-lowbar")
-    );
-    assert_eq!(
-        fmt("{:a 1,:file/name-format :legacy}").as_deref(),
-        Some("legacy")
-    );
-}
-
-#[test]
-fn logseq_name_format() {
-    let env = FakeEnv::new(&[(
-        "logseq/config.edn",
-        "{:meta/version 1\n ;; :file/name-format :legacy\n :file/name-format :triple-lowbar}\n",
-    )]);
+fn logseq_config_is_a_marker_only() {
+    let env = FakeEnv::new(&[("logseq/config.edn", "{:file/name-format :triple-lowbar}\n")]);
     let c = detect(&env);
     assert_eq!(c.markers, vec![DialectMarker::Logseq]);
-    assert_eq!(c.logseq_name_format.as_deref(), Some("triple-lowbar"));
+    let mut want = RootConventions::default();
+    want.markers = vec![DialectMarker::Logseq];
+    assert_eq!(c, want);
 }
 
 #[test]
@@ -397,8 +368,13 @@ fn zk_link_format_wins_over_the_vote() {
     let no_suffix = LinkStyle::MarkdownRelative { md_suffix: false };
     assert_eq!(zk_style(&md("link-format = \"wiki\"")), LinkStyle::WikiPath);
     assert_eq!(zk_style(&md("link-format = \"markdown\"")), no_suffix);
-    // zk's defaults: markdown links without the extension.
-    assert_eq!(zk_style(""), no_suffix);
+    // A config without link keys does not override the vote ...
+    assert_eq!(
+        zk_style("[note]\nfilename = \"{{id}}\"\n"),
+        LinkStyle::MarkdownRelative { md_suffix: true }
+    );
+    // ... but either key alone does, with zk's defaults for the other.
+    assert_eq!(zk_style(&md("link-drop-extension = true")), no_suffix);
     assert_eq!(
         zk_style(&md(
             "link-format = \"markdown\"\nlink-drop-extension = false"
@@ -427,7 +403,12 @@ fn obsidian_style(app: &str) -> LinkStyle {
 #[test]
 fn obsidian_app_json_wins_over_the_vote() {
     let md = LinkStyle::MarkdownRelative { md_suffix: true };
-    assert_eq!(obsidian_style("{}"), LinkStyle::WikiStem);
+    // No link keys: the vote (Markdown here) decides.
+    assert_eq!(obsidian_style("{}"), md);
+    assert_eq!(
+        obsidian_style(r#"{"useMarkdownLinks": false}"#),
+        LinkStyle::WikiStem
+    );
     assert_eq!(
         obsidian_style(r#"{"newLinkFormat": "shortest"}"#),
         LinkStyle::WikiStem
@@ -492,6 +473,188 @@ fn vote_decides_without_tool_config() {
         voted(0.0, Some(Stem), 1.0),
         LinkStyle::MarkdownRelative { md_suffix: true }
     );
+}
+
+#[test]
+fn bare_wiki_stem_never_votes_root_relative() {
+    let ls = links("[[top]] [[dir/note]] [[other]]\n");
+    let mut vote = Vote::new();
+    vote.record_link(&ls[0], Some(ResolveStep::RootRelative));
+    vote.record_link(&ls[1], Some(ResolveStep::RootRelative));
+    vote.record_link(&ls[2], Some(ResolveStep::RootRelative));
+    let r = vote.result();
+    assert_eq!(r.insert_style, Some(ResolveStep::Stem));
+    assert_eq!(r.resolved_share, 1.0);
+    // A Markdown link without a slash is still root-relative.
+    let ls = links("[a](a.md)\n");
+    let mut vote = Vote::new();
+    vote.record_link(&ls[0], Some(ResolveStep::RootRelative));
+    assert_eq!(vote.result().insert_style, Some(ResolveStep::RootRelative));
+}
+
+#[test]
+fn markers_give_the_style_of_a_root_without_links() {
+    let empty = Vote::new().result();
+    let style = |entries: &[(&str, &str)]| link_style(&detect(&FakeEnv::new(entries)), &empty);
+    assert_eq!(
+        style(&[(".obsidian/workspace.json", "{}")]),
+        LinkStyle::WikiStem
+    );
+    assert_eq!(
+        style(&[(".zk/config.toml", "")]),
+        LinkStyle::MarkdownRelative { md_suffix: false }
+    );
+    assert_eq!(
+        style(&[(".zk/config.toml", ""), (".obsidian/app.json", "{}")]),
+        LinkStyle::MarkdownRelative { md_suffix: false }
+    );
+    // A config with link keys still wins over the marker default.
+    assert_eq!(
+        style(&[(
+            ".zk/config.toml",
+            "[format.markdown]\nlink-format = \"wiki\"\n"
+        )]),
+        LinkStyle::WikiPath
+    );
+    assert_eq!(
+        style(&[(".obsidian/app.json", r#"{"useMarkdownLinks": true}"#)]),
+        LinkStyle::MarkdownRelative { md_suffix: true }
+    );
+    // Once the notes have links, the vote beats the marker.
+    assert_eq!(
+        link_style(
+            &detect(&FakeEnv::new(&[(".zk/config.toml", "")])),
+            &md_vote()
+        ),
+        LinkStyle::MarkdownRelative { md_suffix: true }
+    );
+}
+
+// --- explain -----------------------------------------------------------
+
+fn rows(s: &[Setting]) -> Vec<(&str, &str, &Source)> {
+    s.iter()
+        .map(|r| (r.name, r.value.as_str(), &r.source))
+        .collect()
+}
+
+const fn zk(key: &'static str) -> Source {
+    Source::Config {
+        tool: "zk",
+        file: ".zk/config.toml",
+        key,
+    }
+}
+
+#[test]
+fn explain_zk_config() {
+    let c = detect(&FakeEnv::new(&[(".zk/config.toml", ZK_DOCS)]));
+    let s = explain(&c, &md_vote());
+    assert_eq!(
+        rows(&s),
+        vec![
+            ("link style", "wiki-path", &zk("link-format")),
+            ("hashtags", "on", &zk("hashtags")),
+            ("colon tags", "off", &zk("colon-tags")),
+            ("multiword tags", "off", &zk("multiword-tags")),
+            ("broken links", "error", &zk("dead-link")),
+        ]
+    );
+    let off = detect(&FakeEnv::new(&[(
+        ".zk/config.toml",
+        "[lsp.diagnostics]\ndead-link = \"none\"\n",
+    )]));
+    let s = explain(&off, &md_vote());
+    assert_eq!(rows(&s)[4], ("broken links", "off", &zk("dead-link")));
+}
+
+#[test]
+fn explain_obsidian_config() {
+    let c = detect(&FakeEnv::new(&[(
+        ".obsidian/app.json",
+        r#"{"useMarkdownLinks": true, "newLinkFormat": "absolute"}"#,
+    )]));
+    let mut v = md_vote();
+    v.resolved_share = 0.9;
+    let s = explain(&c, &v);
+    assert_eq!(
+        rows(&s),
+        vec![
+            (
+                "link style",
+                "markdown-root-relative with .md",
+                &Source::Config {
+                    tool: "Obsidian",
+                    file: ".obsidian/app.json",
+                    key: "useMarkdownLinks, newLinkFormat",
+                }
+            ),
+            ("hashtags", "on", &Source::Default),
+            ("colon tags", "off", &Source::Default),
+            ("multiword tags", "off", &Source::Default),
+            ("broken links", "warning", &Source::Vote),
+        ]
+    );
+}
+
+#[test]
+fn explain_marker_only_empty_root() {
+    let c = detect(&FakeEnv::new(&[
+        (".zk/config.toml", ""),
+        ("mkdocs.yml", ""),
+    ]));
+    let s = explain(&c, &Vote::new().result());
+    assert_eq!(
+        rows(&s),
+        vec![
+            (
+                "link style",
+                "markdown-relative without .md",
+                &Source::Marker(DialectMarker::Zk)
+            ),
+            ("hashtags", "on", &Source::Default),
+            ("colon tags", "off", &Source::Default),
+            ("multiword tags", "off", &Source::Default),
+            ("broken links", "warning", &Source::Default),
+            ("docs dir", "docs", &Source::Marker(DialectMarker::Mkdocs)),
+        ]
+    );
+    let c = detect(&FakeEnv::new(&[("mkdocs.yml", "docs_dir: site\n")]));
+    assert_eq!(
+        rows(&explain(&c, &Vote::new().result()))[5],
+        (
+            "docs dir",
+            "site",
+            &Source::Config {
+                tool: "mkdocs",
+                file: "mkdocs.yml",
+                key: "docs_dir",
+            }
+        )
+    );
+}
+
+#[test]
+fn explain_no_marker() {
+    let c = detect(&FakeEnv::new(&[("a.md", "# A")]));
+    let s = explain(&c, &Vote::new().result());
+    assert_eq!(
+        rows(&s),
+        vec![
+            ("link style", "markdown-relative with .md", &Source::Default),
+            ("hashtags", "on", &Source::Default),
+            ("colon tags", "off", &Source::Default),
+            ("multiword tags", "off", &Source::Default),
+            ("broken links", "warning", &Source::Default),
+        ]
+    );
+    let mut v = md_vote();
+    v.wiki_share = 1.0;
+    v.insert_style = Some(ResolveStep::RootRelative);
+    v.resolved_share = 1.0;
+    let s = explain(&c, &v);
+    assert_eq!(rows(&s)[0], ("link style", "wiki-path", &Source::Vote));
+    assert_eq!(rows(&s)[4], ("broken links", "error", &Source::Vote));
 }
 
 #[test]

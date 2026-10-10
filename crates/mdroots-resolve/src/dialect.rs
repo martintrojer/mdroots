@@ -63,14 +63,10 @@ pub struct RootConventions {
     pub use_markdown_links: Option<bool>,
     /// Obsidian `app.json` `newLinkFormat`.
     pub new_link_format: Option<String>,
-    /// Obsidian `app.json` `attachmentFolderPath`.
-    pub attachment_folder: Option<String>,
-    /// marksman `core.title_from_heading`.
-    pub title_from_heading: Option<bool>,
-    /// Logseq `:file/name-format`, without the leading `:`.
-    pub logseq_name_format: Option<String>,
     /// mkdocs `docs_dir` (default `docs`), Docusaurus `docs`, Hugo `content`.
     pub docs_dir: Option<String>,
+    /// `docs_dir` was stated in `mkdocs.yml` (for [`explain`]).
+    docs_dir_from_config: bool,
 }
 
 /// Probe the root's markers and read their small configs. Never panics on
@@ -112,31 +108,18 @@ pub fn detect(env: &dyn ResolveEnv) -> RootConventions {
         && let Some(text) = env.read_config(".obsidian/app.json")
         && let Ok(serde_json::Value::Object(app)) = serde_json::from_str::<serde_json::Value>(&text)
     {
-        let s = |k: &str| app.get(k).and_then(|v| v.as_str()).map(str::to_owned);
         conv.use_markdown_links = app.get("useMarkdownLinks").and_then(|v| v.as_bool());
-        conv.new_link_format = s("newLinkFormat");
-        conv.attachment_folder = s("attachmentFolderPath");
-    }
-    if has(Marksman)
-        && let Some(text) = env.read_config(".marksman.toml")
-        && let Ok(t) = text.parse::<toml::Table>()
-    {
-        conv.title_from_heading = t
-            .get("core")
-            .and_then(|c| c.get("title_from_heading"))
-            .and_then(|v| v.as_bool());
-    }
-    if has(Logseq)
-        && let Some(text) = env.read_config("logseq/config.edn")
-    {
-        conv.logseq_name_format = edn_keyword(&text, ":file/name-format");
+        conv.new_link_format = app
+            .get("newLinkFormat")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
     }
     conv.docs_dir = if has(Mkdocs) {
-        Some(
-            env.read_config("mkdocs.yml")
-                .and_then(|t| yaml_top_scalar(&t, "docs_dir"))
-                .unwrap_or_else(|| "docs".into()),
-        )
+        let stated = env
+            .read_config("mkdocs.yml")
+            .and_then(|t| yaml_top_scalar(&t, "docs_dir"));
+        conv.docs_dir_from_config = stated.is_some();
+        Some(stated.unwrap_or_else(|| "docs".into()))
     } else if has(Docusaurus) {
         Some("docs".into())
     } else if has(Hugo) {
@@ -176,36 +159,6 @@ fn read_zk(text: &str, conv: &mut RootConventions) {
         Some("none") => conv.dead_link_off = true,
         _ => {}
     }
-}
-
-/// Value of an EDN keyword-valued key such as `:file/name-format :triple-lowbar`,
-/// without the leading `:`. Line comments (`;`) are skipped. The key matches
-/// only as a whole token: preceded by line start, whitespace, `{`, `(`, `[`
-/// or `,`, and followed by whitespace.
-fn edn_keyword(text: &str, key: &str) -> Option<String> {
-    for line in text.lines() {
-        let code = line.split(';').next().unwrap_or("");
-        for (i, _) in code.match_indices(key) {
-            let before_ok = code[..i]
-                .chars()
-                .next_back()
-                .is_none_or(|c| c.is_whitespace() || matches!(c, '{' | '(' | '[' | ','));
-            let after = &code[i + key.len()..];
-            if !before_ok || !after.starts_with(char::is_whitespace) {
-                continue;
-            }
-            let rest = after.trim_start();
-            let tok: String = rest
-                .chars()
-                .take_while(|c| !c.is_whitespace() && !matches!(c, ',' | '}' | ']' | ')'))
-                .collect();
-            let tok = tok.trim_matches('"').trim_start_matches(':');
-            if !tok.is_empty() {
-                return Some(tok.to_owned());
-            }
-        }
-    }
-    None
 }
 
 /// Value of a top-level `key: scalar` line in YAML (unquoted or quoted).
@@ -254,7 +207,8 @@ pub struct Vote {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct VoteResult {
     /// Most common step among FileRelative, RootRelative, Stem, Title over
-    /// resolved explicit links; ties go to RootRelative.
+    /// resolved explicit links; ties go to RootRelative. A wiki link without
+    /// a `/` never counts as RootRelative (it counts as Stem).
     pub insert_style: Option<ResolveStep>,
     /// Wiki / (Wiki + Markdown) among explicit links.
     pub wiki_share: f32,
@@ -302,6 +256,16 @@ impl Vote {
             }
             _ => {}
         }
+        // A bare wiki stem (`[[top]]`) that only resolved by joining the
+        // root is still written stem-style: root-relative needs a slash.
+        let step = match step {
+            Some(ResolveStep::RootRelative)
+                if link.kind == LinkKind::Wiki && !link.target.path.contains('/') =>
+            {
+                Some(ResolveStep::Stem)
+            }
+            s => s,
+        };
         if let Some(step) = step {
             self.resolved += 1;
             if let Some(i) = STEP_ORDER.iter().position(|s| *s == step) {
@@ -364,17 +328,21 @@ impl Vote {
 /// Callers must suppress broken-link diagnostics entirely when
 /// `conv.dead_link_off` is true; the vote never re-enables them.
 pub fn link_severity(conv: &RootConventions, vote: &VoteResult) -> Severity {
+    severity_with_source(conv, vote).0
+}
+
+fn severity_with_source(conv: &RootConventions, vote: &VoteResult) -> (Severity, Source) {
     if let Some(s) = conv.dead_link_severity {
-        return s;
+        return (s, ZK_DEAD_LINK);
     }
     if vote.explicit_links == 0 {
-        Severity::Warning
+        (Severity::Warning, Source::Default)
     } else if vote.resolved_share > 0.98 {
-        Severity::Error
+        (Severity::Error, Source::Vote)
     } else if vote.resolved_share < 0.80 {
-        Severity::Hint
+        (Severity::Hint, Source::Vote)
     } else {
-        Severity::Warning
+        (Severity::Warning, Source::Vote)
     }
 }
 
@@ -392,17 +360,19 @@ pub enum LinkStyle {
     MarkdownRootRelative { md_suffix: bool },
 }
 
-/// The style for inserted links. An existing tool config wins over the
-/// vote; when a root has both, [zk](https://github.com/zk-org/zk) wins over
-/// [Obsidian](https://obsidian.md).
+/// The style for inserted links. A link setting in an existing tool config
+/// wins over the vote; when a root has both, [zk](https://github.com/zk-org/zk)
+/// wins over [Obsidian](https://obsidian.md).
 ///
-/// - zk (a `.zk` marker): `link-format` "wiki" gives [`LinkStyle::WikiPath`]
-///   (zk's wiki links are root-relative); "markdown" or absent (zk's
-///   default) gives [`LinkStyle::MarkdownRelative`]; a custom template with
-///   `[[` gives `WikiStem` when it uses `{{filename}}`, else `WikiPath`,
-///   and one without `[[` gives `MarkdownRelative`. The `.md` suffix is
-///   kept only with `link-drop-extension = false`.
-/// - Obsidian (a `.obsidian` marker): wiki unless `useMarkdownLinks`; for
+/// - zk (a `.zk` marker) with `link-format` or `link-drop-extension` set:
+///   `link-format` "wiki" gives [`LinkStyle::WikiPath`] (zk's wiki links
+///   are root-relative); "markdown" or absent (zk's default) gives
+///   [`LinkStyle::MarkdownRelative`]; a custom template with `[[` gives
+///   `WikiStem` when it uses `{{filename}}`, else `WikiPath`, and one
+///   without `[[` gives `MarkdownRelative`. The `.md` suffix is kept only
+///   with `link-drop-extension = false`.
+/// - Obsidian (a `.obsidian` marker) with `useMarkdownLinks` or
+///   `newLinkFormat` set in `app.json`: wiki unless `useMarkdownLinks`; for
 ///   wiki, `newLinkFormat` "shortest" (the default) gives `WikiStem` and
 ///   "relative"/"absolute" give `WikiPath`; for Markdown, "absolute" gives
 ///   `MarkdownRootRelative`, anything else `MarkdownRelative`; the suffix
@@ -410,37 +380,212 @@ pub enum LinkStyle {
 /// - Otherwise the vote: wiki when at least half the explicit links are
 ///   wiki, root-relative when the insert style is
 ///   [`ResolveStep::RootRelative`], and the `.md` suffix when at least half
-///   the Markdown links carry it. A root without explicit links gets
-///   `MarkdownRelative { md_suffix: true }`.
+///   the Markdown links carry it.
+/// - A root without explicit links gets its marker's tool default: zk
+///   `MarkdownRelative { md_suffix: false }`, Obsidian `WikiStem`; any
+///   other root `MarkdownRelative { md_suffix: true }`.
 pub fn link_style(conv: &RootConventions, vote: &VoteResult) -> LinkStyle {
-    if conv.markers.contains(&DialectMarker::Zk) {
+    link_style_with_source(conv, vote).0
+}
+
+fn link_style_with_source(conv: &RootConventions, vote: &VoteResult) -> (LinkStyle, Source) {
+    let zk = conv.markers.contains(&DialectMarker::Zk);
+    let obsidian = conv.markers.contains(&DialectMarker::Obsidian);
+    if zk && (conv.wiki_link_format.is_some() || conv.link_drop_extension.is_some()) {
         let md_suffix = conv.link_drop_extension == Some(false);
-        return match conv.wiki_link_format.as_deref() {
+        let style = match conv.wiki_link_format.as_deref() {
             Some("wiki") => LinkStyle::WikiPath,
             None | Some("markdown") => LinkStyle::MarkdownRelative { md_suffix },
             Some(t) if t.contains("[[") && t.contains("{{filename}}") => LinkStyle::WikiStem,
             Some(t) if t.contains("[[") => LinkStyle::WikiPath,
             Some(_) => LinkStyle::MarkdownRelative { md_suffix },
         };
+        let key = match (
+            conv.wiki_link_format.is_some(),
+            conv.link_drop_extension.is_some(),
+        ) {
+            (true, true) => "link-format, link-drop-extension",
+            (true, false) => "link-format",
+            _ => "link-drop-extension",
+        };
+        return (style, zk_config(key));
     }
-    if conv.markers.contains(&DialectMarker::Obsidian) {
+    if obsidian && (conv.use_markdown_links.is_some() || conv.new_link_format.is_some()) {
         let format = conv.new_link_format.as_deref();
-        return match (conv.use_markdown_links.unwrap_or(false), format) {
+        let style = match (conv.use_markdown_links.unwrap_or(false), format) {
             (false, Some("relative" | "absolute")) => LinkStyle::WikiPath,
             (false, _) => LinkStyle::WikiStem,
             (true, Some("absolute")) => LinkStyle::MarkdownRootRelative { md_suffix: true },
             (true, _) => LinkStyle::MarkdownRelative { md_suffix: true },
         };
+        let key = match (
+            conv.use_markdown_links.is_some(),
+            conv.new_link_format.is_some(),
+        ) {
+            (true, true) => "useMarkdownLinks, newLinkFormat",
+            (true, false) => "useMarkdownLinks",
+            _ => "newLinkFormat",
+        };
+        let src = Source::Config {
+            tool: "Obsidian",
+            file: ".obsidian/app.json",
+            key,
+        };
+        return (style, src);
     }
     if vote.explicit_links == 0 {
-        return LinkStyle::MarkdownRelative { md_suffix: true };
+        return if zk {
+            (
+                LinkStyle::MarkdownRelative { md_suffix: false },
+                Source::Marker(DialectMarker::Zk),
+            )
+        } else if obsidian {
+            (LinkStyle::WikiStem, Source::Marker(DialectMarker::Obsidian))
+        } else {
+            (
+                LinkStyle::MarkdownRelative { md_suffix: true },
+                Source::Default,
+            )
+        };
     }
     let rooted = vote.insert_style == Some(ResolveStep::RootRelative);
     let md_suffix = vote.md_suffix_share >= 0.5;
-    match (vote.wiki_share >= 0.5, rooted) {
+    let style = match (vote.wiki_share >= 0.5, rooted) {
         (true, true) => LinkStyle::WikiPath,
         (true, false) => LinkStyle::WikiStem,
         (false, true) => LinkStyle::MarkdownRootRelative { md_suffix },
         (false, false) => LinkStyle::MarkdownRelative { md_suffix },
+    };
+    (style, Source::Vote)
+}
+
+// --- provenance ----------------------------------------------------------
+
+/// Where a [`Setting`]'s value came from.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// A key in a tool's config file, e.g. zk `.zk/config.toml` `link-format`.
+    /// `key` may name several keys, comma-separated.
+    Config {
+        tool: &'static str,
+        file: &'static str,
+        key: &'static str,
+    },
+    /// The default of the tool whose marker was found (no config states it).
+    Marker(DialectMarker),
+    /// The corpus vote.
+    Vote,
+    /// mdroots' own default.
+    Default,
+}
+
+/// One root setting with its value and where it came from, as shown by
+/// `mdroots roots` and the editor info command.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Setting {
+    /// `link style`, `hashtags`, `colon tags`, `multiword tags`,
+    /// `broken links` or `docs dir`.
+    pub name: &'static str,
+    /// e.g. `wiki-path`, `on`, `warning`, `off`, `docs`.
+    pub value: String,
+    pub source: Source,
+}
+
+const ZK_FILE: &str = ".zk/config.toml";
+const ZK_DEAD_LINK: Source = zk_config("dead-link");
+
+const fn zk_config(key: &'static str) -> Source {
+    Source::Config {
+        tool: "zk",
+        file: ZK_FILE,
+        key,
     }
+}
+
+/// `wiki-stem`, `wiki-path`, `markdown-relative` or `markdown-root-relative`,
+/// the Markdown ones followed by ` with .md` or ` without .md`.
+fn style_name(style: LinkStyle) -> String {
+    let md = |base: &str, md_suffix: bool| {
+        format!("{base} {} .md", if md_suffix { "with" } else { "without" })
+    };
+    match style {
+        LinkStyle::WikiStem => "wiki-stem".into(),
+        LinkStyle::WikiPath => "wiki-path".into(),
+        LinkStyle::MarkdownRelative { md_suffix } => md("markdown-relative", md_suffix),
+        LinkStyle::MarkdownRootRelative { md_suffix } => md("markdown-root-relative", md_suffix),
+    }
+}
+
+fn severity_name(s: Severity) -> &'static str {
+    match s {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Info => "info",
+        Severity::Hint => "hint",
+    }
+}
+
+/// The root's effective settings and where each came from, so a stale tool
+/// config is visible: link style, the three tag syntaxes, broken-link
+/// severity (`off` for zk `dead-link = "none"`), and the docs dir when a
+/// site generator's marker sets one. Values match what [`link_style`],
+/// [`link_severity`] and the parser use.
+pub fn explain(conv: &RootConventions, vote: &VoteResult) -> Vec<Setting> {
+    let row = |name, value: String, source| Setting {
+        name,
+        value,
+        source,
+    };
+    let on = |b: bool| if b { "on" } else { "off" }.to_owned();
+    let mut out = Vec::new();
+
+    let (style, src) = link_style_with_source(conv, vote);
+    out.push(row("link style", style_name(style), src));
+
+    // The parser's defaults (mdroots_syntax::ParseOptions::new).
+    for (name, key, value, default) in [
+        ("hashtags", "hashtags", conv.hashtags, true),
+        ("colon tags", "colon-tags", conv.colon_tags, false),
+        (
+            "multiword tags",
+            "multiword-tags",
+            conv.multiword_tags,
+            false,
+        ),
+    ] {
+        out.push(match value {
+            Some(b) => row(name, on(b), zk_config(key)),
+            None => row(name, on(default), Source::Default),
+        });
+    }
+
+    out.push(if conv.dead_link_off {
+        row("broken links", "off".into(), ZK_DEAD_LINK)
+    } else {
+        let (s, src) = severity_with_source(conv, vote);
+        row("broken links", severity_name(s).into(), src)
+    });
+
+    if let Some(dir) = &conv.docs_dir {
+        let src = if conv.docs_dir_from_config {
+            Source::Config {
+                tool: "mkdocs",
+                file: "mkdocs.yml",
+                key: "docs_dir",
+            }
+        } else {
+            [
+                DialectMarker::Mkdocs,
+                DialectMarker::Docusaurus,
+                DialectMarker::Hugo,
+            ]
+            .into_iter()
+            .find(|m| conv.markers.contains(m))
+            .map_or(Source::Default, Source::Marker)
+        };
+        out.push(row("docs dir", dir.clone(), src));
+    }
+    out
 }

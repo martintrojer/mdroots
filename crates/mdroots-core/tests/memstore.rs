@@ -687,6 +687,22 @@ fn zkvault_vote_is_root_relative_wiki() {
 }
 
 #[test]
+fn obsidian_shaped_vault_votes_wiki_stem() {
+    // Bare stems to root-level notes resolve by joining the root, but they
+    // are stem links, not root-relative ones. No `.obsidian` marker: the
+    // vote alone decides.
+    let s = mem(MemFs::new()
+        .with_file("/top.md", "# Top\n")
+        .with_file("/other.md", "# Other\n")
+        .with_file("/x/one.md", "# One\n\n[[top]] [[other]]\n")
+        .with_file("/y/two.md", "# Two\n\n[[top]] [[one]]\n"));
+    let v = s.vote();
+    assert_eq!(v.explicit_links, 4);
+    assert_eq!(v.insert_style, Some(ResolveStep::Stem), "{v:?}");
+    assert_eq!(link_style(s.conventions(), &v), LinkStyle::WikiStem);
+}
+
+#[test]
 fn notesvault_config_wins_and_its_majority_is_wiki_stem() {
     let s = corpus("notesvault");
     // `link-format = "wiki"`: zk's root-relative wiki links.
