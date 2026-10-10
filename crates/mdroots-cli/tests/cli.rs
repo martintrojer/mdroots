@@ -979,3 +979,22 @@ fn notes_delimiter0_ends_json_with_nul() {
     assert_eq!(r.code, 0);
     assert_eq!(r.stdout, "[]\0");
 }
+
+#[test]
+fn notes_tag_expressions_take_and_and_parentheses() {
+    let v = graph_vault();
+    // a: project, draft; b: project; sub/s: project; hub: index
+    assert_eq!(notes(&v, &["-t", "project AND draft"]), ["a.md"]);
+    assert_eq!(
+        notes(&v, &["-t", "project AND NOT draft"]),
+        ["b.md", "sub/s.md"]
+    );
+    assert_eq!(notes(&v, &["-t", "(index)"]), ["hub.md"]);
+    assert_eq!(
+        notes(&v, &["-t", "(index OR draft), NOT project"]),
+        ["hub.md"]
+    );
+    let r = run_cached(&v, &v.dir(), &["notes", "-t", "(index"]);
+    assert_eq!(r.code, 2);
+    assert_eq!(r.stderr, "mdroots: -t: column 6: expected )\n");
+}

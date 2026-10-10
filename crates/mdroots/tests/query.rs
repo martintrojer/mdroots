@@ -71,6 +71,56 @@ fn tag_expressions_follow_zk() {
 }
 
 #[test]
+fn tag_expressions_take_and_and_parentheses() {
+    let table: &[(&str, &[&str], bool)] = &[
+        // AND: the same as a comma
+        ("career AND projects", &["career", "projects"], true),
+        ("career AND projects", &["career"], false),
+        ("career AND NOT projects", &["career"], true),
+        ("career AND NOT projects", &["career", "projects"], false),
+        ("a AND b, c", &["a", "b", "c"], true),
+        // lowercase "and" stays part of a name
+        ("a and b", &["a and b"], true),
+        // parentheses group
+        ("(xt26)", &["xt26"], true),
+        ("(xt26)", &["career"], false),
+        ("(a OR b), NOT c", &["b"], true),
+        ("(a OR b), NOT c", &["b", "c"], false),
+        ("(a OR b) AND NOT c", &["a"], true),
+        ("a OR (b, c)", &["b", "c"], true),
+        ("a OR (b, c)", &["b"], false),
+        ("a OR (b, c)", &["a"], true),
+        ("NOT (a OR b)", &["c"], true),
+        ("NOT (a OR b)", &["a"], false),
+        ("-(a, b)", &["a"], true),
+        ("-(a, b)", &["a", "b"], false),
+        ("((a))", &["a"], true),
+        // a negated tag inside an or group is fine with parentheses
+        ("a OR (NOT b)", &[], true),
+        ("a OR (NOT b)", &["b"], false),
+    ];
+    for (expr, note, want) in table {
+        let e = TagExpr::parse(expr).unwrap_or_else(|e| panic!("{expr}: {e}"));
+        assert_eq!(e.matches(&tags(note)), *want, "{expr:?} on {note:?}");
+    }
+}
+
+#[test]
+fn tag_expression_syntax_errors() {
+    let table: &[(&str, &str)] = &[
+        ("(a", "column 2: expected )"),
+        ("a)", "column 1: unexpected )"),
+        ("()", "column 1: expected a tag"),
+        ("a AND", "column 5: expected a tag"),
+        ("AND a", "column 0: expected a tag"),
+        ("a AND OR b", "column 6: expected a tag"),
+    ];
+    for (expr, want) in table {
+        assert_eq!(TagExpr::parse(expr).unwrap_err(), *want, "{expr:?}");
+    }
+}
+
+#[test]
 fn tag_expression_errors_name_a_column() {
     let table: &[(&str, &str)] = &[
         ("", "column 0: expected a tag"),

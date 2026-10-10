@@ -12,9 +12,9 @@ commands:
   notes [FLAG...] [PATH...]   list the notes matching every FLAG, as zk
                               list does, in the notebook of the first PATH
                               (default .); PATHs keep the notes under them
-    -t, --tag EXPR            tags: `a, b` and, `a OR b` / `a|b` or,
-                              `NOT a` / `-a` not, `*` and `?` globs
-                              (repeatable: and)
+    -t, --tag EXPR            tags: `a, b` / `a AND b` and, `a OR b` /
+                              `a|b` or, `NOT a` / `-a` not, `( )`
+                              groups, `*` and `?` globs (repeatable: and)
     --tagless                 notes without tags
     -m, --match QUERY         notes containing every word of QUERY
     -x, --exclude PATH        not under PATH (repeatable)

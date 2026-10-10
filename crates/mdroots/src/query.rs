@@ -5,12 +5,15 @@
 //! The syntax follows [zk](https://github.com/zk-org/zk) (its
 //! [filtering docs](https://zk-org.github.io/zk/notes/note-filtering.html)):
 //!
-//! - Tags ([`TagExpr`]): `,` is and, ` OR ` or `|` is or and binds tighter,
-//!   so `a OR b, NOT c` is `(a or b) and not c`. A `NOT ` or `-` prefix
-//!   negates one tag; a negated tag cannot sit in an or group (zk refuses it
-//!   too). `*` and `?` are globs. Names compare case-insensitively; a
-//!   leading `#` is dropped. Keywords are upper case, so tags named `or` or
-//!   `not` still work.
+//! - Tags ([`TagExpr`]): `,` and ` AND ` are and; ` OR ` and `|` are or and
+//!   bind tighter, so `a OR b, NOT c` is `(a or b) and not c`. A `NOT ` or
+//!   `-` prefix negates; parentheses group (`(a OR b) AND NOT c`,
+//!   `NOT (a, b)`). A bare negated tag cannot sit in an or group
+//!   (`a OR NOT b`; zk refuses it too), but a parenthesised one can
+//!   (`a OR (NOT b)`). `*` and `?` are globs. Names compare
+//!   case-insensitively; a leading `#` is dropped. Keywords are upper case,
+//!   so tags named `and`, `or` or `not` still work. A syntax error (an
+//!   unclosed `(`, a dangling `AND`) names its column.
 //! - Dates ([`parse_date`]): see there. Times without an offset are UTC
 //!   (zk uses local time; mdroots has no time-zone database).
 //! - Sort ([`parse_sort`]): `KEY[+|-]`, zk's keys and shortcuts. Without a
@@ -34,112 +37,237 @@ use crate::{Error, Freshness, NoteSummary, Workspace};
 // ---------------------------------------------------------------------------
 // Tag expressions.
 
-/// A parsed tag expression in zk's syntax: `a,b` (and), `a OR b` / `a|b`,
-/// `NOT a` / `-a`, globs (`year/201*`); names compare case-insensitively.
+/// A parsed tag expression in zk's syntax: `a,b` or `a AND b` (and),
+/// `a OR b` / `a|b` (or, binds tighter than and), `NOT a` / `-a` (not),
+/// parentheses, globs (`year/201*`); names compare case-insensitively.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TagExpr {
-    /// And of clauses.
-    clauses: Vec<Clause>,
+    root: Node,
 }
 
-/// One comma-separated part: either an or of globs, or one negated glob.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Clause {
-    negate: bool,
-    /// Lowercase glob patterns.
-    any: Vec<String>,
+enum Node {
+    /// A lowercase glob pattern.
+    Tag(String),
+    Not(Box<Node>),
+    And(Vec<Node>),
+    Or(Vec<Node>),
 }
 
 impl TagExpr {
     /// Parse `s`; the error names the problem and its byte column.
     pub fn parse(s: &str) -> Result<TagExpr, String> {
-        let mut clauses = Vec::new();
-        for (start, part) in split_at(s, 0, |rest| rest.starts_with(',').then_some(1)) {
-            let terms = split_at(part, start, or_separator);
-            let mut clause = Clause {
-                negate: false,
-                any: Vec::new(),
-            };
-            let several = terms.len() > 1;
-            for (col, term) in terms {
-                let (negate, name, col) = term_parts(term, col)?;
-                if negate && several {
-                    return Err(format!("column {col}: cannot negate a tag in an OR group"));
-                }
-                clause.negate = negate;
-                clause.any.push(name.to_lowercase());
-            }
-            clauses.push(clause);
+        let toks = tokens(s);
+        let mut p = Parser {
+            toks: &toks,
+            i: 0,
+            end: s.len(),
+        };
+        let root = p.and()?;
+        match p.peek() {
+            None => Ok(TagExpr { root }),
+            Some((col, Tok::Close)) => Err(format!("column {col}: unexpected )")),
+            Some((col, _)) => Err(format!("column {col}: expected , AND or OR")),
         }
-        Ok(TagExpr { clauses })
     }
 
     /// Whether a note with `tags` matches.
     pub fn matches(&self, tags: &[String]) -> bool {
         let lower: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
-        self.clauses.iter().all(|c| {
-            let hit = c.any.iter().any(|g| lower.iter().any(|t| glob(g, t)));
-            hit != c.negate
-        })
+        eval(&self.root, &lower)
     }
 }
 
-/// ` OR ` or `|` at the start of `rest`: its length.
-fn or_separator(rest: &str) -> Option<usize> {
-    if rest.starts_with('|') {
-        Some(1)
-    } else if rest.starts_with(" OR ") {
-        Some(4)
-    } else {
-        None
+fn eval(n: &Node, tags: &[String]) -> bool {
+    match n {
+        Node::Tag(g) => tags.iter().any(|t| glob(g, t)),
+        Node::Not(x) => !eval(x, tags),
+        Node::And(xs) => xs.iter().all(|x| eval(x, tags)),
+        Node::Or(xs) => xs.iter().any(|x| eval(x, tags)),
     }
 }
 
-/// `s` (starting at byte column `base` of the whole expression) split on
-/// the separator `sep` recognises: `(column, part)` pairs.
-fn split_at(s: &str, base: usize, sep: impl Fn(&str) -> Option<usize>) -> Vec<(usize, &str)> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Tok {
+    And,
+    Or,
+    Not,
+    Open,
+    Close,
+    /// A tag name (a leading `#` dropped).
+    Name(String),
+}
+
+/// Split `s` into `(byte column, token)`. Separators: `,`, `|`, `(`, `)`;
+/// a leading `-` negates; `AND`, `OR` and `NOT` (upper case, between
+/// spaces) are keywords. Anything else up to a separator or a keyword is a
+/// tag name, inner spaces included (`a and b` is one tag).
+fn tokens(s: &str) -> Vec<(usize, Tok)> {
+    let b = s.as_bytes();
     let mut out = Vec::new();
-    let mut from = 0;
     let mut i = 0;
-    while i < s.len() {
-        if let Some(n) = sep(&s[i..]) {
-            out.push((base + from, &s[from..i]));
-            i += n;
-            from = i;
-        } else {
-            i += s[i..].chars().next().map_or(1, char::len_utf8);
+    // At the start of a term, where `-` and `NOT ` negate.
+    let mut term_start = true;
+    while i < b.len() {
+        let c = b[i];
+        if c == b' ' || c == b'\t' {
+            i += 1;
+            continue;
         }
+        let kw = |k: &str| {
+            s[i..].starts_with(k)
+                && s[i + k.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|n| n == ' ' || n == '(')
+        };
+        let tok = match c {
+            b',' => Some((Tok::And, 1)),
+            b'|' => Some((Tok::Or, 1)),
+            b'(' => Some((Tok::Open, 1)),
+            b')' => Some((Tok::Close, 1)),
+            b'-' if term_start => Some((Tok::Not, 1)),
+            _ if kw("AND") => Some((Tok::And, 3)),
+            _ if kw("OR") => Some((Tok::Or, 2)),
+            _ if term_start && kw("NOT") => Some((Tok::Not, 3)),
+            _ => None,
+        };
+        if let Some((t, n)) = tok {
+            term_start = !matches!(t, Tok::Close);
+            out.push((i, t));
+            i += n;
+            continue;
+        }
+        // A name: up to a separator or a keyword that follows a space.
+        let start = i;
+        let mut j = i;
+        while j < b.len() {
+            if matches!(b[j], b',' | b'|' | b'(' | b')') {
+                break;
+            }
+            if b[j] == b' ' {
+                let rest = s[j..].trim_start();
+                let next_kw = ["AND", "OR"].iter().any(|k| {
+                    rest.starts_with(k)
+                        && rest[k.len()..]
+                            .chars()
+                            .next()
+                            .is_none_or(|n| n == ' ' || n == '(')
+                });
+                if next_kw {
+                    break;
+                }
+            }
+            j += s[j..].chars().next().map_or(1, char::len_utf8);
+        }
+        let raw = s[start..j].trim_end();
+        let name = raw.strip_prefix('#').unwrap_or(raw);
+        let col = if raw.starts_with('#') {
+            start + 1
+        } else {
+            start
+        };
+        out.push((col, Tok::Name(name.to_owned())));
+        term_start = false;
+        i = j;
     }
-    out.push((base + from, &s[from..]));
     out
 }
 
-/// One term: (negated, tag name, column of the name).
-fn term_parts(term: &str, col: usize) -> Result<(bool, &str, usize), String> {
-    let lead = term.len() - term.trim_start().len();
-    let mut rest = term.trim();
-    let mut col = col + lead;
-    let mut negate = false;
-    if let Some(r) = rest.strip_prefix('-') {
-        negate = true;
-        col += 1;
-        rest = r;
-    } else if let Some(r) = rest.strip_prefix("NOT ") {
-        negate = true;
-        col += 4;
-        rest = r;
+/// Precedence, loosest first: and (`,`, `AND`), or (`OR`, `|`), not
+/// (`NOT`, `-`), then a name or a parenthesised expression.
+struct Parser<'a> {
+    toks: &'a [(usize, Tok)],
+    i: usize,
+    /// The expression's length: the column of "end of input".
+    end: usize,
+}
+
+impl Parser<'_> {
+    fn peek(&self) -> Option<(usize, &Tok)> {
+        self.toks.get(self.i).map(|(c, t)| (*c, t))
     }
-    let lead = rest.len() - rest.trim_start().len();
-    rest = rest.trim_start();
-    col += lead;
-    if let Some(r) = rest.strip_prefix('#') {
-        col += 1;
-        rest = r;
+
+    fn col(&self) -> usize {
+        self.peek().map_or(self.end, |(c, _)| c)
     }
-    if rest.is_empty() {
-        return Err(format!("column {col}: expected a tag"));
+
+    fn eat(&mut self, t: &Tok) -> bool {
+        if self.peek().is_some_and(|(_, x)| x == t) {
+            self.i += 1;
+            true
+        } else {
+            false
+        }
     }
-    Ok((negate, rest, col))
+
+    fn and(&mut self) -> Result<Node, String> {
+        let mut xs = vec![self.or()?];
+        while self.eat(&Tok::And) {
+            xs.push(self.or()?);
+        }
+        Ok(if xs.len() == 1 {
+            xs.remove(0)
+        } else {
+            Node::And(xs)
+        })
+    }
+
+    fn or(&mut self) -> Result<Node, String> {
+        let mut xs = vec![self.or_term()?];
+        while self.eat(&Tok::Or) {
+            xs.push(self.or_term()?);
+        }
+        if xs.len() == 1 {
+            return Ok(xs.remove(0).1);
+        }
+        // zk refuses a bare negated tag in an or group (`a OR NOT b`);
+        // parentheses make the intent explicit: `a OR (NOT b)`.
+        if let Some((Some(col), _)) = xs.iter().find(|(bare_not, _)| bare_not.is_some()) {
+            return Err(format!("column {col}: cannot negate a tag in an OR group"));
+        }
+        Ok(Node::Or(xs.into_iter().map(|(_, x)| x).collect()))
+    }
+
+    /// One operand of an or group, with the column of its tag when it is a
+    /// bare `NOT tag` / `-tag` (not parenthesised).
+    fn or_term(&mut self) -> Result<(Option<usize>, Node), String> {
+        let bare_not = matches!(self.peek(), Some((_, Tok::Not)));
+        let x = self.not()?;
+        let tag_col = self.toks[..self.i]
+            .last()
+            .filter(|(_, t)| matches!(t, Tok::Name(_)))
+            .map(|(c, _)| *c);
+        let bare = bare_not && matches!(&x, Node::Not(inner) if matches!(**inner, Node::Tag(_)));
+        Ok((if bare { tag_col } else { None }, x))
+    }
+
+    fn not(&mut self) -> Result<Node, String> {
+        if self.eat(&Tok::Not) {
+            return Ok(Node::Not(Box::new(self.not()?)));
+        }
+        self.atom()
+    }
+
+    fn atom(&mut self) -> Result<Node, String> {
+        let col = self.col();
+        match self.peek() {
+            Some((_, Tok::Name(n))) if !n.is_empty() => {
+                let n = n.to_lowercase();
+                self.i += 1;
+                Ok(Node::Tag(n))
+            }
+            Some((_, Tok::Open)) => {
+                self.i += 1;
+                let x = self.and()?;
+                if !self.eat(&Tok::Close) {
+                    return Err(format!("column {}: expected )", self.col()));
+                }
+                Ok(x)
+            }
+            _ => Err(format!("column {col}: expected a tag")),
+        }
+    }
 }
 
 /// Whether `text` matches `pat` (`*` any run, `?` one character).
