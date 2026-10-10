@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::SystemTime;
 
 /// What core needs to know about a file or directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +41,13 @@ pub trait FileSystem: Send + Sync {
     fn canonicalize(&self, p: &Path) -> io::Result<PathBuf>;
     fn case_sensitive(&self, dir: &Path) -> bool;
     fn fs_kind(&self, dir: &Path) -> FsKind;
+    /// The birth time of `p`, following symlinks; `None` when the
+    /// filesystem does not record one or the stat fails. A default method
+    /// (not a [`Meta`] field) so existing implementations keep compiling.
+    fn created(&self, p: &Path) -> Option<SystemTime> {
+        let _ = p;
+        None
+    }
 }
 
 /// [`FileSystem`] over `std::fs`.
@@ -157,6 +165,13 @@ impl FileSystem for StdFs {
     fn fs_kind(&self, _dir: &Path) -> FsKind {
         // statfs-based detection comes with mdroots-roots.
         FsKind::Unknown
+    }
+
+    /// `std::fs::Metadata::created`: the birth time on macOS, `statx` on
+    /// Linux where the kernel and filesystem support it. Copies and
+    /// `git clone` reset it.
+    fn created(&self, p: &Path) -> Option<SystemTime> {
+        std::fs::metadata(p).ok()?.created().ok()
     }
 }
 
@@ -471,6 +486,21 @@ mod tests {
         assert!(!StdFs.read(&f).unwrap().1.dataless);
         let entries = StdFs.read_dir(tmp.path()).unwrap();
         assert!(entries.iter().all(|(_, m)| !m.dataless));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn created_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("n.md");
+        std::fs::write(&f, "x").unwrap();
+        // Linux filesystems may not record a birth time.
+        if cfg!(target_os = "macos") {
+            assert!(StdFs.created(&f).is_some());
+        }
+        assert_eq!(StdFs.created(&tmp.path().join("missing.md")), None);
+        let mem = MemFs::new().with_file("/a.md", "x");
+        assert_eq!(mem.created(Path::new("/a.md")), None);
     }
 
     #[cfg(unix)]
