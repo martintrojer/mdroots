@@ -119,7 +119,7 @@ fn tokens(s: &str) -> Vec<(usize, Tok)> {
                 && s[i + k.len()..]
                     .chars()
                     .next()
-                    .is_none_or(|n| n == ' ' || n == '(')
+                    .is_none_or(|n| n.is_whitespace() || n == '(')
         };
         let tok = match c {
             b',' => Some((Tok::And, 1)),
@@ -145,14 +145,14 @@ fn tokens(s: &str) -> Vec<(usize, Tok)> {
             if matches!(b[j], b',' | b'|' | b'(' | b')') {
                 break;
             }
-            if b[j] == b' ' {
+            if b[j] == b' ' || b[j] == b'\t' {
                 let rest = s[j..].trim_start();
                 let next_kw = ["AND", "OR"].iter().any(|k| {
                     rest.starts_with(k)
                         && rest[k.len()..]
                             .chars()
                             .next()
-                            .is_none_or(|n| n == ' ' || n == '(')
+                            .is_none_or(|n| n.is_whitespace() || n == '(')
                 });
                 if next_kw {
                     break;

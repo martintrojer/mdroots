@@ -95,6 +95,14 @@ fn tag_expressions_take_and_and_parentheses() {
         ("-(a, b)", &["a"], true),
         ("-(a, b)", &["a", "b"], false),
         ("((a))", &["a"], true),
+        // tabs separate keywords like spaces
+        ("a\tAND\tb", &["a", "b"], true),
+        ("a AND\tb", &["a"], false),
+        ("a\tOR\tb", &["b"], true),
+        ("NOT\ta", &["b"], true),
+        // keyword-shaped names stay names
+        ("ANDROID", &["android"], true),
+        ("ORANGE, NOTES", &["orange", "notes"], true),
         // a negated tag inside an or group is fine with parentheses
         ("a OR (NOT b)", &[], true),
         ("a OR (NOT b)", &["b"], false),
