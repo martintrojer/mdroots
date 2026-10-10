@@ -1,5 +1,8 @@
 """Time an LSP server from spawn to the first useful result per method.
 
+Examples use zk (https://github.com/zk-org/zk) and marksman
+(https://github.com/artempyanykh/marksman).
+
 Usage:
   python3 lspbench.py --cmd "zk lsp" <notebook> note.md
   python3 lspbench.py --json --cmd "marksman server" --log traffic.jsonl <notebook> note.md

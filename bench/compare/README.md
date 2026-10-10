@@ -26,6 +26,9 @@ about an hour, mostly zk indexing. A quick smoke run:
 python3 bench/compare/run.py --mdroots target/release/mdroots --runs 1 200
 ```
 
+If any server run or `zk index` fails, `run.py` still prints the tables,
+with those cells marked `failed`, then lists the failures and exits 1.
+
 Options: `--work DIR` (an empty dir, or one run.py made before, reused with its notebooks), `--runs N`,
 `--timeout S`, `--init-timeout S`; sizes are note counts (`200`, `1k`,
 `10k`). Re-print the tables with

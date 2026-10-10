@@ -9,7 +9,8 @@ Mirrors crates/mdroots/examples/bench_root.rs: same LCG (seed 42), same word
 list, frontmatter (title, tags), `# Note i`, four 60-word paragraphs, five
 `[[note-NNNNN]]` wiki links (1 in 50 broken -> `[[missing-k]]`). Additions:
 two `## Section` headings, two inline #tags per note, a .zk/config.toml
-and an empty .marksman.toml (marksman's workspace marker).
+for zk (https://github.com/zk-org/zk) and an empty .marksman.toml (the
+workspace marker of marksman, https://github.com/artempyanykh/marksman).
 
 The probe page note-00000.md is fixed: exactly one broken link
 ([[missing-probe]]) and four valid ones, first link on a known line.

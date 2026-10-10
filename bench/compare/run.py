@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Benchmark mdroots, zk and marksman as language servers on generated notebooks.
+"""Benchmark mdroots, zk (https://github.com/zk-org/zk) and marksman
+(https://github.com/artempyanykh/marksman) as language servers on generated notebooks.
 
 usage: run.py [--work DIR] [--runs N] [--mdroots PATH] [SIZE ...]
 
@@ -24,7 +25,9 @@ interleaved, so drift on a loaded machine hits all configs alike:
   zk             `zk lsp` on the index just built
 
 zk, marksman and mdroots (or --mdroots) must be on PATH. Print the tables
-with `report.py WORK/results.jsonl`; run.py prints them at the end.
+with `report.py WORK/results.jsonl`; run.py prints them at the end. If any
+lspbench run or `zk index` failed, run.py then lists the failures and exits 1
+(report.py shows those cells as `failed`).
 """
 import argparse, json, os, shutil, subprocess, sys, tempfile, time
 
@@ -48,7 +51,8 @@ for tool in (a.mdroots, 'zk', 'marksman'):
     if not shutil.which(tool): sys.exit(f'{tool}: not found on PATH')
 MD = os.path.abspath(shutil.which(a.mdroots))
 
-work = os.path.realpath(a.work) if a.work else tempfile.mkdtemp(prefix='mdroots-compare-')
+# realpath on both: macOS mkdtemp gives /var/..., a symlink to /private/var/...
+work = os.path.realpath(a.work or tempfile.mkdtemp(prefix='mdroots-compare-'))
 os.makedirs(work, exist_ok=True)
 MARKER = os.path.join(work, '.mdroots-compare')
 if os.listdir(work) and not os.path.exists(MARKER):
@@ -76,6 +80,8 @@ print(f'versions: {subprocess.run([MD, "--version"], capture_output=True, text=T
       f'zk {subprocess.run(["zk", "--version"], capture_output=True, text=True).stdout.strip()}; '
       f'marksman {subprocess.run(["marksman", "--version"], capture_output=True, text=True).stdout.strip()}', flush=True)
 
+failures = []
+
 def record(d):
     out.write(json.dumps(d) + '\n'); out.flush()
 
@@ -87,6 +93,7 @@ def bench(cfg, size, run, nb, cmd, env=None):
     d = json.loads(r.stdout) if r.returncode == 0 else {'error': r.stderr[-300:]}
     d.update(cfg=cfg, size=size, run=run)
     record(d)
+    if 'error' in d: failures.append(f"{cfg} {size} run {run}: {(d['error'].strip().splitlines() or ['no output'])[-1]}")
     m = d.get('methods', {})
     print(cfg, size, run, d.get('init_ms'), {k: v.get('t', v.get('status')) for k, v in m.items()},
           d.get('rss_peak_mb'), d.get('phys_footprint_mb'), d.get('error', ''), flush=True)
@@ -96,6 +103,7 @@ def timed(cfg, size, run, argv, nb):
     s = time.time(); r = subprocess.run(argv, cwd=nb, capture_output=True, text=True, env=ENV); t = time.time() - s
     d = {'cfg': cfg, 'size': size, 'run': run, 'wall_ms': round(t * 1000, 1), 'rc': r.returncode, 'stderr': r.stderr[-200:]}
     record(d); print(cfg, size, run, d['wall_ms'], flush=True)
+    if r.returncode != 0: failures.append(f"{cfg} {size} run {run}: exit {r.returncode}: {r.stderr.strip()[-200:]}")
 
 def drop_zk_db(nb):
     db = os.path.join(nb, '.zk', 'notebook.db')
@@ -127,3 +135,7 @@ for size in a.sizes:
 
 out.close()
 subprocess.run([sys.executable, os.path.join(HERE, 'report.py'), results])
+if failures:
+    print(f'\n{len(failures)} failed run(s):', file=sys.stderr)
+    for f in failures: print('  ' + f, file=sys.stderr)
+    sys.exit(1)

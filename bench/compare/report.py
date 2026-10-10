@@ -2,6 +2,12 @@
 """Print markdown tables from run.py's results.jsonl: median [min–max] over runs.
 
 usage: report.py WORK/results.jsonl
+
+The columns are mdroots, zk (https://github.com/zk-org/zk) and marksman
+(https://github.com/artempyanykh/marksman). A run that failed (lspbench
+error, or a non-zero `zk index` exit) is left out of the figures; a cell
+whose runs all failed reads `failed`, one with some failed gets
+`(k failed)` appended.
 """
 import json, statistics, sys
 from collections import defaultdict
@@ -19,9 +25,17 @@ def fmt(xs, unit):
     if unit == 'ms' and m >= 1000: return f'{f(m)} [{min(xs)/1000:.2f}–{max(xs)/1000:.2f}]'
     return f'{f(m)} [{min(xs):.0f}–{max(xs):.0f}]'
 
+def failed(r): return 'error' in r or r.get('rc', 0) != 0
+
 def cell(cfg, size, key):
     rs = by.get((cfg, size), [])
     if not rs: return 'n/a'
+    good = [r for r in rs if not failed(r)]
+    if not good: return 'failed'
+    v = value(good, key)
+    return v if len(good) == len(rs) else f'{v} ({len(rs) - len(good)} failed)'
+
+def value(rs, key):
     if key in ('definition', 'completion', 'documentSymbol', 'workspaceSymbol', 'completion_first'):
         meth = 'completion' if key == 'completion_first' else key
         sts = {r['methods'][meth]['status'] for r in rs if 'methods' in r}
