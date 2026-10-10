@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mdroots_core::{Cancel, Diagnostic, Error, ErrorKind, FileSystem, MemStore};
 use mdroots_resolve::ResolveStep;
+use mdroots_resolve::dialect::{Setting, explain};
 use mdroots_resolve::ladder::{LinkStatus, outside_rel};
 use mdroots_roots::discover::{DiscoverOptions, Enumerator, discover};
 use mdroots_roots::probe::Probe;
@@ -959,6 +960,17 @@ impl Workspace {
     /// the one met first in path order) and a note counts once. Sorted by
     /// lowercase name.
     pub fn tags(&self) -> Vec<(String, usize)> {
+        self.tags_under(&[])
+    }
+
+    /// [`tags`](Self::tags) over the notes at or under any of `paths`
+    /// (absolute; canonicalized where they exist); every note when `paths`
+    /// is empty. `mdroots tags PATH` lists a subdirectory's tags with it.
+    pub fn tags_under(&self, paths: &[PathBuf]) -> Vec<(String, usize)> {
+        let within: Vec<PathBuf> = paths
+            .iter()
+            .map(|p| self.inner.fs.canonicalize(p).unwrap_or_else(|_| p.clone()))
+            .collect();
         let store = self.store();
         // Lowercase name -> (notes, spellings with their note counts in
         // first-seen order).
@@ -968,6 +980,12 @@ impl Workspace {
             let Some(doc) = store.document(rel) else {
                 continue;
             };
+            if !within.is_empty() {
+                let path = self.abs(rel);
+                if !within.iter().any(|w| path.starts_with(w)) {
+                    continue;
+                }
+            }
             let mut seen = BTreeSet::new();
             for t in tag_names(doc) {
                 let key = t.to_lowercase();
@@ -994,6 +1012,16 @@ impl Workspace {
                 (label, n)
             })
             .collect()
+    }
+
+    /// The root's effective settings (link style, tag syntaxes, broken-link
+    /// severity, docs dir) and where each came from: a tool config, a
+    /// marker's default, the convention vote or mdroots' default
+    /// ([`explain`](mdroots_resolve::dialect::explain)). `mdroots roots`
+    /// prints them.
+    pub fn settings(&self) -> Vec<Setting> {
+        let store = self.store();
+        explain(store.conventions(), &store.vote())
     }
 
     /// Resolve the first link in `link_text` (e.g. `[[note]]`), written in
