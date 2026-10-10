@@ -9,19 +9,59 @@ options:
   -h, --help                  print this usage
 
 commands:
-  check [--quiet] [PATH...]   report diagnostics of notes under each PATH
-                              (a file or a directory; default .); exit 1 on
-                              any error or warning
-  roots PATH                  show the root chosen for PATH and why
+  notes [FLAG...] [PATH...]   list the notes matching every FLAG, as zk
+                              list does, in the notebook of the first PATH
+                              (default .); PATHs keep the notes under them
+    -t, --tag EXPR            tags: `a, b` and, `a OR b` / `a|b` or,
+                              `NOT a` / `-a` not, `*` and `?` globs
+                              (repeatable: and)
+    --tagless                 notes without tags
+    -m, --match QUERY         notes containing every word of QUERY
+    -x, --exclude PATH        not under PATH (repeatable)
+    --created DATE, --modified DATE
+                              on that day (UTC)
+    --created-after DATE, --created-before DATE,
+    --modified-after DATE, --modified-before DATE
+                              after (inclusive) / before (exclusive) DATE:
+                              YYYY-MM-DD, RFC 3339, today, yesterday,
+                              `2 weeks ago`, `last monday`, 7d, ...
+    --orphan                  notes no other note links to
+    --missing-backlink        notes linked from a note they don't link to
+    -l, --link-to NOTE        notes linking to NOTE (repeatable)
+    -L, --linked-by NOTE      notes NOTE links to (repeatable)
+    --related NOTE            notes sharing a linked note with NOTE but
+                              not linked with it (repeatable)
+    -s, --sort KEY[+|-]       title, path, created or modified (t, p, c,
+                              m); + ascending, - descending (default
+                              title+)
+    -n, --limit N             at most N notes
+    -f, --format FORMAT       path (default), tsv (path, title, tags,
+                              modified, created), json or jsonl
+    -0, --delimiter0          end records with NUL, not a line break
+  tags [--sort name|count] [--format tsv|json] [PATH]
+                              each tag with its note count, in the
+                              notebook of PATH (default .), under PATH
+                              when given
+  check [--quiet] [--fail-on error|warning|never] [PATH...]
+                              report diagnostics of notes under each PATH
+                              (a file or a directory; default .); exit 1
+                              on any error or warning (--fail-on error:
+                              errors only; never: exit 0)
+  roots PATH                  show the root chosen for PATH, why, and its
+                              settings with where each came from
   resolve FROM LINK           resolve LINK as written in the note FROM
   backlinks NOTE              list the notes linking to NOTE
-  search [--] QUERY [PATH]    notes containing every word of QUERY (the
+  search [--paths] [--] QUERY [PATH]
+                              notes containing every word of QUERY (the
                               last also as a prefix): a file searches its
                               root, a directory (default .) is scanned in
-                              memory; exit 1 without a hit
+                              memory; --paths prints each note's path
+                              only; exit 1 without a hit
   lsp [--stdio] [--log FILE]  the language server on stdin/stdout (--stdio
                               is accepted and ignored); --log appends one
                               line per message to FILE
+
+notes and tags exit 0 with or without results; 2 on a usage error.
 
 environment:
   MDROOTS_CACHE_DIR           cache dir to use instead of the user's (for

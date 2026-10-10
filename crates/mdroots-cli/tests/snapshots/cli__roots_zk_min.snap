@@ -8,3 +8,8 @@ why: marker .zk at <TMP>/vault: 6 md, 8 entries, 1 dirs in N ms
 files: 6
 cache: <CACHE>/roots/<ID>.v2.db
 role: reconciler
+link style: markdown-relative without .md (vote)
+hashtags: on (default)
+colon tags: off (default)
+multiword tags: off (default)
+broken links: warning (vote)

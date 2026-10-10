@@ -576,3 +576,372 @@ fn redact_ms_replaces_only_timings() {
     assert_eq!(redact_ms("6 md in 12 ms, in a"), "6 md in N ms, in a");
     assert_eq!(redact_ms("in 3 dirs"), "in 3 dirs");
 }
+
+// --- notes and tags -------------------------------------------------------
+
+/// A small notebook (`.mdroots` marker) for the link-graph filters:
+///
+/// - `hub` links `a`, `b` and `sub/t`; `a` links `hub` back.
+/// - `c` links `b`; `sub/s` links `a`; `lone` links only itself.
+///
+/// Orphans: `c`, `lone`, `sub/s`. Non-reciprocated links: hub→b, hub→sub/t,
+/// c→b, sub/s→a. Related to `a` (undirected neighbours hub and sub/s):
+/// `b` and `sub/t` through hub.
+fn graph_vault() -> Vault {
+    let tmp = tempfile::tempdir().unwrap();
+    let canon = fs::canonicalize(tmp.path()).unwrap();
+    let v = Vault { tmp, canon };
+    v.write(".mdroots", "");
+    v.write(
+        "hub.md",
+        "---\ntags: [index]\ndate: 2024-03-01\n---\n# Hub\n\n[A](a.md) [B](b.md) [T](sub/t.md)\n",
+    );
+    v.write(
+        "a.md",
+        "---\ndate: 2024-01-15\n---\n# Alpha\n\n#Project #draft [Hub](hub.md)\n",
+    );
+    v.write("b.md", "# Beta\n\n#project\n");
+    v.write(
+        "c.md",
+        "---\ndate: 2023-12-31T23:30:00Z\n---\n# Gamma\n\n[B](b.md)\n",
+    );
+    v.write("lone.md", "# Lone\n\n[me](lone.md)\n");
+    v.write("sub/s.md", "# Sub S\n\n#project [A](../a.md)\n");
+    v.write("sub/t.md", "# Sub T\n");
+    v
+}
+
+/// Run `mdroots args` in `cwd` with `MDROOTS_CACHE_DIR` in the temp dir.
+fn run_cached(v: &Vault, cwd: &Path, args: &[&str]) -> Run {
+    let out = Command::new(env!("CARGO_BIN_EXE_mdroots"))
+        .args(args)
+        .current_dir(cwd)
+        .env("MDROOTS_CACHE_DIR", v.canon.join("cache-dir"))
+        .env("XDG_CACHE_HOME", v.canon.join("cache"))
+        .env("HOME", v.canon.join("cache"))
+        .output()
+        .unwrap();
+    Run {
+        code: out.status.code().unwrap(),
+        stdout: v.redact(&String::from_utf8(out.stdout).unwrap()),
+        stderr: v.redact(&String::from_utf8(out.stderr).unwrap()),
+    }
+}
+
+/// `mdroots notes args` in the vault: exit 0, the printed lines.
+fn notes(v: &Vault, args: &[&str]) -> Vec<String> {
+    notes_in(v, &v.dir(), args)
+}
+
+fn notes_in(v: &Vault, cwd: &Path, args: &[&str]) -> Vec<String> {
+    let mut all = vec!["notes"];
+    all.extend_from_slice(args);
+    let r = run_cached(v, cwd, &all);
+    assert_eq!(r.code, 0, "{args:?}: {}", r.stderr);
+    r.stdout.lines().map(str::to_owned).collect()
+}
+
+#[test]
+fn notes_lists_every_note_by_title() {
+    let v = graph_vault();
+    assert_eq!(
+        notes(&v, &[]),
+        [
+            "a.md", "b.md", "c.md", "hub.md", "lone.md", "sub/s.md", "sub/t.md"
+        ]
+    );
+}
+
+#[test]
+fn notes_graph_filters() {
+    let v = graph_vault();
+    assert_eq!(notes(&v, &["--orphan"]), ["c.md", "lone.md", "sub/s.md"]);
+    assert_eq!(
+        notes(&v, &["--missing-backlink"]),
+        ["a.md", "b.md", "sub/t.md"]
+    );
+    assert_eq!(notes(&v, &["--related", "a.md"]), ["b.md", "sub/t.md"]);
+    assert_eq!(notes(&v, &["--link-to", "b.md"]), ["c.md", "hub.md"]);
+    assert_eq!(notes(&v, &["-l", "a.md"]), ["hub.md", "sub/s.md"]);
+    assert_eq!(
+        notes(&v, &["--linked-by", "hub.md"]),
+        ["a.md", "b.md", "sub/t.md"]
+    );
+    assert_eq!(notes(&v, &["-L", "lone.md"]), Vec::<String>::new());
+    // Filters combine.
+    assert_eq!(notes(&v, &["--orphan", "-L", "c.md"]), Vec::<String>::new());
+    assert_eq!(notes(&v, &["-l", "b.md", "-t", "index"]), ["hub.md"]);
+}
+
+#[test]
+fn notes_path_is_a_filter_in_the_whole_notebook() {
+    // sub/t is linked from hub, outside sub: not an orphan though sub is
+    // the PATH, from the root or from inside sub.
+    let v = graph_vault();
+    assert_eq!(notes(&v, &["--orphan", "sub"]), ["sub/s.md"]);
+    let sub = v.dir().join("sub");
+    assert_eq!(notes_in(&v, &sub, &["--orphan", "."]), ["s.md"]);
+    // Without a PATH the whole notebook counts, as in zk.
+    assert_eq!(
+        notes_in(&v, &sub, &["--orphan"]),
+        ["<TMP>/vault/c.md", "<TMP>/vault/lone.md", "s.md"]
+    );
+    assert_eq!(
+        notes_in(&v, &sub, &["-l", "../a.md"]),
+        ["<TMP>/vault/hub.md", "s.md"]
+    );
+    assert_eq!(notes_in(&v, &sub, &["-l", "../a.md", "."]), ["s.md"]);
+    assert_eq!(notes(&v, &["sub/t.md", "lone.md"]), ["lone.md", "sub/t.md"]);
+    assert_eq!(notes(&v, &["-x", "sub", "--orphan"]), ["c.md", "lone.md"]);
+}
+
+#[test]
+fn notes_tag_expressions() {
+    let v = graph_vault();
+    assert_eq!(notes(&v, &["-t", "project"]), ["a.md", "b.md", "sub/s.md"]);
+    assert_eq!(
+        notes(&v, &["-t", "#PROJECT, NOT draft"]),
+        ["b.md", "sub/s.md"]
+    );
+    assert_eq!(notes(&v, &["-t", "index OR draft"]), ["a.md", "hub.md"]);
+    assert_eq!(
+        notes(&v, &["-t", "pro*", "-t", "-draft"]),
+        ["b.md", "sub/s.md"]
+    );
+    assert_eq!(notes(&v, &["--tagless"]), ["c.md", "lone.md", "sub/t.md"]);
+    let r = run_cached(&v, &v.dir(), &["notes", "--tag", "a OR -b"]);
+    assert_eq!(r.code, 2);
+    assert_eq!(
+        r.stderr,
+        "mdroots: --tag: column 6: cannot negate a tag in an OR group\n"
+    );
+}
+
+#[test]
+fn notes_dates_sort_and_limit() {
+    let v = graph_vault();
+    // Notes without a frontmatter date fall back to the file's birth time
+    // (now), so bound both sides.
+    assert_eq!(
+        notes(
+            &v,
+            &["--created-after", "2024-01-01", "--created-before", "2025"]
+        ),
+        ["a.md", "hub.md"]
+    );
+    assert_eq!(notes(&v, &["--created-before", "2024-01-01"]), ["c.md"]);
+    assert_eq!(notes(&v, &["--created", "2024-01-15"]), ["a.md"]);
+    assert_eq!(
+        notes(&v, &["--modified-after", "2000-01-01", "-n", "2"]),
+        ["a.md", "b.md"]
+    );
+    assert_eq!(
+        notes(&v, &["--modified-before", "2000-01-01"]),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        notes(&v, &["--created-before", "2025", "-s", "created"]),
+        ["hub.md", "a.md", "c.md"]
+    );
+    assert_eq!(
+        notes(&v, &["--sort", "path-", "--limit", "3"]),
+        ["sub/t.md", "sub/s.md", "lone.md"]
+    );
+    let r = run_cached(&v, &v.dir(), &["notes", "--created", "someday"]);
+    assert_eq!(r.code, 2);
+    assert!(r.stderr.starts_with("mdroots: --created: "), "{}", r.stderr);
+}
+
+#[test]
+fn notes_match_and_search_paths_agree() {
+    let v = graph_vault();
+    // hub's text holds `sub/t.md`.
+    assert_eq!(
+        notes(&v, &["-m", "sub"]),
+        ["hub.md", "sub/s.md", "sub/t.md"]
+    );
+    let r = run_cached(&v, &v.dir(), &["search", "--paths", "sub"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let mut got: Vec<&str> = r.stdout.lines().collect();
+    got.sort();
+    assert_eq!(got, ["hub.md", "sub/s.md", "sub/t.md"]);
+    let r = run_cached(&v, &v.dir(), &["search", "--paths", "--", "nothingmatches"]);
+    assert_eq!((r.code, r.stdout.as_str()), (1, ""));
+}
+
+#[test]
+fn notes_formats() {
+    let v = graph_vault();
+    v.write(
+        "tab.md",
+        "---\ndate: 2024-02-29T08:09:10Z\n---\n# Tab\there\\\n",
+    );
+    let r = run_cached(&v, &v.dir(), &["notes", "-f", "tsv", "tab.md", "a.md"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let cut = |s: &str| -> String {
+        // Drop the modified column (an mtime).
+        s.lines()
+            .map(|l| {
+                let f: Vec<&str> = l.split('\t').collect();
+                assert_eq!(f.len(), 5, "{l}");
+                assert!(f[3].ends_with('Z'), "{l}");
+                format!("{}\t{}\t{}\t{}\n", f[0], f[1], f[2], f[4])
+            })
+            .collect()
+    };
+    assert_eq!(
+        cut(&r.stdout),
+        "a.md\tAlpha\tProject,draft\t2024-01-15T00:00:00Z\n\
+         tab.md\tTab\\there\\\\\t\t2024-02-29T08:09:10Z\n"
+    );
+
+    let r = run_cached(&v, &v.dir(), &["notes", "-f", "json", "-t", "index"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let j: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
+    assert_eq!(j.as_array().unwrap().len(), 1);
+    assert_eq!(j[0]["path"], "<TMP>/vault/hub.md");
+    assert_eq!(j[0]["title"], "Hub");
+    assert_eq!(j[0]["tags"], serde_json::json!(["index"]));
+    assert_eq!(j[0]["created"], "2024-03-01T00:00:00Z");
+    assert!(j[0]["modified"].as_str().unwrap().ends_with('Z'));
+
+    let r = run_cached(&v, &v.dir(), &["notes", "-f", "jsonl", "-t", "project"]);
+    let titles: Vec<String> = r
+        .stdout
+        .lines()
+        .map(|l| {
+            let j: serde_json::Value = serde_json::from_str(l).unwrap();
+            j["title"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    assert_eq!(titles, ["Alpha", "Beta", "Sub S"]);
+
+    let r = run_cached(&v, &v.dir(), &["notes", "-0", "--orphan"]);
+    assert_eq!(r.stdout, "c.md\0lone.md\0sub/s.md\0tab.md\0");
+    // An empty json result is still an array.
+    let r = run_cached(&v, &v.dir(), &["notes", "-f", "json", "-t", "nope"]);
+    assert_eq!((r.code, r.stdout.as_str()), (0, "[]\n"));
+}
+
+#[test]
+fn notes_and_tags_exit_0_without_results_and_2_on_usage_errors() {
+    let v = graph_vault();
+    for args in [
+        &["notes", "-t", "nope"][..],
+        &["notes", "--orphan", "-t", "index"],
+        &["tags", "sub/t.md"],
+    ] {
+        let r = run_cached(&v, &v.dir(), args);
+        assert_eq!(
+            (r.code, r.stdout.as_str()),
+            (0, ""),
+            "{args:?}: {}",
+            r.stderr
+        );
+    }
+    for args in [
+        &["notes", "--bogus"][..],
+        &["notes", "-t"],
+        &["notes", "-f", "yaml"],
+        &["tags", "--sort", "size"],
+        &["tags", "--format"],
+        &["tags", "a.md", "b.md"],
+        &["check", "--fail-on", "info"],
+        &["check", "--fail-on"],
+        &["search", "--paths"],
+    ] {
+        let r = run_cached(&v, &v.dir(), args);
+        assert_eq!(r.code, 2, "{args:?}");
+        assert!(
+            r.stderr.starts_with("usage: mdroots"),
+            "{args:?}: {}",
+            r.stderr
+        );
+    }
+    for args in [&["notes", "-n", "x"][..], &["notes", "-s", "size"]] {
+        let r = run_cached(&v, &v.dir(), args);
+        assert_eq!(r.code, 2, "{args:?}");
+        assert!(r.stderr.starts_with("mdroots: "), "{args:?}: {}", r.stderr);
+    }
+}
+
+#[test]
+fn notes_graph_filters_on_a_lazy_root_are_an_error() {
+    // A directory without a marker or VCS: `open_dir` falls back to
+    // `open_at`, which indexes it all, so graph filters still work there.
+    // A lazy root only comes from discovery on a big or slow tree, which a
+    // test cannot build cheaply; the library tests cover that error.
+    let tmp = tempfile::tempdir().unwrap();
+    let canon = fs::canonicalize(tmp.path()).unwrap();
+    let v = Vault { tmp, canon };
+    v.write("x.md", "# X\n");
+    assert_eq!(notes(&v, &["--orphan"]), ["x.md"]);
+}
+
+#[test]
+fn tags_counts_notes_per_tag() {
+    let v = graph_vault();
+    let r = run_cached(&v, &v.dir(), &["tags"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.stdout, "draft\t1\nindex\t1\nproject\t3\n");
+    let r = run_cached(&v, &v.dir(), &["tags", "--sort", "count"]);
+    assert_eq!(r.stdout, "project\t3\ndraft\t1\nindex\t1\n");
+    let r = run_cached(&v, &v.dir(), &["tags", "sub"]);
+    assert_eq!(r.stdout, "project\t1\n");
+    let r = run_cached(
+        &v,
+        &v.dir(),
+        &["tags", "--format", "json", "--sort", "count"],
+    );
+    let j: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
+    assert_eq!(j[0], serde_json::json!({"name": "project", "count": 3}));
+    assert_eq!(j.as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn check_fail_on_sets_the_exit_threshold() {
+    // zk-min has one broken-link warning.
+    let v = Vault::corpus("zk-min");
+    for (level, code) in [("warning", 1), ("error", 0), ("never", 0)] {
+        let r = v.run(&["check", "--quiet", "--fail-on", level]);
+        assert_eq!(r.code, code, "{level}");
+        assert_eq!(
+            r.stdout,
+            "broken.md:3:16: warning: broken link: missing-note\n"
+        );
+    }
+    v.write(
+        ".zk/config.toml",
+        "[note]\nfilename = \"{{id}}\"\n[lsp.diagnostics]\ndead-link = \"error\"\n",
+    );
+    for (level, code) in [("warning", 1), ("error", 1), ("never", 0)] {
+        let r = v.run(&["check", "--fail-on", level, "--quiet"]);
+        assert_eq!(r.code, code, "{level}");
+    }
+}
+
+#[test]
+fn roots_prints_settings_and_their_sources() {
+    let v = Vault::corpus("zk-min");
+    v.write(
+        ".zk/config.toml",
+        "[note]\nfilename = \"{{id}}\"\n[format.markdown]\nhashtags = false\n[lsp.diagnostics]\ndead-link = \"error\"\n",
+    );
+    let r = v.run(&["roots", "a.md"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let settings: Vec<&str> = r
+        .stdout
+        .lines()
+        .skip_while(|l| !l.starts_with("link style:"))
+        .collect();
+    assert_eq!(
+        settings,
+        [
+            "link style: markdown-relative without .md (vote)",
+            "hashtags: off (zk .zk/config.toml hashtags)",
+            "colon tags: off (default)",
+            "multiword tags: off (default)",
+            "broken links: error (zk .zk/config.toml dead-link)",
+        ]
+    );
+}

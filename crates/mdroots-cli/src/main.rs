@@ -12,8 +12,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use mdroots::query::{NoteQuery, TagExpr, day_range, parse_date, parse_sort};
 use mdroots::syntax::PositionEncoding;
-use mdroots::{Cancel, Diagnostic, Error, ErrorKind, Options, Role, Severity, Workspace, names};
+use mdroots::{
+    Cancel, Diagnostic, DialectMarker, Error, ErrorKind, NoteSummary, Options, Role, Severity,
+    Source, Workspace, names,
+};
 
 const USAGE: &str = "\
 usage: mdroots <command> [args]
@@ -23,19 +29,59 @@ options:
   -h, --help                  print this usage
 
 commands:
-  check [--quiet] [PATH...]   report diagnostics of notes under each PATH
-                              (a file or a directory; default .); exit 1 on
-                              any error or warning
-  roots PATH                  show the root chosen for PATH and why
+  notes [FLAG...] [PATH...]   list the notes matching every FLAG, as zk
+                              list does, in the notebook of the first PATH
+                              (default .); PATHs keep the notes under them
+    -t, --tag EXPR            tags: `a, b` and, `a OR b` / `a|b` or,
+                              `NOT a` / `-a` not, `*` and `?` globs
+                              (repeatable: and)
+    --tagless                 notes without tags
+    -m, --match QUERY         notes containing every word of QUERY
+    -x, --exclude PATH        not under PATH (repeatable)
+    --created DATE, --modified DATE
+                              on that day (UTC)
+    --created-after DATE, --created-before DATE,
+    --modified-after DATE, --modified-before DATE
+                              after (inclusive) / before (exclusive) DATE:
+                              YYYY-MM-DD, RFC 3339, today, yesterday,
+                              `2 weeks ago`, `last monday`, 7d, ...
+    --orphan                  notes no other note links to
+    --missing-backlink        notes linked from a note they don't link to
+    -l, --link-to NOTE        notes linking to NOTE (repeatable)
+    -L, --linked-by NOTE      notes NOTE links to (repeatable)
+    --related NOTE            notes sharing a linked note with NOTE but
+                              not linked with it (repeatable)
+    -s, --sort KEY[+|-]       title, path, created or modified (t, p, c,
+                              m); + ascending, - descending (default
+                              title+)
+    -n, --limit N             at most N notes
+    -f, --format FORMAT       path (default), tsv (path, title, tags,
+                              modified, created), json or jsonl
+    -0, --delimiter0          end records with NUL, not a line break
+  tags [--sort name|count] [--format tsv|json] [PATH]
+                              each tag with its note count, in the
+                              notebook of PATH (default .), under PATH
+                              when given
+  check [--quiet] [--fail-on error|warning|never] [PATH...]
+                              report diagnostics of notes under each PATH
+                              (a file or a directory; default .); exit 1
+                              on any error or warning (--fail-on error:
+                              errors only; never: exit 0)
+  roots PATH                  show the root chosen for PATH, why, and its
+                              settings with where each came from
   resolve FROM LINK           resolve LINK as written in the note FROM
   backlinks NOTE              list the notes linking to NOTE
-  search [--] QUERY [PATH]    notes containing every word of QUERY (the
+  search [--paths] [--] QUERY [PATH]
+                              notes containing every word of QUERY (the
                               last also as a prefix): a file searches its
                               root, a directory (default .) is scanned in
-                              memory; exit 1 without a hit
+                              memory; --paths prints each note's path
+                              only; exit 1 without a hit
   lsp [--stdio] [--log FILE]  the language server on stdin/stdout (--stdio
                               is accepted and ignored); --log appends one
                               line per message to FILE
+
+notes and tags exit 0 with or without results; 2 on a usage error.
 
 environment:
   MDROOTS_CACHE_DIR           cache dir to use instead of the user's (for
@@ -82,11 +128,13 @@ fn run(args: &[String]) -> Result<Outcome, Error> {
     let out = Out { cwd };
     match (cmd.as_str(), rest) {
         ("check", rest) => check(&out, rest),
+        ("notes", rest) => notes(&out, rest),
+        ("tags", rest) => tags(rest),
         ("roots", [path]) if !is_flag(path) => roots(path),
         ("resolve", [from, link]) if !is_flag(from) => resolve(&out, from, link),
         ("backlinks", [note]) if !is_flag(note) => backlinks(&out, note),
         ("search", rest) => match search_args(rest) {
-            Some((query, path)) => search(&out, query, path),
+            Some((query, path, paths)) => search(&out, query, path, paths),
             None => Ok(Outcome::Usage),
         },
         ("__open", [path, flag, ms, rest @ ..]) if flag == "--hold-ms" && !is_flag(path) => {
@@ -233,10 +281,20 @@ fn canonical(p: &Path) -> Result<PathBuf, Error> {
 
 fn check(out: &Out, args: &[String]) -> Result<Outcome, Error> {
     let mut quiet = false;
+    let mut fail_on = FailOn::Warning;
     let mut paths = Vec::new();
-    for a in args {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
         match a.as_str() {
             "--quiet" => quiet = true,
+            "--fail-on" => {
+                fail_on = match it.next().map(String::as_str) {
+                    Some("error") => FailOn::Error,
+                    Some("warning") => FailOn::Warning,
+                    Some("never") => FailOn::Never,
+                    _ => return Ok(Outcome::Usage),
+                }
+            }
             a if is_flag(a) => return Ok(Outcome::Usage),
             a => paths.push(PathBuf::from(a)),
         }
@@ -303,11 +361,23 @@ fn check(out: &Out, args: &[String]) -> Result<Outcome, Error> {
             files.len()
         );
     }
-    Ok(if counts[0] + counts[1] > 0 {
+    let failing = match fail_on {
+        FailOn::Error => counts[0],
+        FailOn::Warning => counts[0] + counts[1],
+        FailOn::Never => 0,
+    };
+    Ok(if failing > 0 {
         Outcome::Fail
     } else {
         Outcome::Ok
     })
+}
+
+/// `check --fail-on`: the least severe diagnostic that makes it exit 1.
+enum FailOn {
+    Error,
+    Warning,
+    Never,
 }
 
 fn roots(path: &str) -> Result<Outcome, Error> {
@@ -330,7 +400,42 @@ fn roots(path: &str) -> Result<Outcome, Error> {
     for n in &r.nested_roots {
         println!("nested: {}", n.display());
     }
+    for s in ws.settings() {
+        println!("{}: {} ({})", s.name, s.value, source_name(&s.source));
+    }
     Ok(Outcome::Ok)
+}
+
+/// Where a setting came from, as `roots` prints it: `zk .zk/config.toml
+/// link-format`, `zk default`, `vote` or `default`.
+fn source_name(s: &Source) -> String {
+    match s {
+        Source::Config { tool, file, key } => format!("{tool} {file} {key}"),
+        Source::Marker(m) => format!("{} default", marker_name(*m)),
+        Source::Vote => "vote".to_owned(),
+        Source::Default => "default".to_owned(),
+        _ => "unknown".to_owned(),
+    }
+}
+
+fn marker_name(m: DialectMarker) -> &'static str {
+    match m {
+        DialectMarker::Zk => "zk",
+        DialectMarker::Obsidian => "obsidian",
+        DialectMarker::Marksman => "marksman",
+        DialectMarker::Foam => "foam",
+        DialectMarker::Dendron => "dendron",
+        DialectMarker::Logseq => "logseq",
+        DialectMarker::OrgRoam => "org-roam",
+        DialectMarker::Gollum => "gollum",
+        DialectMarker::Mkdocs => "mkdocs",
+        DialectMarker::Docusaurus => "docusaurus",
+        DialectMarker::Hugo => "hugo",
+        DialectMarker::Jekyll => "jekyll",
+        DialectMarker::MdBook => "mdbook",
+        DialectMarker::Zettlr => "zettlr",
+        _ => "unknown",
+    }
 }
 
 fn resolve(out: &Out, from: &str, link: &str) -> Result<Outcome, Error> {
@@ -358,17 +463,22 @@ fn backlinks(out: &Out, note: &str) -> Result<Outcome, Error> {
     Ok(Outcome::Ok)
 }
 
-/// `search` arguments: `[--] QUERY [PATH]`; `None` on anything else. After
-/// `--` the query may start with `-`.
-fn search_args(args: &[String]) -> Option<(&str, &str)> {
+/// `search` arguments: `[--paths] [--] QUERY [PATH]` as (query, path,
+/// paths only); `None` on anything else. After `--` the query may start
+/// with `-`.
+fn search_args(args: &[String]) -> Option<(&str, &str, bool)> {
+    let (paths, args) = match args.split_first() {
+        Some((p, rest)) if p == "--paths" => (true, rest),
+        _ => (false, args),
+    };
     let args = match args.split_first() {
         Some((dd, rest)) if dd == "--" => rest,
         _ if args.first().is_some_and(|a| is_flag(a)) => return None,
         _ => args,
     };
     match args {
-        [query] => Some((query, ".")),
-        [query, path] if !is_flag(path) => Some((query, path)),
+        [query] => Some((query, ".", paths)),
+        [query, path] if !is_flag(path) => Some((query, path, paths)),
         _ => None,
     }
 }
@@ -376,7 +486,7 @@ fn search_args(args: &[String]) -> Option<(&str, &str)> {
 /// Most hits `search` prints.
 const SEARCH_LIMIT: usize = 1_000;
 
-fn search(out: &Out, query: &str, path: &str) -> Result<Outcome, Error> {
+fn search(out: &Out, query: &str, path: &str, paths_only: bool) -> Result<Outcome, Error> {
     let p = canonical(Path::new(path))?;
     let is_dir = std::fs::metadata(&p)
         .map_err(|e| Error::new(ErrorKind::Io, format!("{}: {e}", p.display())))?
@@ -390,6 +500,10 @@ fn search(out: &Out, query: &str, path: &str) -> Result<Outcome, Error> {
     let hits = ws.full_text(query, SEARCH_LIMIT, &Cancel::new())?;
     let mut stdout = std::io::stdout().lock();
     for h in &hits {
+        if paths_only {
+            let _ = writeln!(stdout, "{}", out.show(&h.path));
+            continue;
+        }
         let _ = writeln!(
             stdout,
             "{}:{}: {}",
@@ -402,4 +516,272 @@ fn search(out: &Out, query: &str, path: &str) -> Result<Outcome, Error> {
         true => Outcome::Fail,
         false => Outcome::Ok,
     })
+}
+
+/// The notebook of `path` (a note or a directory, canonical): a directory
+/// is opened with `open_dir`, so a subdirectory finds its notebook's root
+/// and the whole notebook is indexed (orphans and related notes need it).
+fn open_notebook(path: &Path) -> Result<Workspace, Error> {
+    let is_dir = std::fs::metadata(path)
+        .map_err(|e| Error::new(ErrorKind::Io, format!("{}: {e}", path.display())))?
+        .is_dir();
+    match is_dir {
+        true => Workspace::open_dir(path, options()),
+        false => Workspace::open_for(path, options()),
+    }
+}
+
+/// The workspace for the PATH arguments of `notes` and `tags`: the
+/// notebook found from the first PATH (or the cwd), and the PATHs as
+/// canonical filters. Without PATHs the whole notebook counts, as in zk.
+fn notebook_for(paths: &[PathBuf]) -> Result<(Workspace, Vec<PathBuf>), Error> {
+    let canon = paths
+        .iter()
+        .map(|p| canonical(p))
+        .collect::<Result<Vec<_>, _>>()?;
+    let ws = open_notebook(&canon.first().cloned().unwrap_or(canonical(Path::new("."))?))?;
+    let root = ws.root().path;
+    if let Some(p) = canon.iter().find(|p| !p.starts_with(&root)) {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            format!("{} is outside the notebook {}", p.display(), root.display()),
+        ));
+    }
+    Ok((ws, canon))
+}
+
+/// Output of `notes --format`.
+#[derive(Clone, Copy, PartialEq)]
+enum Format {
+    Path,
+    Tsv,
+    Json,
+    Jsonl,
+}
+
+/// A bad flag value: `mdroots: FLAG: why`, exit 2.
+fn bad(flag: &str, why: impl std::fmt::Display) -> Error {
+    Error::new(ErrorKind::Unsupported, format!("{flag}: {why}"))
+}
+
+fn notes(out: &Out, args: &[String]) -> Result<Outcome, Error> {
+    let now = SystemTime::now();
+    let mut q = NoteQuery::default();
+    let mut format = Format::Path;
+    let mut nul = false;
+    let mut paths = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let flag = a.as_str();
+        // Every flag but the booleans takes the next argument.
+        let mut value = || it.next().ok_or(());
+        let date = |v: &str| parse_date(v, now).map_err(|e| bad(flag, e));
+        let day = |v: &str| day_range(v, now).map_err(|e| bad(flag, e));
+        match flag {
+            "--tagless" => q.tagless = true,
+            "--orphan" => q.orphan = true,
+            "--missing-backlink" => q.missing_backlink = true,
+            "-0" | "--delimiter0" => nul = true,
+            "-t" | "--tag" | "-m" | "--match" | "-x" | "--exclude" | "--created" | "--modified"
+            | "--created-after" | "--created-before" | "--modified-after" | "--modified-before"
+            | "-l" | "--link-to" | "-L" | "--linked-by" | "--related" | "-s" | "--sort" | "-n"
+            | "--limit" | "-f" | "--format" => {
+                let Ok(v) = value() else {
+                    return Ok(Outcome::Usage);
+                };
+                match flag {
+                    "-t" | "--tag" => q.tag.push(TagExpr::parse(v).map_err(|e| bad(flag, e))?),
+                    "-m" | "--match" => q.matching = Some(v.clone()),
+                    "-x" | "--exclude" => q.exclude.push(PathBuf::from(v)),
+                    "--created" => (q.created_after, q.created_before) = day(v).map(split)?,
+                    "--modified" => (q.modified_after, q.modified_before) = day(v).map(split)?,
+                    "--created-after" => q.created_after = Some(date(v)?),
+                    "--created-before" => q.created_before = Some(date(v)?),
+                    "--modified-after" => q.modified_after = Some(date(v)?),
+                    "--modified-before" => q.modified_before = Some(date(v)?),
+                    "-l" | "--link-to" => q.link_to.push(PathBuf::from(v)),
+                    "-L" | "--linked-by" => q.linked_by.push(PathBuf::from(v)),
+                    "--related" => q.related.push(PathBuf::from(v)),
+                    "-s" | "--sort" => q.sort = Some(parse_sort(v).map_err(|e| bad(flag, e))?),
+                    "-n" | "--limit" => {
+                        q.limit = Some(v.parse().map_err(|_| bad(flag, "not a number"))?)
+                    }
+                    _ => {
+                        format = match v.as_str() {
+                            "path" => Format::Path,
+                            "tsv" => Format::Tsv,
+                            "json" => Format::Json,
+                            "jsonl" => Format::Jsonl,
+                            _ => return Ok(Outcome::Usage),
+                        }
+                    }
+                }
+            }
+            a if is_flag(a) => return Ok(Outcome::Usage),
+            a => paths.push(PathBuf::from(a)),
+        }
+    }
+    let (ws, paths) = notebook_for(&paths)?;
+    q.paths = paths;
+    let found = ws.query(&q)?;
+
+    let end = if nul { '\0' } else { '\n' };
+    let mut s = String::new();
+    match format {
+        Format::Path => {
+            for n in &found {
+                s.push_str(&out.show(&n.path));
+                s.push(end);
+            }
+        }
+        Format::Tsv => {
+            for n in &found {
+                let fields = [
+                    out.show(&n.path),
+                    n.title.clone(),
+                    n.tags.join(","),
+                    n.modified.map(rfc3339).unwrap_or_default(),
+                    n.created.map(rfc3339).unwrap_or_default(),
+                ];
+                let fields: Vec<String> = fields.iter().map(|f| tsv_escape(f)).collect();
+                s.push_str(&fields.join("\t"));
+                s.push(end);
+            }
+        }
+        Format::Json => {
+            let rows: Vec<String> = found.iter().map(note_json).collect();
+            s.push('[');
+            s.push_str(&rows.join(","));
+            s.push_str("]\n");
+        }
+        Format::Jsonl => {
+            for n in &found {
+                s.push_str(&note_json(n));
+                s.push(end);
+            }
+        }
+    }
+    let _ = std::io::stdout().lock().write_all(s.as_bytes());
+    Ok(Outcome::Ok)
+}
+
+fn split((a, b): (SystemTime, SystemTime)) -> (Option<SystemTime>, Option<SystemTime>) {
+    (Some(a), Some(b))
+}
+
+fn tags(args: &[String]) -> Result<Outcome, Error> {
+    let (mut by_count, mut json) = (false, false);
+    let mut paths = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match (a.as_str(), it.as_slice().first().map(String::as_str)) {
+            ("--sort", Some(v @ ("name" | "count"))) => {
+                by_count = v == "count";
+                it.next();
+            }
+            ("--format", Some(v @ ("tsv" | "json"))) => {
+                json = v == "json";
+                it.next();
+            }
+            (a, _) if is_flag(a) => return Ok(Outcome::Usage),
+            (a, _) if paths.is_empty() => paths.push(PathBuf::from(a)),
+            _ => return Ok(Outcome::Usage),
+        }
+    }
+    let (ws, paths) = notebook_for(&paths)?;
+    let mut tags = ws.tags_under(&paths);
+    if by_count {
+        // Stable: equal counts keep the name order.
+        tags.sort_by_key(|t| std::cmp::Reverse(t.1));
+    }
+    let mut s = String::new();
+    if json {
+        let rows: Vec<String> = tags
+            .iter()
+            .map(|(t, n)| format!("{{\"name\":{},\"count\":{n}}}", json_str(t)))
+            .collect();
+        s.push('[');
+        s.push_str(&rows.join(","));
+        s.push_str("]\n");
+    } else {
+        for (t, n) in &tags {
+            s.push_str(&format!("{}\t{n}\n", tsv_escape(t)));
+        }
+    }
+    let _ = std::io::stdout().lock().write_all(s.as_bytes());
+    Ok(Outcome::Ok)
+}
+
+/// A TSV field: backslash, tab, line feed and carriage return escaped as
+/// `\\`, `\t`, `\n` and `\r`.
+fn tsv_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// One note as a JSON object: absolute path, title, tags, and the times as
+/// RFC 3339 UTC strings or null.
+fn note_json(n: &NoteSummary) -> String {
+    let time = |t: Option<SystemTime>| t.map_or("null".to_owned(), |t| json_str(&rfc3339(t)));
+    let tags: Vec<String> = n.tags.iter().map(|t| json_str(t)).collect();
+    format!(
+        "{{\"path\":{},\"title\":{},\"tags\":[{}],\"modified\":{},\"created\":{}}}",
+        json_str(&n.path.display().to_string()),
+        json_str(&n.title),
+        tags.join(","),
+        time(n.modified),
+        time(n.created),
+    )
+}
+
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// `t` as RFC 3339 in UTC, whole seconds: `2024-02-29T13:05:00Z`.
+fn rfc3339(t: SystemTime) -> String {
+    let secs = match t.duration_since(UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
+        Err(e) => -i64::try_from(e.duration().as_secs()).unwrap_or(i64::MAX),
+    };
+    let (days, tod) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Civil date of a day count (Howard Hinnant's days_from_civil inverse).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        tod / 3600,
+        tod % 3600 / 60,
+        tod % 60
+    )
 }
