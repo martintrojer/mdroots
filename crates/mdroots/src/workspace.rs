@@ -258,12 +258,13 @@ pub struct NoteSummary {
     /// The file's modification time on disk; `None` when unknown (an
     /// overlay-only note, a failed stat, or a filesystem without times).
     pub modified: Option<SystemTime>,
-    /// When the note was created: its frontmatter `date` (zk's creation
-    /// key), else `created`, when either parses as `YYYY-MM-DD`,
-    /// `YYYY-MM-DD[T ]HH:MM[:SS]` or RFC 3339 (a time without an offset is
-    /// UTC); else the file's birth time ([`FileSystem::created`]). `None` when
-    /// neither is known. Birth times do not survive a copy or a
-    /// `git clone`, which is why the frontmatter wins.
+    /// When the note was created: its frontmatter `date`
+    /// ([zk](https://github.com/zk-org/zk)'s creation key), else `created`,
+    /// when either parses as `YYYY-MM-DD`, `YYYY-MM-DD[T ]HH:MM[:SS]` or
+    /// RFC 3339 (a time without an offset is UTC); else the file's birth time
+    /// ([`FileSystem::created`]). `None` when neither is known. Birth times
+    /// do not survive a copy or a `git clone` ([Git](https://git-scm.com)),
+    /// which is why the frontmatter wins.
     pub created: Option<SystemTime>,
 }
 

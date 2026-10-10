@@ -169,7 +169,7 @@ impl FileSystem for StdFs {
 
     /// `std::fs::Metadata::created`: the birth time on macOS, `statx` on
     /// Linux where the kernel and filesystem support it. Copies and
-    /// `git clone` reset it.
+    /// `git clone` ([Git](https://git-scm.com)) reset it.
     fn created(&self, p: &Path) -> Option<SystemTime> {
         std::fs::metadata(p).ok()?.created().ok()
     }

@@ -1,8 +1,8 @@
 //! mdroots-index: the persistent per-root index cache (docs/DECISIONS.md D3,
 //! D4, D5). [`cache`] picks the cache dir, [`lock`] elects the one writer per
 //! root, [`db`] is the per-root [SQLite](https://sqlite.org) DB,
-//! [`reconcile`] brings its rows up to date with the files on disk and
-//! [`registry`] is the persistent root registry; [`gc`] deletes DB files
+//! [`reconcile`](mod@reconcile) brings its rows up to date with the files on disk and
+//! [`registry`] is the persistent root registry; [`gc`](mod@gc) deletes DB files
 //! nobody needs.
 #![forbid(unsafe_code)]
 

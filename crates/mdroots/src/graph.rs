@@ -4,8 +4,8 @@
 //! HTML or frontmatter (not code, not a footnote) that resolves to the
 //! indexed note `b`; an ambiguous link is an edge to every candidate.
 //! Broken links and links to files that are not notes are no edges.
-//! Self-links never count (zk counts them: a note linking only to itself
-//! is an orphan here, not in zk).
+//! Self-links never count ([zk](https://github.com/zk-org/zk) counts them:
+//! a note linking only to itself is an orphan here, not in zk).
 //!
 //! Every query builds the graph once from the store's backlink index, so it
 //! costs O(notes + links). They need every note indexed: on a
