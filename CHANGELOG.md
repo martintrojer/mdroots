@@ -4,7 +4,7 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
-## Unreleased
+## 0.2.7
 
 - `mdroots notes [FLAG...] [PATH...]` lists notes with
   [zk](https://github.com/zk-org/zk) `list`'s filters: `--tag` with zk's
@@ -28,6 +28,19 @@ on are internal and pinned to the exact version.
   `links_from` and `links_to`, `Workspace::open_dir`, `tags_under`,
   `settings`, and `NoteSummary::created` (frontmatter `date`, else the
   file's birth time).
+- Repeated `-l`, `-L` and `--related` all apply (and), like every other
+  filter; a `notes` flag where a value belongs is a usage error.
+- The link style for inserted links: a wiki link without `/` no longer
+  counts as root-relative in the vote, so an Obsidian-style vault gets
+  `[[stem]]`; a root with no links yet gets its marker's default
+  (Obsidian `[[stem]]`, zk Markdown without `.md`).
+- Tool config fields that changed nothing (Obsidian
+  `attachmentFolderPath`, marksman `title_from_heading`, Logseq
+  `:file/name-format`) are no longer read.
+- Docs: the README is a short pitch with a benchmark against zk and
+  marksman ([method](docs/research/benchmark.md),
+  `bench/compare/run.py` reproduces it); the specs and decisions match
+  the code; the doc build is part of the gate.
 
 ## 0.2.6
 
