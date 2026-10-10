@@ -30,9 +30,11 @@ real world they are meant for.
 3. **Many editors at once.** The memory target is < 35 MB `phys_footprint`
    per process with 10 editors on one root
    ([D3](DECISIONS.md#d3-in-process-no-daemon-one-writer-per-root)). Single
-   processes measure 23–31 MB on a synthetic 3,000-note notebook; ten at
-   once has not been measured, nor cross-editor save visibility (p99) or a
-   `kill -9` loop on the reconciler.
+   processes measure 23–31 MB on a synthetic 3,000-note notebook, 17 MB at
+   1,000 notes and **92 MB at 10,000 notes**, above the target
+   ([benchmark](research/benchmark.md)). Ten at once has not been measured,
+   nor cross-editor save visibility (p99) or a `kill -9` loop on the
+   reconciler.
 4. **Small repos on a virtual filesystem.** vcs-enumerated mode (a small
    repo in a large virtual-filesystem checkout, listed by the VCS within a
    time budget) is tested only with a fake enumerator.
@@ -143,7 +145,7 @@ Ordered by expected value. Each has a reason it is not built yet.
 | WAL management: periodic `wal_checkpoint(PASSIVE)`, `journal_size_limit`, exit checkpoint above 4 MB | no WAL growth seen yet |
 | Background reconcile and sweeps, background QoS, `Freshness::Stale`, working-set growth for lazy roots | the synchronous reconcile is fast enough on the target vaults |
 | Frontmatter features and the dialect specifics in §2 | no user asked yet |
-| Derived SQL tables (`keys`, `links`, `frontmatter`) | memory is under target at 3,000 notes; adds a second query layer and a parser version to keep in sync ([D9](DECISIONS.md#d9-the-db-caches-content-queries-run-in-memory)) |
+| Derived SQL tables (`keys`, `links`, `frontmatter`) | the likely fix for memory above 3,000 notes (92 MB at 10,000, §1.3); adds a second query layer and a parser version to keep in sync ([D9](DECISIONS.md#d9-the-db-caches-content-queries-run-in-memory)) |
 | FSEvents replay (`sinceWhen`) | needs FFI and the workspace forbids unsafe code; the re-list on open already catches offline changes (D9) |
 | Cross-root `ATTACH` | no measured need ([roots spec §4](specs/roots.md#4-nested-roots)) |
 | [Watchman](https://facebook.github.io/watchman/) clocks | no measured need |
