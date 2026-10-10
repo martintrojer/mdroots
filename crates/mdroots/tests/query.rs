@@ -272,6 +272,7 @@ fn relative_dates_at_the_ends_of_time_never_panic() {
             "last monday",
             "last saturday",
             "2 days ago",
+            "0 days ago",
             "an hour ago",
             "last month",
             "1 year ago",
@@ -283,6 +284,9 @@ fn relative_dates_at_the_ends_of_time_never_panic() {
     }
     assert_eq!(parse_date("now", min), Ok(min));
     assert_eq!(parse_date("now", max), Ok(max));
+    // A zero count is `now` itself, even at the minimum time, where whole
+    // seconds round away from zero.
+    assert_eq!(parse_date("0 days ago", min), Ok(min));
     assert!(parse_date("yesterday", far_back).is_err());
     assert!(parse_date("yesterday", min).is_err());
     assert!(parse_date("today", max).is_ok());
