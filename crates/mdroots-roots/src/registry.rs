@@ -235,8 +235,9 @@ pub fn lookup_valid(reg: &dyn Registry, probe: &dyn Probe, path: &Path) -> Optio
 /// `.git`: its files go to the parent) or when it is an editor row
 /// ([`is_editor`]) whose folder is not in `workspace_folders`. Markerless
 /// rows skip the marker check. The first row not skipped is valid only if the root directory's
-/// `st_dev` and its mount's `fs_type` are unchanged; else `None`, and the
-/// caller re-decides.
+/// `st_dev` and its mount's `fs_type` are unchanged and `dir(path)` (`path`
+/// is a file) is on that same `st_dev`, so a mount below the root is not
+/// served by it; else `None`, and the caller re-decides.
 pub fn lookup_valid_for(
     reg: &dyn Registry,
     probe: &dyn Probe,
@@ -253,7 +254,9 @@ pub fn lookup_valid_for(
         true => workspace_folders.contains(&r.path),
         false => marker_exists(probe, r),
     })?;
-    same_fs(probe, &rec).then_some(rec)
+    let dir = path.parent().unwrap_or(path);
+    let same_dev = probe.stat(dir).is_ok_and(|s| s.dev == rec.dev);
+    (same_dev && same_fs(probe, &rec)).then_some(rec)
 }
 
 /// Does `rec` still describe the filesystem: its marker exists and its
@@ -261,6 +264,27 @@ pub fn lookup_valid_for(
 /// an editor row is on disk while its directory is.
 pub(crate) fn on_disk(probe: &dyn Probe, rec: &RootRecord) -> bool {
     marker_exists(probe, rec) && same_fs(probe, rec)
+}
+
+/// May `finish` remove `e`, a row rejecting the insert of `new`, given the
+/// session's `workspace_folders`? Yes when `e` no longer holds
+/// ([`on_disk`]), when it is an editor row ([`is_editor`]) whose folder is
+/// not a current workspace folder, or when `new` has a real recorded marker
+/// and `e` is a markerless row strictly inside it: a loose search never runs
+/// inside a marker, so such a row is a legacy editor row (0.2.8 wrote
+/// aborted workspace-folder walks as lazy without a marker) or predates
+/// the marker.
+pub(crate) fn removable(
+    probe: &dyn Probe,
+    e: &RootRecord,
+    new: &RootRecord,
+    workspace_folders: &[PathBuf],
+) -> bool {
+    let marker_root = new.marker.as_deref().is_some_and(|m| m != EDITOR_MARKER);
+    let inside = e.path != new.path && e.path.starts_with(&new.path);
+    !on_disk(probe, e)
+        || (is_editor(e) && !workspace_folders.contains(&e.path))
+        || (marker_root && inside && e.marker.is_none())
 }
 
 /// The recorded marker file exists; true without one, or for an editor row.

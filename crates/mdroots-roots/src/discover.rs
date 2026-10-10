@@ -28,7 +28,7 @@ use crate::markers::{
 use crate::probe::{FsClass, Probe, classify};
 use crate::registry::{
     EDITOR_MARKER, Registry, RootMode, RootRecord, VerdictSource, detect_move, is_editor,
-    lookup_valid_for, new_root_id, on_disk,
+    lookup_valid_for, new_root_id, removable,
 };
 use crate::walk::{Abort, Budget, WalkOptions, WalkStats, walk};
 
@@ -371,15 +371,28 @@ fn stage1(cx: &mut Ctx<'_>) -> Option<Out> {
         }
     }
     // A markerless (loose or lazy) root gains a marker at its own directory:
-    // `.mdroots` or `git init` there re-decides it at once.
+    // `.mdroots` or `git init` there re-decides it at once. A markerless lazy
+    // root inside a marker root is a miss too: a loose search never runs
+    // there, so the row is a legacy workspace-folder decision (or predates
+    // the marker), and `finish` replaces it with the marker root.
     if !remote
         && rec.marker.is_none()
         && !is_editor(&rec)
-        && !markers_at(cx.probe, &rec.path).is_empty()
+        && (!markers_at(cx.probe, &rec.path).is_empty()
+            || (rec.mode == RootMode::Lazy && inside_marker_root(cx.probe, &rec)))
     {
         return None;
     }
     Some(Out::recorded(&rec))
+}
+
+/// Does the marker climb from the parent of `rec`'s root find a marker? Not
+/// when the root is a mount point (the climb would have stopped there).
+fn inside_marker_root(probe: &dyn Probe, rec: &RootRecord) -> bool {
+    rec.path.parent().is_some_and(|parent| {
+        probe.stat(parent).is_ok_and(|s| s.dev == rec.dev)
+            && climb(probe, parent, &[]).root.is_some()
+    })
 }
 
 fn keep_md(p: &str) -> bool {
@@ -854,9 +867,10 @@ impl Ctx<'_> {
 
     /// Register `out` (unless single-file or unregistrable) and return its
     /// decision. A row at the same path is replaced keeping its `root_id`.
-    /// On an overlap with a row that no longer holds ([`on_disk`]: marker
-    /// gone, `st_dev` or `fs_type` changed), that row is removed and the
-    /// insert retried. On an overlap with a valid row, the nearest valid
+    /// On an overlap with a [`removable`] row (marker gone, `st_dev` or
+    /// `fs_type` changed, an editor row for a folder not in this session, or
+    /// a markerless row inside a new marker root), that row is removed and
+    /// the insert retried. On an overlap with any other row, the nearest valid
     /// registered root containing the file wins; with none, the decision is
     /// returned unregistered.
     fn finish(&mut self, out: Out) -> Decision {
@@ -901,6 +915,7 @@ impl Ctx<'_> {
         }
         // Each retry removes a different row (a failed remove, e.g. a
         // SQLite error, ends the loop), so it terminates.
+        let folders = &self.opts.workspace_folders;
         let mut removed: Vec<String> = Vec::new();
         let res = loop {
             match self.registry.insert(rec.clone()) {
@@ -908,7 +923,7 @@ impl Ctx<'_> {
                     let gone = self.registry.all().into_iter().find(|e| {
                         e.path == o.existing
                             && !removed.contains(&e.root_id)
-                            && !on_disk(self.probe, e)
+                            && removable(self.probe, e, &rec, folders)
                     });
                     match gone {
                         Some(e) => {
@@ -921,7 +936,6 @@ impl Ctx<'_> {
                 ok => break ok,
             }
         };
-        let folders = &self.opts.workspace_folders;
         match res {
             Ok(()) => d,
             Err(o) => match lookup_valid_for(self.registry, self.probe, self.file, folders) {

@@ -1083,6 +1083,173 @@ fn overlap_without_containing_root_returns_the_new_decision_unregistered() {
     assert_eq!(reg.all().len(), 1);
 }
 
+// --- registry round 2: device check, stale editor rows, legacy rows ----------
+
+fn nfs(dev: u64) -> MountInfo {
+    MountInfo {
+        fs_type: "nfs".into(),
+        from: "server:/export".into(),
+        local: false,
+        dev,
+    }
+}
+
+/// The new mounts of the device-check tests: local, remote, virtual.
+fn new_mounts() -> [MountInfo; 3] {
+    [local(7), nfs(7), eden(7)]
+}
+
+/// `(root, mode)` of `file` with `reg` and with an empty registry.
+fn cached_and_fresh(
+    probe: &FakeProbe,
+    reg: &mut MemRegistry,
+    file: &str,
+) -> ((Option<PathBuf>, RootMode), (Option<PathBuf>, RootMode)) {
+    let d = discover(
+        probe,
+        reg,
+        &NoEnumerator,
+        Path::new(file),
+        &opts(),
+        &Cancel::new(),
+    );
+    let mut empty = MemRegistry::new();
+    let f = discover(
+        probe,
+        &mut empty,
+        &NoEnumerator,
+        Path::new(file),
+        &opts(),
+        &Cancel::new(),
+    );
+    ((d.root, d.mode), (f.root, f.mode))
+}
+
+#[test]
+fn deleted_nested_git_at_a_new_mount_is_decided_afresh() {
+    let tree = || {
+        FakeProbe::new()
+            .home("/h")
+            .dir("/h/nb/.zk")
+            .file("/h/nb/a.md", "")
+            .file("/h/nb/proj/b.md", "")
+    };
+    for m in new_mounts() {
+        let mut reg = MemRegistry::new();
+        let with_git = Counting::new(tree().dir("/h/nb/proj/.git"));
+        run(&with_git, &mut reg, &NoEnumerator, "/h/nb/a.md", &["/h/nb"]);
+        run(
+            &with_git,
+            &mut reg,
+            &NoEnumerator,
+            "/h/nb/proj/b.md",
+            &["/h/nb/proj"],
+        );
+        assert_eq!(reg.all().len(), 2);
+
+        // `rm -rf proj/.git` and a new filesystem mounted at proj.
+        let probe = tree().mount("/h/nb/proj", m.clone());
+        let (cached, fresh) = cached_and_fresh(&probe, &mut reg, "/h/nb/proj/b.md");
+        assert_ne!(cached.0, Some(p("/h/nb")), "{}", m.fs_type);
+        assert_eq!(cached, fresh, "{}", m.fs_type);
+    }
+}
+
+#[test]
+fn a_new_mount_without_a_row_under_a_registered_root_is_a_miss() {
+    for m in new_mounts() {
+        let tree = FakeProbe::new()
+            .home("/h")
+            .dir("/h/nb/.zk")
+            .file("/h/nb/a.md", "");
+        let mut reg = MemRegistry::new();
+        run(
+            &Counting::new(tree),
+            &mut reg,
+            &NoEnumerator,
+            "/h/nb/a.md",
+            &["/h/nb"],
+        );
+
+        let probe = FakeProbe::new()
+            .home("/h")
+            .dir("/h/nb/.zk")
+            .file("/h/nb/a.md", "")
+            .file("/h/nb/other/c.md", "")
+            .mount("/h/nb/other", m.clone());
+        let (cached, fresh) = cached_and_fresh(&probe, &mut reg, "/h/nb/other/c.md");
+        assert_ne!(cached.0, Some(p("/h/nb")), "{}", m.fs_type);
+        assert_eq!(cached, fresh, "{}", m.fs_type);
+    }
+}
+
+#[test]
+fn a_former_workspace_folder_does_not_block_an_enclosing_loose_root() {
+    let mut f = FakeProbe::new().home("/h").file("/h/notes/ws/a.md", "");
+    for i in 0..30 {
+        f = f.file(format!("/h/notes/{i}.md"), "");
+    }
+    let probe = Counting::new(f);
+    let mut reg = MemRegistry::new();
+    let file = "/h/notes/ws/a.md";
+    let folders = DiscoverOptions {
+        workspace_folders: vec![p("/h/notes/ws")],
+        ..opts()
+    };
+    let d = run_with(&probe, &mut reg, &NoEnumerator, file, &["/h"], &folders);
+    assert_eq!(d.root, Some(p("/h/notes/ws")));
+
+    // A later session without the folder: the loose root registers.
+    let d = run(&probe, &mut reg, &NoEnumerator, file, &["/h"]);
+    assert_eq!(d.root, Some(p("/h/notes")), "{}", explain(&d));
+    assert_eq!(d.mode, RootMode::Loose);
+    assert_eq!(row(&reg, "/h/notes").map(|r| r.mode), Some(RootMode::Loose));
+
+    // And is a hit from then on.
+    let n = probe.read_dir_total();
+    let d = run(&probe, &mut reg, &NoEnumerator, file, &[]);
+    assert_eq!(d.root, Some(p("/h/notes")));
+    assert_eq!(probe.read_dir_total(), n);
+}
+
+#[test]
+fn a_legacy_lazy_workspace_folder_row_gives_way_to_the_git_root() {
+    let probe = Counting::new(
+        FakeProbe::new()
+            .home("/h")
+            .dir("/h/repo/.git")
+            .file("/h/repo/ws/a.md", "")
+            .read_dir_cost("/h/repo/ws", Duration::from_millis(1600)),
+    );
+    let mut reg = MemRegistry::new();
+    let file = "/h/repo/ws/a.md";
+    let folders = DiscoverOptions {
+        workspace_folders: vec![p("/h/repo/ws")],
+        ..opts()
+    };
+    let d = run_with(
+        &probe,
+        &mut reg,
+        &NoEnumerator,
+        file,
+        &["/h/repo"],
+        &folders,
+    );
+    assert_eq!((d.root, d.mode), (Some(p("/h/repo/ws")), RootMode::Lazy));
+    // The shape 0.2.8 wrote for an aborted workspace-folder walk.
+    let mut old = row(&reg, "/h/repo/ws").unwrap();
+    old.marker = None;
+    old.marker_ino = None;
+    reg.update(old);
+
+    // Same time (age 0), no folders: the git root, registered.
+    let d = run(&probe, &mut reg, &NoEnumerator, file, &["/h/repo"]);
+    assert_eq!(d.root, Some(p("/h/repo")), "{}", explain(&d));
+    let r = row(&reg, "/h/repo").expect("git root registered");
+    assert_eq!(r.marker.as_deref(), Some(".git"));
+    assert!(row(&reg, "/h/repo/ws").is_none());
+}
+
 // --- list_root ----------------------------------------------------------------
 
 /// Discover `file`, then re-list its root with `list_root` on the same

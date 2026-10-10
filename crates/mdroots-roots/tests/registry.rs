@@ -243,6 +243,22 @@ fn lookup_valid_does_not_skip_past_a_changed_filesystem() {
     assert_eq!(lookup_valid(&reg, &probe, Path::new("/nb/proj/a.md")), None);
 }
 
+#[test]
+fn lookup_valid_rejects_a_file_on_another_device_than_its_root() {
+    // A mount below a registered root, with no row of its own.
+    let probe = FakeProbe::new()
+        .dir("/nb/.zk")
+        .file("/nb/other/a.md", "")
+        .mount("/nb/other", mi("apfs", 7));
+    let mut reg = MemRegistry::new();
+    reg.insert(zk("/nb")).unwrap();
+    assert_eq!(
+        lookup_valid(&reg, &probe, Path::new("/nb/other/a.md")),
+        None
+    );
+    assert!(lookup_valid(&reg, &probe, Path::new("/nb/a.md")).is_some());
+}
+
 fn editor(path: &str) -> RootRecord {
     rec(path, RootMode::Marker, Some(EDITOR_MARKER))
 }
