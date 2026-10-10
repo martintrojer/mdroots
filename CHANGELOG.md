@@ -4,6 +4,31 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
+## Unreleased
+
+- `mdroots notes [FLAG...] [PATH...]` lists notes with
+  [zk](https://github.com/zk-org/zk) `list`'s filters: `--tag` with zk's
+  tag expressions (`a, NOT b`, `a OR b`, globs), `--tagless`, `--match`,
+  `--exclude`, created and modified dates (`--created-after 2024-01-01`,
+  `--modified-after "2 weeks ago"`), `--orphan`, `--missing-backlink`,
+  `--link-to`, `--linked-by`, `--related`, `--sort KEY[+|-]`, `--limit`,
+  `--format path|tsv|json|jsonl` and `-0`. PATHs are filters inside the
+  notebook found from the first one, so a subdirectory still sees links
+  from the rest of the notebook.
+- `mdroots tags [--sort name|count] [--format tsv|json] [PATH]` lists tags
+  with note counts. Tags differing only in case are one tag.
+- `notes` and `tags` exit 0 with or without results.
+- `mdroots search --paths` prints only the paths of matching notes.
+- `mdroots check --fail-on error|warning|never` sets when it exits 1
+  (default `warning`, as before).
+- `mdroots roots` also prints the root's settings (link style, tag
+  syntaxes, broken-link severity, docs dir) and where each came from.
+- Library: `Workspace::query` with `mdroots::query::{NoteQuery, TagExpr}`,
+  the graph queries `orphans`, `missing_backlinks`, `related`,
+  `links_from` and `links_to`, `Workspace::open_dir`, `tags_under`,
+  `settings`, and `NoteSummary::created` (frontmatter `date`, else the
+  file's birth time).
+
 ## 0.2.6
 
 - `mdroots --version` (or `-V`) prints `mdroots <version>` and exits 0;
