@@ -225,9 +225,14 @@ fn parent_is_virtual(probe: &dyn Probe, parent: &Path, home: Option<&Path>) -> b
 }
 
 /// Climb from `dir` (whose `st_dev` is `dev`) with one parent `stat` per
-/// level until `st_dev` changes, `$HOME` or `/`. True if the change lands in
-/// a virtual parent.
-fn below_virtual_mount(probe: &dyn Probe, mut dir: &Path, dev: u64, home: Option<&Path>) -> bool {
+/// level until `st_dev` changes, `$HOME` or `/`. True if the change lands on
+/// a parent that [`parent_is_virtual`] flags (virtual, remote or `.eden`).
+pub(crate) fn below_virtual_mount(
+    probe: &dyn Probe,
+    mut dir: &Path,
+    dev: u64,
+    home: Option<&Path>,
+) -> bool {
     loop {
         if Some(dir) == home {
             return false;

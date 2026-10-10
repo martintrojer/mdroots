@@ -4,12 +4,14 @@
 //! The start directory (the file's directory, raised to cover every existing
 //! link target directory) is accepted unless denied. Inside `$HOME` the climb
 //! then grows one parent at a time, walking only what lies outside the child
-//! and reusing the child's counts, and stops at the first parent that is
-//! denied, overruns the loose budget or fails both acceptance rules.
+//! and reusing the child's counts, and stops at the first parent that is on
+//! another device, denied, overruns the loose budget or fails both
+//! acceptance rules.
 
 use mdroots_core::Cancel;
 use std::path::{Component, Path, PathBuf};
 
+use crate::markers::below_virtual_mount;
 use crate::probe::{FsClass, Probe, classify};
 use crate::walk::{Abort, Budget, WalkOptions, WalkStats, walk};
 
@@ -88,33 +90,6 @@ pub fn is_denied(probe: &dyn Probe, dir: &Path) -> Option<&'static str> {
         return Some("local mount inside a virtual repo");
     }
     None
-}
-
-/// Climb from `dir` (on `dev`) with one parent `stat` per level until
-/// `st_dev` changes, `$HOME` or `/`. True if the change lands on a virtual
-/// or remote parent, or one with `.eden`.
-fn below_virtual_mount(probe: &dyn Probe, mut dir: &Path, dev: u64, home: Option<&Path>) -> bool {
-    loop {
-        if Some(dir) == home {
-            return false;
-        }
-        let Some(parent) = dir.parent() else {
-            return false;
-        };
-        match probe.stat(parent) {
-            Ok(s) if s.dev == dev => dir = parent,
-            Ok(_) => {
-                let non_local = probe.mount(parent).is_ok_and(|m| {
-                    matches!(
-                        classify(&m, parent, home),
-                        FsClass::Virtual(_) | FsClass::Remote(_)
-                    )
-                });
-                return non_local || probe.lstat(&parent.join(".eden")).is_ok_and(|s| s.is_dir);
-            }
-            Err(_) => return false,
-        }
-    }
 }
 
 /// `p` with `.` dropped and each `..` removing the component before it
@@ -199,14 +174,16 @@ fn rule_a(s: &WalkStats) -> bool {
 ///   start of this call), and accepted iff (a) the cumulative subtree has at
 ///   least 20 notes and a note density of at least 30%, or (b) it adds more
 ///   notes outside the child than the child holds. The climb stops at the
-///   first denied or rejected parent; an aborted parent walk rejects it, and
-///   so does a parent below which the child's deepest dir would exceed the
-///   loose depth budget (`loose root rejected at <dir>: depth budget`).
+///   first parent whose `st_dev` differs from the start's (the walk would
+///   drop the child's notes), and at the first denied or rejected parent;
+///   an aborted parent walk rejects it, and so does a parent below which
+///   the child's deepest dir would exceed the loose depth budget
+///   (`loose root rejected at <dir>: depth budget`).
 ///
 /// `reason` is the last decision: the rejection line, `stopped at <dir>:
-/// denied (<why>)`, `loose root accepted at <top>: <md> md / <files> files`,
-/// `loose root at <dir>: outside home, no growth` or `loose root at <dir>:
-/// walk aborted (<abort>), no growth`.
+/// mount boundary`, `stopped at <dir>: denied (<why>)`, `loose root accepted
+/// at <top>: <md> md / <files> files`, `loose root at <dir>: outside home, no
+/// growth` or `loose root at <dir>: walk aborted (<abort>), no growth`.
 pub fn find_loose_root(
     probe: &dyn Probe,
     file: &Path,
@@ -280,11 +257,18 @@ pub fn find_loose_root(
             s.files
         )
     };
+    // The walk drops entries on another device, so a parent across a mount
+    // boundary would list none of the child's notes.
+    let dev = probe.stat(&start).ok().map(|s| s.dev);
     let mut child = start;
     let mut reason = accepted(&child, &stats);
     while let Some(parent) = child.parent().filter(|p| *p != home) {
         let parent = parent.to_path_buf();
         let shown = show(&parent, Some(home));
+        if dev.is_none() || probe.stat(&parent).ok().map(|s| s.dev) != dev {
+            reason = format!("stopped at {shown}: mount boundary");
+            break;
+        }
         if let Some(why) = is_denied(probe, &parent) {
             reason = format!("stopped at {shown}: denied ({why})");
             break;

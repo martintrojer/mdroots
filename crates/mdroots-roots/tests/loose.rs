@@ -10,7 +10,7 @@ use std::time::Duration;
 use mdroots_core::Cancel;
 use mdroots_roots::loose::{LooseOutcome, find_loose_root, is_denied};
 use mdroots_roots::probe::{Counting, FakeProbe, MountInfo};
-use mdroots_roots::walk::Abort;
+use mdroots_roots::walk::{Abort, WalkOptions, walk};
 
 fn p(s: &str) -> PathBuf {
     PathBuf::from(s)
@@ -461,4 +461,29 @@ fn climb_accepts_parent_when_depth_fits() {
     let (out, _) = run(f, "/h/x/s/f.md", &[], &["/h/x"]);
     assert_eq!(out.root, Some(p("/h/x")));
     assert_eq!(out.stats.max_depth, 8);
+}
+
+#[test]
+fn growth_stops_at_a_mount_boundary() {
+    let f = files(
+        files(
+            FakeProbe::new().home("/h").mount("/h/mnt/usb", local(3)),
+            "/h/mnt/usb",
+            3,
+            3,
+        ),
+        "/h/mnt",
+        40,
+        40,
+    );
+    let (out, probe) = run(f, "/h/mnt/usb/f0000.md", &[], &["/h/mnt/usb"]);
+    assert_eq!(out.root, Some(p("/h/mnt/usb")));
+    assert_eq!(out.reason, "stopped at ~/mnt: mount boundary");
+    let listed = walk(
+        &probe,
+        Path::new("/h/mnt/usb"),
+        &WalkOptions::default(),
+        &Cancel::new(),
+    );
+    assert!(listed.md.contains(&"f0000.md".to_string()), "{listed:?}");
 }
