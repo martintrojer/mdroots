@@ -480,21 +480,14 @@ pub(crate) fn completion(c: &Ctx, pos: Position) -> Result<CompletionList, Fail>
         Want::Notes(typed) => {
             let notes = c.ws.search_notes(typed, NOTE_LIMIT);
             incomplete = notes.len() == NOTE_LIMIT;
-            // A stem two notes share (case-insensitively) names neither:
-            // insert the root-relative path without extension.
-            let mut stems: HashMap<String, usize> = HashMap::new();
-            for f in c.ws.files() {
-                *stems.entry(file_stem(&f).to_lowercase()).or_default() += 1;
-            }
-            let root = c.ws.root().path;
+            // The stem, or a path when the stem is shared or would resolve
+            // to another note from here: what link_to writes.
             notes
                 .into_iter()
                 .map(|n| {
                     let stem = file_stem(&n.path);
-                    let text = match stems.get(&stem.to_lowercase()) {
-                        Some(k) if *k > 1 => relative(&root, &n.path.with_extension("")),
-                        _ => stem.clone(),
-                    };
+                    let text = c.ws.wiki_target(&c.path, &n.path);
+                    let text = text.unwrap_or_else(|_| stem.clone());
                     item(stem, text, CompletionItemKind::FILE, Some(n.title))
                 })
                 .collect()

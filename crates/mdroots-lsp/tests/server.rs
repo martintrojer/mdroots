@@ -918,6 +918,95 @@ fn completion_inserts_text_that_resolves_to_the_chosen_note() {
     c.shutdown().unwrap();
 }
 
+/// `s` with `%XX` escapes decoded (as UTF-8).
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match (b[i], s.get(i + 1..i + 3)) {
+            (b'%', Some(h)) if u8::from_str_radix(h, 16).is_ok() => {
+                out.push(u8::from_str_radix(h, 16).unwrap());
+                i += 3;
+            }
+            (c, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn completion_from_a_subdirectory_resolves_to_the_chosen_note() {
+    let v = Vault::corpus("zk-min");
+    for d in ["dir", "sub"] {
+        fs::create_dir_all(v.dir.join(d)).unwrap();
+    }
+    v.write("sub/ref.md", "");
+    v.write("dup.md", "# Dup at root\n");
+    v.write("dir/dup.md", "# Dup in dir\n");
+    v.write("sub/dup.md", "# Dup sibling\n");
+    v.write("sub/a&copy;.md", "# Entity name\n");
+    v.write("sub/a©.md", "# Copyright sign\n");
+    let mut c = session(&v, UTF8, &["sub/ref.md"]);
+    let uri = v.uri("sub/ref.md");
+    let mut version = 1;
+    let mut set = |c: &mut Client, text: &str| {
+        version += 1;
+        c.change(&uri, version, text);
+    };
+    // Each item of completing `text`: (detail, newText).
+    let mut items = |c: &mut Client, text: &str| -> Vec<(String, String)> {
+        set(c, text);
+        let r = ok(c.request("textDocument/completion", at(&uri, 0, text.len() as u32)));
+        r["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| {
+                let d = i["detail"].as_str().unwrap_or_default().to_owned();
+                (d, i["textEdit"]["newText"].as_str().unwrap().to_owned())
+            })
+            .collect()
+    };
+    // Where `link` (written in sub/ref.md) leads, as a path below the vault.
+    let goto = |c: &mut Client, version: i32, link: &str| -> String {
+        c.change(&uri, version, link);
+        let r = ok(c.request("textDocument/definition", at(&uri, 0, 2)));
+        let u = percent_decode(r[0]["uri"].as_str().unwrap_or_default());
+        u.strip_prefix(&v.uri("")).unwrap_or(&u).to_owned()
+    };
+    let notes = items(&mut c, "[[du");
+    let paths = items(&mut c, "[x](a");
+    let mut checked = 0;
+    for (detail, t) in notes {
+        let want = match detail.as_str() {
+            "Dup at root" => "dup.md",
+            "Dup in dir" => "dir/dup.md",
+            "Dup sibling" => "sub/dup.md",
+            _ => continue,
+        };
+        checked += 1;
+        let got = goto(&mut c, 100 + checked, &format!("[[{t}]]"));
+        assert_eq!(got, want, "{detail}: [[{t}]]");
+    }
+    assert_eq!(checked, 3);
+    for (detail, t) in paths {
+        let want = match detail.as_str() {
+            "Entity name" => "sub/a&copy;.md",
+            "Copyright sign" => "sub/a©.md",
+            _ => continue,
+        };
+        checked += 1;
+        let got = goto(&mut c, 100 + checked, &format!("[x]({t})"));
+        assert_eq!(got, want, "{detail}: ({t})");
+    }
+    assert_eq!(checked, 5);
+    c.shutdown().unwrap();
+}
+
 #[test]
 fn completion_of_paths_from_a_subdirectory_and_headings_of_another_note() {
     let v = Vault::corpus("notesvault");

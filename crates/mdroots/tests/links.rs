@@ -172,6 +172,31 @@ fn markdown_destinations_encode_characters_that_end_or_alter_them() {
 }
 
 #[test]
+fn markdown_destinations_are_not_character_references() {
+    // `&copy;` in a destination decodes to `©`: `a&copy;.md` must not
+    // lead to `a©.md`.
+    let names = ["/v/x/a&copy;.md", "/v/x/a©.md"];
+    for cfg in [
+        r#"{"useMarkdownLinks": true}"#,
+        r#"{"useMarkdownLinks": true, "newLinkFormat": "absolute"}"#,
+    ] {
+        let w = ws(&[
+            (names[0], ""),
+            (names[1], ""),
+            ("/v/.obsidian/app.json", cfg),
+        ]);
+        for to in names {
+            let l = link(&w, "/v/a.md", to, Some("L"));
+            assert_eq!(target(&w, "/v/a.md", &l), [p(to)], "{l}");
+        }
+        assert_eq!(
+            link(&w, "/v/a.md", names[0], Some("L")),
+            "[L](x/a%26copy;.md)"
+        );
+    }
+}
+
+#[test]
 fn zk_default_drops_the_extension() {
     let w = ws(&[("/v/.zk/config.toml", "")]);
     assert_eq!(
