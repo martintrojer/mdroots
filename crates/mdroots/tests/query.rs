@@ -231,6 +231,63 @@ fn months_back_clamp_the_day() {
     );
 }
 
+/// The latest (`later`) or earliest representable time, found by probing.
+fn extreme(later: bool) -> SystemTime {
+    let step = |t: SystemTime, d| {
+        if later {
+            t.checked_add(d)
+        } else {
+            t.checked_sub(d)
+        }
+    };
+    let mut t = UNIX_EPOCH;
+    let steps = (0..64)
+        .rev()
+        .map(|i| Duration::from_secs(1 << i))
+        .chain((0..30).rev().map(|i| Duration::from_nanos(1 << i)));
+    for d in steps {
+        while let Some(n) = step(t, d) {
+            t = n;
+        }
+    }
+    t
+}
+
+#[test]
+fn relative_dates_at_the_ends_of_time_never_panic() {
+    let min = extreme(false);
+    let max = extreme(true);
+    // A `now` parse_date itself returns, a day and a bit above `min`.
+    let far_back = parse_date("106751991167300 days ago", UNIX_EPOCH).unwrap();
+    let mut nows = vec![min, max, far_back];
+    for k in [1, 59, 3600, DAY - 1, DAY, DAY + 1, 8 * DAY] {
+        nows.extend(min.checked_add(Duration::from_secs(k)));
+        nows.extend(max.checked_sub(Duration::from_secs(k)));
+    }
+    for now in nows {
+        for s in [
+            "now",
+            "today",
+            "yesterday",
+            "last monday",
+            "last saturday",
+            "2 days ago",
+            "an hour ago",
+            "last month",
+            "1 year ago",
+        ] {
+            if let Ok(t) = parse_date(s, now) {
+                assert!(t <= now, "{s:?} at {now:?} is {t:?}, after now");
+            }
+        }
+    }
+    assert_eq!(parse_date("now", min), Ok(min));
+    assert_eq!(parse_date("now", max), Ok(max));
+    assert!(parse_date("yesterday", far_back).is_err());
+    assert!(parse_date("yesterday", min).is_err());
+    assert!(parse_date("today", max).is_ok());
+}
+
 #[test]
 fn bad_dates_are_errors() {
     for s in [
@@ -283,6 +340,19 @@ fn rfc3339_formats_whole_utc_seconds() {
             Ok(*want)
         );
     }
+}
+
+#[test]
+fn rfc3339_round_trips_only_four_digit_years() {
+    for s in ["0000-01-01T00:00:00Z", "9999-12-31T23:59:59Z"] {
+        assert_eq!(parse_date(s, at(NOW)).map(format_rfc3339).as_deref(), Ok(s));
+    }
+    let y10k = parse_date("9999-12-31T23:59:59-00:01", at(NOW)).unwrap();
+    assert_eq!(format_rfc3339(y10k), "10000-01-01T00:00:59Z");
+    assert!(parse_date(&format_rfc3339(y10k), at(NOW)).is_err());
+    let bc = parse_date("0000-01-01T00:00:00+00:01", at(NOW)).unwrap();
+    assert_eq!(format_rfc3339(bc), "-001-12-31T23:59:00Z");
+    assert!(parse_date(&format_rfc3339(bc), at(NOW)).is_err());
 }
 
 #[test]

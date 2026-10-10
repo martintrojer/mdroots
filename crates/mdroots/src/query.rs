@@ -626,7 +626,10 @@ pub fn day_range(s: &str, now: SystemTime) -> Result<(SystemTime, SystemTime), S
 }
 
 /// `t` as RFC 3339 in UTC, rounded down to whole seconds:
-/// `2024-02-29T13:05:00Z`. [`parse_date`] reads it back.
+/// `2024-02-29T13:05:00Z`. For years 0000–9999 [`parse_date`] reads it
+/// back; other years, which RFC 3339 cannot write, come out with more
+/// digits or a sign (`10000-01-01T00:00:00Z`, `-001-12-31T00:00:00Z`)
+/// and do not parse.
 pub fn format_rfc3339(t: SystemTime) -> String {
     let secs = to_secs(t);
     let (y, m, d) = from_days(secs.div_euclid(DAY));
@@ -705,20 +708,23 @@ pub(crate) fn parse_absolute(s: &str) -> Option<SystemTime> {
 
 fn parse_relative(s: &str, now: SystemTime) -> Option<SystemTime> {
     let now_s = to_secs(now);
-    let today = now_s.div_euclid(DAY) * DAY;
+    // The start of the day `back` days before today. Checked: `now` may
+    // be any representable time.
+    let day = now_s.div_euclid(DAY);
+    let start = |back: i64| from_secs(day.checked_sub(back)?.checked_mul(DAY)?, 0);
     let words: Vec<&str> = s.split_whitespace().collect();
     match words.as_slice() {
         ["now"] => return Some(now),
-        ["today"] => return from_secs(today, 0),
-        ["yesterday"] => return from_secs(today - DAY, 0),
+        ["today"] => return start(0),
+        ["yesterday"] => return start(1),
         ["last", w] if weekday(w).is_some() => {
             let want = weekday(w)?;
-            let cur = (today.div_euclid(DAY) + 4).rem_euclid(7); // 1970-01-01: Thursday
+            let cur = (day.rem_euclid(7) + 4) % 7; // 1970-01-01: Thursday
             let back = match (cur - want).rem_euclid(7) {
                 0 => 7,
                 n => n,
             };
-            return from_secs(today - back * DAY, 0);
+            return start(back);
         }
         _ => {}
     }
@@ -858,8 +864,8 @@ fn to_secs(t: SystemTime) -> i64 {
         Ok(d) => i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
         Err(e) => {
             let d = e.duration();
-            let s = i64::try_from(d.as_secs()).unwrap_or(i64::MAX);
-            if d.subsec_nanos() > 0 { -s - 1 } else { -s }
+            let s = -i128::from(d.as_secs()) - i128::from(d.subsec_nanos() > 0);
+            i64::try_from(s).unwrap_or(i64::MIN)
         }
     }
 }
