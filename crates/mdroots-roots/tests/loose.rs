@@ -372,9 +372,9 @@ fn start_walk_rate_abort() {
     let mut f = FakeProbe::new()
         .home("/h")
         .read_dir_cost("/h/slow", Duration::from_millis(10));
-    // The start /h/slow/d0 has 11 subdirs at 10 ms each: the walk passes the
-    // 100 ms window and the rate check aborts it.
-    for i in 0..11 {
+    // The start /h/slow/d0 has 60 subdirs at 10 ms each: big enough to be
+    // rate-checked; the walk passes the 100 ms window and the check aborts it.
+    for i in 0..60 {
         f = f.file(format!("/h/slow/d0/s{i}/a.md"), "");
     }
     let (out, _) = run(f, "/h/slow/d0/a.md", &[], &["/h/slow/d0", "/h/slow"]);

@@ -371,7 +371,8 @@ pub fn walk(probe: &dyn Probe, root: &Path, opts: &WalkOptions, cancel: &Cancel)
         rate_checked: false,
     };
     // No rate check at the end: a walk that finished before the 50-dir /
-    // 100 ms window is fast enough, whatever its median.
+    // 100 ms window, or a root with fewer than 50 dirs, is fast enough
+    // whatever its median; the wall budget bounds it.
     let abort = w.run().err();
     w.finish(abort)
 }
@@ -419,7 +420,7 @@ impl Walker<'_> {
         self.checkpoint()?;
         self.times.push(ms(t1.saturating_sub(t0)));
         let Ok(listing) = listing else {
-            return self.timing_checks();
+            return self.timing_checks(queue.len());
         };
         self.out.stats.dirs += 1;
         self.out.stats.max_depth = self.out.stats.max_depth.max(item.depth);
@@ -439,8 +440,6 @@ impl Walker<'_> {
         if self.out.stats.entries > self.opts.budget.entries {
             return Err(Abort::Entries);
         }
-        self.timing_checks()?;
-
         for (name, st) in &listing {
             let abs = item.abs.join(name);
             let rel = match item.rel.is_empty() {
@@ -472,7 +471,8 @@ impl Walker<'_> {
                 });
             }
         }
-        Ok(())
+        // After the subdirs are queued, so the check sees how big the root is.
+        self.timing_checks(queue.len())
     }
 
     /// Prune rules that need no extra I/O: skip list, symlinks, other
@@ -581,17 +581,26 @@ impl Walker<'_> {
         }
     }
 
-    fn timing_checks(&mut self) -> Result<(), Abort> {
+    /// `queued` is the number of dirs waiting to be listed.
+    fn timing_checks(&mut self, queued: usize) -> Result<(), Abort> {
         self.checkpoint()?;
         let elapsed = self.elapsed();
-        if !self.rate_checked && (self.times.len() >= RATE_DIRS || elapsed >= RATE_WINDOW) {
+        // Known dirs = listed + queued. A smaller root is never rate-checked.
+        let known = self.times.len() + queued;
+        if !self.rate_checked
+            && known >= RATE_DIRS
+            && (self.times.len() >= RATE_DIRS || elapsed >= RATE_WINDOW)
+        {
             self.rate_check()?;
         }
         Ok(())
     }
 
-    /// The one rate check, after the first 50 dirs or 100 ms. Walks that end
-    /// sooner, or that timed fewer than 5 listings, are never rate-aborted.
+    /// The one rate check, after the first 50 dirs or 100 ms, once the walk
+    /// knows at least 50 dirs (listed or queued). Walks that end sooner,
+    /// roots with fewer than 50 dirs, or walks that timed fewer than 5
+    /// listings are never rate-aborted: a few slow listings on a loaded
+    /// machine say nothing about the filesystem.
     fn rate_check(&mut self) -> Result<(), Abort> {
         if self.rate_checked {
             return Ok(());

@@ -8,6 +8,11 @@ on are internal and pinned to the exact version.
 
 - `mdroots --version` (or `-V`) prints `mdroots <version>` and exits 0;
   before it printed the usage. The release smoke test runs it.
+- Fix: a small root (fewer than 50 directories) is never rate-aborted.
+  Before, a few slow listings on a loaded machine (say, during a build)
+  could cross the 100 ms window and turn a small notes repo into a lazy
+  root; the wall budget still bounds such walks. Larger slow roots are
+  still caught by the rate check at about 100 ms.
 
 ## 0.2.5
 

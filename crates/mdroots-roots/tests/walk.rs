@@ -306,7 +306,7 @@ fn wall_budget_aborts() {
 
 #[test]
 fn rate_check_aborts_slow_fs_only() {
-    let slow = wide(20).read_dir_cost(ROOT, Duration::from_millis(8));
+    let slow = wide(60).read_dir_cost(ROOT, Duration::from_millis(8));
     let (out, probe) = run_default(slow);
     assert_eq!(out.abort, Some(Abort::Rate));
     // Decided once 100 ms had passed: 13 dirs at 8 ms.
@@ -544,4 +544,16 @@ fn one_slow_listing_never_rate_aborts() {
     let slow = wide(2).read_dir_cost(ROOT, Duration::from_millis(150));
     let (out, _) = run_default(slow);
     assert_eq!(out.abort, None);
+}
+
+#[test]
+fn small_root_on_a_loaded_machine_is_never_rate_aborted() {
+    // 10 dirs at 15 ms (a loaded machine): the walk passes 100 ms after 7
+    // listings with a 15 ms median, but a root under 50 dirs is never
+    // rate-aborted; the wall budget bounds it.
+    let slow = wide(9).read_dir_cost(ROOT, Duration::from_millis(15));
+    let (out, _) = run_default(slow);
+    assert_eq!(out.abort, None);
+    assert_eq!(out.stats.dirs, 10);
+    assert_eq!(out.stats.ms_per_dir, Some(15.0));
 }
