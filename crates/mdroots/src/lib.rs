@@ -13,10 +13,12 @@
 
 mod extract;
 mod goto;
+mod graph;
 mod indexing;
 mod links;
 pub mod names;
 mod notes;
+pub mod query;
 mod rename;
 mod search;
 mod watch;
