@@ -471,9 +471,9 @@ and extract-note, [library](library.md) §3.2). Precedence:
 4. A root without explicit links: Markdown links relative to the file, with
    `.md`.
 
-Planned: piped-wiki order, tag syntaxes beyond `#tag`, and the filename
-scheme (slug, id prefix, date) for a future "new note" command; extract-note
-names files by the GitHub slug of the title today.
+Planned: piped-wiki order and tag syntaxes beyond `#tag`. Extract-note
+names files by the GitHub slug of the title. Creating notes from templates
+is out of scope: mdroots is a scanner.
 
 ### 3.3 Diagnostics
 | Broken explicit links | Severity |

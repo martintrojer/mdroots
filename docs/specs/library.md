@@ -321,7 +321,7 @@ Server behaviour as built (LSP layer, not library):
 - **Completion** triggers: `[`, `(`, `#`, `:`. After `[[`: notes by fuzzy search (stem inserted, title as detail, at most 50). After `[[note#` (or `[[#` for this note): its headings, without the H1 title. After `](`: relative paths to notes. After a blank and `#`: tags with note counts. A `#` as first non-blank character of a line starts a heading: the server returns an empty list, so no popup.
 - **Rename.** `textDocument/rename` on a link to a note, or on this note's H1, renames that note: the new name is a file stem (no directory or extension); the result is the link edits plus a `RenameFile` op (as marksman does). On the H1 it renames the file only, not the heading text.
 - **Commands.** `mdroots.backlinks <uri>`: `Location[]` of links to the note from other notes (self-links excluded, one per line). `mdroots.anchorLinks <uri> <slug>`: `Location[]` of links from other notes naming the note's heading with that slug by anchor (the `N links` lens). `mdroots.info <uri>`: root, mode, reason and file count, also sent as `window/showMessage`. `mdroots.renameFile <from-uri> <to-uri>`: the rename edit, sent to the client as `workspace/applyEdit`.
-- Planned (M8): `workspace/willRenameFiles`, semantic tokens, a "new note" command using `link_style`, and a full-text request (the library has `full_text`; the server does not expose it).
+- Planned (M8): `workspace/willRenameFiles`, semantic tokens, and a full-text request (the library has `full_text`; the server does not expose it).
 
 ## 4. Scheduling
 

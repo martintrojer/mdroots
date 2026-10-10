@@ -83,6 +83,9 @@ output: [docs/specs/library.md §6](docs/specs/library.md#6-cli). Set
 - **Light:** < 35 MB private memory per process with 10 concurrent instances; background work at the lowest QoS class.
 - **Liberal links:** wiki, markdown, org, reference links, bare paths; code is a mention, never a diagnostic.
 - **Embeddable:** the LSP server is a thin adapter over the library.
+- **A scanner, not a note manager:** mdroots reads and answers questions
+  about notes; it doesn't create notes or fill templates (editor edits such
+  as rename and extract-note are returned for the client to apply).
 
 ## Crates
 

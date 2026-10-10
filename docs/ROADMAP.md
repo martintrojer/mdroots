@@ -86,7 +86,6 @@ Ordered by expected value. Each has a reason it is not built yet.
 | Item | Why not yet |
 |---|---|
 | Library heading sections (`Workspace::sections(path)`) | heading-section folding is computed inside `mdroots-lsp` today; moving it into the library would let [ramble](https://github.com/martintrojer/ramble), a read-only TUI, fold by section too (per-heading link counts already exist: `anchor_backlinks`, `heading_backlinks`) |
-| "New note" command and the filename scheme vote | the link style exists (`Workspace::link_style`); the filename scheme (slug, id prefix, date) is not voted yet |
 | `workspace/willRenameFiles`, a full-text LSP request, semantic tokens | small server additions; no client asked yet ([Neovim](https://neovim.io) 0.12 never sends `willRenameFiles`) |
 | Embedder API: typed `subscribe` events, `Preview.summary`, unfenced front matter as a workspace option (today only `ParseOptions` has it), a server builder that shares an embedder's `Workspaces` | gaps ramble works around ([research/ramble](research/ramble.md)); none blocks it |
 | Derived SQL tables (`keys`, `links`, `frontmatter`) | memory is under target at 3,000 notes; adds a second query layer and a parser version to keep in sync (D9) |
