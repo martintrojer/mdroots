@@ -6,6 +6,7 @@
 //! [`FakeProbe`] and wrap it in [`Counting`] to count and forbid `read_dir`.
 
 use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsString;
 use std::io::{self, Read};
 use std::ops::Bound;
 use std::path::{Component, Path, PathBuf};
@@ -57,8 +58,10 @@ pub trait Probe: Send + Sync {
     /// Does not follow a symlink in the last component.
     fn lstat(&self, p: &Path) -> io::Result<FsStat>;
     fn mount(&self, p: &Path) -> io::Result<MountInfo>;
-    /// Entry names sorted, each with its `lstat`.
-    fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, FsStat)>>;
+    /// Entry names sorted, each with its `lstat`. Names are returned as the
+    /// OS gives them (not necessarily UTF-8), so joining one onto `p` names
+    /// the real entry.
+    fn read_dir(&self, p: &Path) -> io::Result<Vec<(OsString, FsStat)>>;
     fn read_link(&self, p: &Path) -> io::Result<PathBuf>;
     /// The whole file; `InvalidData` if it is larger than `cap` bytes.
     fn read_small(&self, p: &Path, cap: usize) -> io::Result<Vec<u8>>;
@@ -332,14 +335,14 @@ impl Probe for StdProbe {
     }
 
     /// Entries whose metadata vanished between listing and `lstat` are
-    /// skipped; non-UTF-8 names are converted lossily.
-    fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, FsStat)>> {
+    /// skipped.
+    fn read_dir(&self, p: &Path) -> io::Result<Vec<(OsString, FsStat)>> {
         let mut out = Vec::new();
         for e in std::fs::read_dir(p)? {
             let e = e?;
             // DirEntry::metadata does not follow symlinks.
             let Ok(m) = e.metadata() else { continue };
-            out.push((e.file_name().to_string_lossy().into_owned(), std_stat(&m)));
+            out.push((e.file_name(), std_stat(&m)));
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(out)
@@ -742,7 +745,7 @@ impl Probe for FakeProbe {
         Ok(st.mount_of(&st.resolve(p, true)?))
     }
 
-    fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, FsStat)>> {
+    fn read_dir(&self, p: &Path) -> io::Result<Vec<(OsString, FsStat)>> {
         let mut st = self.lock();
         let dir = st.resolve(p, true)?;
         if !matches!(st.nodes.get(&dir).map(|n| &n.kind), Some(Kind::Dir)) {
@@ -761,11 +764,7 @@ impl Probe for FakeProbe {
             .take_while(|k| k.starts_with(&dir))
             .filter(|k| k.parent() == Some(dir.as_path()))
         {
-            let name = k
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
+            let name = k.file_name().unwrap_or_default().to_owned();
             out.push((name, st.stat_at(k)?));
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -880,7 +879,7 @@ impl<P: Probe> Probe for Counting<P> {
         self.inner.mount(p)
     }
 
-    fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, FsStat)>> {
+    fn read_dir(&self, p: &Path) -> io::Result<Vec<(OsString, FsStat)>> {
         {
             let mut st = self.lock();
             *st.counts.entry(p.to_path_buf()).or_default() += 1;

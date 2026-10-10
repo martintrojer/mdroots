@@ -3,6 +3,7 @@
 //! [Bazel](https://bazel.build), [Mercurial](https://www.mercurial-scm.org).
 //! All trees are in-memory (FakeProbe).
 
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -445,7 +446,7 @@ impl Probe for SlowStat {
     fn mount(&self, p: &Path) -> io::Result<MountInfo> {
         Probe::mount(&self.inner, p)
     }
-    fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, FsStat)>> {
+    fn read_dir(&self, p: &Path) -> io::Result<Vec<(OsString, FsStat)>> {
         self.inner.read_dir(p)
     }
     fn read_link(&self, p: &Path) -> io::Result<PathBuf> {
@@ -556,4 +557,24 @@ fn small_root_on_a_loaded_machine_is_never_rate_aborted() {
     assert_eq!(out.abort, None);
     assert_eq!(out.stats.dirs, 10);
     assert_eq!(out.stats.ms_per_dir, Some(15.0));
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_dir_is_descended() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let dir = Path::new(ROOT).join(OsStr::from_bytes(b"notes-\xff"));
+    let fake = FakeProbe::new()
+        .file("/n/a.md", "")
+        .file(dir.join("inside.md"), "")
+        .file(dir.join("proj/.git/HEAD"), "");
+    let (out, probe) = run_default(fake);
+    assert_eq!(probe.read_dir_count(&dir), 1);
+    assert_eq!(out.nested_roots, vec![dir.join("proj")]);
+    assert_eq!(out.stats.dirs, 2);
+    // inside.md is counted, but its root-relative path is not UTF-8, so it
+    // stays out of the (String) note list rather than being listed lossily.
+    assert_eq!(out.stats.files, 2);
+    assert_eq!(out.md, strs(&["a.md"]));
 }

@@ -10,6 +10,7 @@
 //! refused (and still counted), which shows what discovery decides from
 //! `stat`, `statfs` and small reads alone.
 
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -39,7 +40,7 @@ impl Probe for Guard {
     fn mount(&self, p: &Path) -> io::Result<MountInfo> {
         self.inner.mount(p)
     }
-    fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, FsStat)>> {
+    fn read_dir(&self, p: &Path) -> io::Result<Vec<(OsString, FsStat)>> {
         self.read_dirs.fetch_add(1, Ordering::Relaxed);
         if self.refuse {
             return Err(io::Error::new(

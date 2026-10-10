@@ -12,6 +12,7 @@
 //! The wall budget and the cancel token are checked before every probe call,
 //! so an abort lands at most one probe call past the budget.
 
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -296,7 +297,7 @@ impl Probe for Guard<'_> {
         self.check()?;
         self.inner.mount(p)
     }
-    fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, FsStat)>> {
+    fn read_dir(&self, p: &Path) -> io::Result<Vec<(OsString, FsStat)>> {
         self.check()?;
         self.inner.read_dir(p)
     }
@@ -326,7 +327,8 @@ impl Probe for Guard<'_> {
 
 struct Item {
     abs: PathBuf,
-    rel: String,
+    /// Root-relative, `/`-separated; `None` below a non-UTF-8 name.
+    rel: Option<String>,
     depth: usize,
     /// Matchers of the ancestors, nearest last.
     matchers: Vec<Rc<Gitignore>>,
@@ -396,7 +398,7 @@ impl Walker<'_> {
         self.root_dev = st.dev;
         let mut queue = std::collections::VecDeque::from([Item {
             abs: self.root.to_path_buf(),
-            rel: String::new(),
+            rel: Some(String::new()),
             depth: 0,
             matchers: Vec::new(),
         }]);
@@ -442,15 +444,18 @@ impl Walker<'_> {
         }
         for (name, st) in &listing {
             let abs = item.abs.join(name);
-            let rel = match item.rel.is_empty() {
-                true => name.clone(),
-                false => format!("{}/{name}", item.rel),
+            // String checks see a lossy name; paths use the real one.
+            let lossy = name.to_string_lossy();
+            let rel = match (&item.rel, name.to_str()) {
+                (Some(r), Some(n)) if r.is_empty() => Some(n.to_owned()),
+                (Some(r), Some(n)) => Some(format!("{r}/{n}")),
+                _ => None,
             };
-            if !self.keep(name, st, &abs, &matchers) {
+            if !self.keep(&lossy, st, &abs, &matchers) {
                 continue;
             }
             if st.is_file {
-                self.file(name, st, rel)?;
+                self.file(&lossy, st, rel)?;
             } else if st.is_dir {
                 // An empty .mdrootsignore wins over any marker: never index here.
                 if st.dataless || ignored_entirely(self.probe, &abs) {
@@ -496,11 +501,13 @@ impl Walker<'_> {
         !matches!(verdict, Some(Match::Ignore(_)))
     }
 
-    fn file(&mut self, name: &str, st: &FsStat, rel: String) -> Result<(), Abort> {
+    /// A note whose root-relative path is not UTF-8 (`rel` is `None`) is
+    /// counted in `files` but not listed: note paths are `String`s.
+    fn file(&mut self, name: &str, st: &FsStat, rel: Option<String>) -> Result<(), Abort> {
         self.out.stats.files += 1;
-        if !is_note(name) {
+        let Some(rel) = rel.filter(|_| is_note(name)) else {
             return Ok(());
-        }
+        };
         if st.dataless {
             self.out.dataless.push(rel);
             return Ok(());
@@ -538,7 +545,7 @@ impl Walker<'_> {
         &self,
         dir: &Path,
         is_root: bool,
-        listing: &[(String, FsStat)],
+        listing: &[(OsString, FsStat)],
     ) -> Option<Gitignore> {
         let present = |n: &str| listing.iter().any(|(name, st)| name == n && st.is_file);
         let mut b = GitignoreBuilder::new(dir);

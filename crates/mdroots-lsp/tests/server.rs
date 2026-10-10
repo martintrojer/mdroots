@@ -1565,7 +1565,7 @@ impl mdroots::Probe for GatedProbe {
         self.0.wait();
         mdroots::StdProbe.mount(p)
     }
-    fn read_dir(&self, p: &Path) -> std::io::Result<Vec<(String, mdroots::FsStat)>> {
+    fn read_dir(&self, p: &Path) -> std::io::Result<Vec<(std::ffi::OsString, mdroots::FsStat)>> {
         self.0.wait();
         mdroots::StdProbe.read_dir(p)
     }

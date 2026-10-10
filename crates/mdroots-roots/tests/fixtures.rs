@@ -22,6 +22,7 @@
 //! [`discover`] call, which must stay under one second.
 #![cfg(unix)]
 
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -72,7 +73,7 @@ impl Probe for HomeProbe {
     fn mount(&self, p: &Path) -> io::Result<MountInfo> {
         self.inner.mount(p)
     }
-    fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, FsStat)>> {
+    fn read_dir(&self, p: &Path) -> io::Result<Vec<(OsString, FsStat)>> {
         *self.now.lock().unwrap_or_else(|e| e.into_inner()) += self.tick;
         self.inner.read_dir(p)
     }

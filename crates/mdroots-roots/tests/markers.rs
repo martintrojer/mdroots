@@ -5,6 +5,7 @@
 //! [EdenFS](https://github.com/facebook/sapling), [Buck2](https://buck2.build),
 //! [Bazel](https://bazel.build). All trees are in-memory (FakeProbe).
 
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -48,7 +49,7 @@ impl<P: Probe> Probe for StatLog<P> {
     fn mount(&self, p: &Path) -> io::Result<MountInfo> {
         self.inner.mount(p)
     }
-    fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, FsStat)>> {
+    fn read_dir(&self, p: &Path) -> io::Result<Vec<(OsString, FsStat)>> {
         self.inner.read_dir(p)
     }
     fn read_link(&self, p: &Path) -> io::Result<PathBuf> {

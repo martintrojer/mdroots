@@ -147,10 +147,27 @@ fn std_probe_read_dir_sorted_lstat() -> io::Result<()> {
     std::fs::create_dir(d.join("dir"))?;
     std::os::unix::fs::symlink("dir", d.join("ln"))?;
     let got = StdProbe.read_dir(d)?;
-    let names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();
+    let names: Vec<&str> = got.iter().map(|(n, _)| n.to_str().unwrap()).collect();
     assert_eq!(names, ["B.md", "a.md", "c.md", "dir", "ln"]);
     assert!(got[3].1.is_dir);
     assert!(got[4].1.is_symlink && !got[4].1.is_dir);
+    Ok(())
+}
+
+/// The real name comes back, so joining it reaches the entry. Linux only:
+/// APFS refuses non-UTF-8 names.
+#[cfg(target_os = "linux")]
+#[test]
+fn std_probe_read_dir_keeps_non_utf8_names() -> io::Result<()> {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let t = tempfile::tempdir()?;
+    let name = OsStr::from_bytes(b"notes-\xff");
+    std::fs::create_dir(t.path().join(name))?;
+    let got = StdProbe.read_dir(t.path())?;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].0, name.to_os_string());
+    assert!(StdProbe.stat(&t.path().join(&got[0].0))?.is_dir);
     Ok(())
 }
 
@@ -203,7 +220,7 @@ fn fake_probe_tree_and_symlinks() -> io::Result<()> {
         .symlink("/home/alice/notes/abs", "/home/alice/notes/a.md")
         .dataless("/home/alice/notes/cloud.md");
     assert_eq!(Probe::home(&p), Some(PathBuf::from("/home/alice")));
-    let names: Vec<String> = p
+    let names: Vec<std::ffi::OsString> = p
         .read_dir(Path::new("/home/alice/notes"))?
         .into_iter()
         .map(|(n, _)| n)
