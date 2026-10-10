@@ -13,7 +13,7 @@ keywords = ["markdown", "notes", "project-root", "discovery"]
 categories = ["filesystem"]
 
 [dependencies]
-mdroots-core = { path = "../mdroots-core", version = "=0.2.5" }
+mdroots-core = { path = "../mdroots-core", version = "=0.2.6" }
 ignore = "0.4"
 
 [target.'cfg(unix)'.dependencies]
