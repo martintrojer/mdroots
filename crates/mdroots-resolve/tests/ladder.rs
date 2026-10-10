@@ -84,6 +84,18 @@ impl FakeKeys {
         k
     }
 
+    /// Keys of parsed documents `(path, source)`.
+    fn from_docs(docs: &[(&str, &str)], case_sensitive: bool) -> Self {
+        let mut k = FakeKeys::default();
+        for (p, src) in docs {
+            let doc = parse(src, Dialect::detect_from_path(Path::new(p)));
+            for (kind, key) in mdroots_resolve::doc_keys(p, &doc, case_sensitive) {
+                k.keys.push((kind, key, p.to_string()));
+            }
+        }
+        k
+    }
+
     fn with(mut self, kind: KeyKind, key: &str, path: &str) -> Self {
         self.keys.push((kind, key.into(), path.into()));
         self
@@ -651,4 +663,97 @@ fn piped_wiki_precedence() {
     let root = Root::new(&["from.md"], &[]);
     let l = wiki("left").with_label("right");
     assert_eq!(hit(&root.r("from.md", &l)), (vec![], None, Broken));
+}
+
+#[test]
+fn org_heading_id_resolves_to_the_file() {
+    let mut root = Root::new(&[], &[]);
+    root.env = FakeEnv::new(&["a.org", "b.org"]);
+    root.keys = FakeKeys::from_docs(
+        &[
+            ("a.org", ""),
+            (
+                "b.org",
+                "* Section\n:PROPERTIES:\n:ID: section-uuid\n:END:\nbody\n",
+            ),
+        ],
+        true,
+    );
+    assert_eq!(
+        hit(&root.r("a.org", &org("id:section-uuid", "section-uuid", None))),
+        (vec!["b.org"], Some(Id), Resolved)
+    );
+    // A markdown `{#id}` heading attribute is an anchor, not a document id.
+    let keys = mdroots_resolve::doc_keys(
+        "m.md",
+        &parse("# Title {#anchor-id}\n", Dialect::Markdown),
+        true,
+    );
+    assert!(!keys.contains(&(KeyKind::Id, "anchor-id".into())));
+}
+
+#[test]
+fn site_rooted_unindexed_under_docs_dir() {
+    // An existing but unindexed docs/guide/x.md behind a site-rooted link.
+    let root = Root::new(&["a.md"], &["docs/guide/x.md"]);
+    assert_eq!(root.r("a.md", &md("/guide/x.md")).status, Broken);
+    let mut ctx = root.ctx();
+    ctx.docs_dir = Some("docs");
+    assert_eq!(
+        hit(&resolve("a.md", &md("/guide/x.md"), &ctx)),
+        (vec!["docs/guide/x.md"], None, Unindexed)
+    );
+    assert_eq!(
+        hit(&resolve("a.md", &md("/guide/x"), &ctx)),
+        (vec!["docs/guide/x.md"], None, Unindexed)
+    );
+}
+
+#[test]
+fn title_keys_are_nfc() {
+    let mut root = Root::new(&[], &[]);
+    root.env = FakeEnv::new(&["a.md", "d.md", "c.md"]);
+    root.keys = FakeKeys::from_docs(
+        &[
+            ("a.md", ""),
+            ("d.md", "# Cafe\u{301}\n"),
+            ("c.md", "# Tea \u{e9}t\u{e9}\n"),
+        ],
+        true,
+    );
+    for q in ["Cafe\u{301}", "Caf\u{e9}"] {
+        assert_eq!(
+            hit(&root.r("a.md", &wiki(q))),
+            (vec!["d.md"], Some(Title), Resolved),
+            "{q:?}"
+        );
+    }
+    assert_eq!(
+        hit(&root.r("a.md", &wiki("Tea e\u{301}te\u{301}"))),
+        (vec!["c.md"], Some(Title), Resolved)
+    );
+}
+
+#[test]
+fn root_containment_follows_fs_case() {
+    let mut root = Root::new(&[], &[]);
+    root.env = FakeEnv::new(&["a.md", "B.md"]);
+    root.env.case_sensitive = false;
+    root.keys = FakeKeys::new(&["a.md", "B.md"], false);
+    let abs = Path::new("/Vault");
+    let mut ctx = root.ctx();
+    ctx.root_abs = Some(abs);
+    assert_eq!(
+        hit(&resolve("a.md", &md("file:///vault/B.md"), &ctx)),
+        (vec!["B.md"], Some(RootRelative), Resolved)
+    );
+    // A case-sensitive fs keeps /vault outside /Vault.
+    let mut root = Root::new(&["a.md", "B.md"], &[]);
+    root.env.case_sensitive = true;
+    let mut ctx = root.ctx();
+    ctx.root_abs = Some(abs);
+    assert_eq!(
+        hit(&resolve("a.md", &md("file:///vault/B.md"), &ctx)),
+        (vec![], None, External)
+    );
 }

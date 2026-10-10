@@ -1,7 +1,8 @@
 //! The key model shared by the ladder, the stores and the differential
 //! tool: every key a document can be found by, normalised like link targets.
 
-use mdroots_syntax::{Document, slug};
+use mdroots_syntax::{Dialect, Document, slug};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::normalize::key_of;
 
@@ -49,7 +50,8 @@ pub trait KeyLookup {
 
 /// Every key `doc` at `root_rel_path` can be found by. Path, Stem, Id,
 /// Alias and SitePath use the link-target rules (decode, NFC, case-fold
-/// when `!case_sensitive`); TitleSlug is `slug::github` only. No I/O.
+/// when `!case_sensitive`); TitleSlug is `slug::github` of the NFC form.
+/// Org heading `:ID:`s are Id keys of the file. No I/O.
 /// Duplicates are removed; order is by kind, then first appearance.
 pub fn doc_keys(
     root_rel_path: &str,
@@ -59,6 +61,11 @@ pub fn doc_keys(
     let fm = doc.frontmatter();
     let facts = Facts {
         id: fm.and_then(|f| f.id()),
+        // Markdown `{#id}` attributes are anchors, not document ids.
+        heading_ids: match doc.dialect() {
+            Dialect::Org => doc.headings().filter_map(|h| h.id.as_deref()).collect(),
+            _ => Vec::new(),
+        },
         title: fm.and_then(|f| f.title()),
         h1: doc
             .headings()
@@ -74,6 +81,7 @@ pub fn doc_keys(
 #[derive(Default)]
 struct Facts<'a> {
     id: Option<&'a str>,
+    heading_ids: Vec<&'a str>,
     title: Option<&'a str>,
     h1: Option<&'a str>,
     aliases: Vec<&'a str>,
@@ -94,7 +102,7 @@ fn keys_from(root_rel_path: &str, f: &Facts, case_sensitive: bool) -> Vec<(KeyKi
     push(KeyKind::Path, path);
     push(KeyKind::Stem, stem);
 
-    if let Some(id) = f.id {
+    for id in f.id.iter().chain(&f.heading_ids) {
         push(KeyKind::Id, key(id));
     }
     let file_name = root_rel_path
@@ -105,7 +113,7 @@ fn keys_from(root_rel_path: &str, f: &Facts, case_sensitive: bool) -> Vec<(KeyKi
         push(KeyKind::Id, id.to_owned());
     }
     for title in [f.title, f.h1].into_iter().flatten() {
-        push(KeyKind::TitleSlug, slug::github(title));
+        push(KeyKind::TitleSlug, title_slug(title));
     }
     for alias in &f.aliases {
         push(KeyKind::Alias, key(alias));
@@ -114,6 +122,12 @@ fn keys_from(root_rel_path: &str, f: &Facts, case_sensitive: bool) -> Vec<(KeyKi
         push(KeyKind::SitePath, key(site.trim_matches('/')));
     }
     out
+}
+
+/// The TitleSlug key of a title or link text: `slug::github` of its NFC
+/// form, so composed and decomposed spellings meet.
+pub(crate) fn title_slug(s: &str) -> String {
+    slug::github(&s.nfc().collect::<String>())
 }
 
 /// A leading run of 12-14 ASCII digits ended by a non-digit or the end
@@ -133,6 +147,7 @@ mod tests {
     fn keys_from_frontmatter_facts() {
         let facts = Facts {
             id: Some("Abc-1"),
+            heading_ids: vec!["Sec-1", "abc-1"],
             title: Some("My Title"),
             h1: Some("Heading One"),
             aliases: vec!["Other Name", "Caf%C3%A9", "Other Name"],
@@ -143,6 +158,7 @@ mod tests {
             (KeyKind::Path, "notes/202101011200 x"),
             (KeyKind::Stem, "202101011200 x"),
             (KeyKind::Id, "abc-1"),
+            (KeyKind::Id, "sec-1"),
             (KeyKind::Id, "202101011200"),
             (KeyKind::TitleSlug, "my-title"),
             (KeyKind::TitleSlug, "heading-one"),

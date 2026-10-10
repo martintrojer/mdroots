@@ -7,10 +7,10 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use mdroots_syntax::{Confidence, Link, LinkKind, slug};
+use mdroots_syntax::{Confidence, Link, LinkKind};
 
 use crate::env::ResolveEnv;
-use crate::keys::{KeyKind, KeyLookup, ResolveStep};
+use crate::keys::{KeyKind, KeyLookup, ResolveStep, title_slug};
 use crate::normalize::{Normalized, normalize, normalize_str, percent_decode};
 
 /// Code spans longer than this are never paths.
@@ -94,6 +94,20 @@ impl<'a> ResolveCtx<'a> {
 
     fn lookup(&self, kind: KeyKind, key: &str) -> Vec<String> {
         self.keys.lookup(kind, &self.fold(key))
+    }
+
+    /// `abs` relative to `root` (both cleaned lexically), comparing
+    /// components with the env's case rule; `None` when outside.
+    fn strip_root(&self, abs: &Path, root: &Path) -> Option<String> {
+        let (abs, root) = (clean(abs), clean(root));
+        let name = |c: Component| self.fold(&c.as_os_str().to_string_lossy());
+        let mut rest = abs.components();
+        for r in root.components() {
+            if name(rest.next()?) != name(r) {
+                return None;
+            }
+        }
+        Some(path_str(rest.as_path()))
     }
 }
 
@@ -247,10 +261,7 @@ impl Query {
             None
         };
         let Some(abs) = abs else { return Ok(q) };
-        if let Some(rel) = ctx
-            .root_abs
-            .and_then(|r| clean(&abs).strip_prefix(clean(r)).ok().map(path_str))
-        {
+        if let Some(rel) = ctx.root_abs.and_then(|r| ctx.strip_root(&abs, r)) {
             q.key = rel;
             q.mapped = true;
             return Ok(q);
@@ -359,7 +370,7 @@ fn ladder(q: &Query, dir: &str, kind: LinkKind, ctx: &ResolveCtx) -> Option<Hit>
             },
         ),
         (S::Id, vec![(KeyKind::Id, q.key.clone())]),
-        (S::Title, vec![(KeyKind::TitleSlug, slug::github(&q.key))]),
+        (S::Title, vec![(KeyKind::TitleSlug, title_slug(&q.key))]),
         (S::Alias, vec![(KeyKind::Alias, q.key.clone())]),
         (S::DialectTransform, logseq(&q.key)),
     ];
@@ -423,12 +434,17 @@ fn path_step(
 }
 
 /// An explicit link that missed every step but exists on disk: the
-/// FileRelative then RootRelative candidate, as written, then with `.md`.
+/// FileRelative (or, site-rooted, docs-dir) then RootRelative candidate,
+/// as written, then with `.md`; the order of the indexed steps.
 fn on_disk(q: &Query, dir: &str, ctx: &ResolveCtx) -> Option<String> {
-    let from_dir = (!q.rooted && !q.mapped)
-        .then(|| join(dir, &q.key))
-        .flatten();
-    [from_dir, join("", &q.key)]
+    let first = if q.rooted {
+        ctx.docs_dir.and_then(|d| join(d, &q.key))
+    } else if !q.mapped {
+        join(dir, &q.key)
+    } else {
+        None
+    };
+    [first, join("", &q.key)]
         .into_iter()
         .flatten()
         .flat_map(|c| [q.disk(&c), format!("{c}.md")])
