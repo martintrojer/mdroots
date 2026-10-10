@@ -97,13 +97,21 @@ impl<'a> ResolveCtx<'a> {
     }
 
     /// `abs` relative to `root` (both cleaned lexically), comparing
-    /// components with the env's case rule; `None` when outside.
+    /// components exactly, or case-folded on a case-insensitive fs when
+    /// both are valid UTF-8; `None` when outside.
     fn strip_root(&self, abs: &Path, root: &Path) -> Option<String> {
         let (abs, root) = (clean(abs), clean(root));
-        let name = |c: Component| self.fold(&c.as_os_str().to_string_lossy());
+        let same = |a: Component, r: Component| {
+            let (a, r) = (a.as_os_str(), r.as_os_str());
+            a == r
+                || match (self.env.case_sensitive(), a.to_str(), r.to_str()) {
+                    (false, Some(a), Some(r)) => self.fold(a) == self.fold(r),
+                    _ => false,
+                }
+        };
         let mut rest = abs.components();
         for r in root.components() {
-            if name(rest.next()?) != name(r) {
+            if !same(rest.next()?, r) {
                 return None;
             }
         }

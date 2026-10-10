@@ -757,3 +757,25 @@ fn root_containment_follows_fs_case() {
         (vec![], None, External)
     );
 }
+
+/// A non-UTF-8 root component is compared by bytes, not lossily: the
+/// valid-Unicode `/v\u{FFFD}` stays outside the root `/v\xff`.
+#[cfg(unix)]
+#[test]
+fn non_utf8_root_component_compares_bytes() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    let abs = PathBuf::from(OsString::from_vec(b"/v\xff".to_vec()));
+    for case_sensitive in [true, false] {
+        let mut root = Root::new(&["a.md", "B.md"], &[]);
+        root.env.case_sensitive = case_sensitive;
+        root.keys = FakeKeys::new(&["a.md", "B.md"], case_sensitive);
+        let mut ctx = root.ctx();
+        ctx.root_abs = Some(&abs);
+        assert_eq!(
+            hit(&resolve("a.md", &md("file:///v%EF%BF%BD/B.md"), &ctx)),
+            (vec![], None, External),
+            "case_sensitive={case_sensitive}"
+        );
+    }
+}
