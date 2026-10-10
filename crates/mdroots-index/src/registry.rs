@@ -502,4 +502,8 @@ impl Registry for SqliteRegistry {
     fn all(&self) -> Vec<RootRecord> {
         all_rows(&self.conn).unwrap_or_default()
     }
+
+    fn remove(&mut self, root_id: &str) {
+        SqliteRegistry::remove(self, root_id);
+    }
 }

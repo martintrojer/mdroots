@@ -341,6 +341,20 @@ fn lookup_valid_works_over_sqlite() {
 }
 
 #[test]
+fn trait_remove_deletes_the_row() {
+    let (_t, mut reg) = fresh();
+    let r = git("/r");
+    reg.insert(r.clone()).unwrap();
+    reg.insert(loose("/n")).unwrap();
+    Registry::remove(&mut reg, &r.root_id);
+    Registry::remove(&mut reg, "missing");
+    let paths: Vec<_> = reg.all().into_iter().map(|r| r.path).collect();
+    assert_eq!(paths, [PathBuf::from("/n")]);
+    // The path is free again.
+    reg.insert(git("/r")).unwrap();
+}
+
+#[test]
 fn detect_move_keeps_root_id() {
     let before = FakeProbe::new().dir("/old/.git");
     let p = Path::new("/old");

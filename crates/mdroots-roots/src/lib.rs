@@ -17,7 +17,7 @@ pub use discover::{
 pub use loose::{LooseOutcome, find_loose_root, is_denied};
 pub use probe::{Counting, FakeProbe, FsClass, FsStat, MountInfo, Probe, StdProbe, classify};
 pub use registry::{
-    DiscoverLock, MemRegistry, Overlap, Registry, RootMode, RootRecord, VerdictSource, detect_move,
-    lookup_valid, new_root_id,
+    DiscoverLock, EDITOR_MARKER, MemRegistry, Overlap, Registry, RootMode, RootRecord,
+    VerdictSource, detect_move, is_editor, lookup_valid, lookup_valid_for, new_root_id,
 };
 pub use walk::{Abort, Budget, WalkOptions, WalkOutcome, WalkStats, pruned_dir, walk};

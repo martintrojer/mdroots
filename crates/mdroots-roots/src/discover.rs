@@ -27,7 +27,8 @@ use crate::markers::{
 };
 use crate::probe::{FsClass, Probe, classify};
 use crate::registry::{
-    Registry, RootMode, RootRecord, VerdictSource, detect_move, lookup_valid, new_root_id,
+    EDITOR_MARKER, Registry, RootMode, RootRecord, VerdictSource, detect_move, is_editor,
+    lookup_valid_for, new_root_id, on_disk,
 };
 use crate::walk::{Abort, Budget, WalkOptions, WalkStats, walk};
 
@@ -217,10 +218,12 @@ impl Out {
         o
     }
 
+    /// Record `m`; a workspace folder is recorded as [`EDITOR_MARKER`].
     fn marker(mut self, m: Option<&FoundMarker>) -> Out {
-        self.marker = m
-            .filter(|m| m.class != MarkerClass::Editor)
-            .map(|m| m.name.clone());
+        self.marker = m.map(|m| match m.class {
+            MarkerClass::Editor => EDITOR_MARKER.to_owned(),
+            _ => m.name.clone(),
+        });
         self
     }
 
@@ -256,10 +259,13 @@ struct Ctx<'a> {
 /// Decide the root of `file` (absolute, canonical) per docs/specs/roots.md
 /// §1–§4 and register it (single-file decisions are never registered).
 ///
-/// - Stage 1: a valid registry hit is used if no new marker sits between
-///   `dir(file)` and the root (on a non-local filesystem, a marker there
-///   becomes a new lazy nested root). A Rate verdict with fewer than two
-///   confirmations is a miss.
+/// - Stage 1: the nearest valid registry row ([`lookup_valid_for`], which
+///   skips rows whose marker is gone and workspace-folder rows for folders
+///   not in `opts`) is used if no new marker sits between `dir(file)` and
+///   the root, nor at the root itself for a markerless root (on a
+///   non-local filesystem, a marker below the root becomes a new lazy
+///   nested root). A `workspace_folders` entry below the root counts as a
+///   marker. A Rate verdict with fewer than two confirmations is a miss.
 /// - Stage 2: the marker climb. A virtual/remote start is lazy; an EdenFS
 ///   checkout is first offered to `enumerator` (vcs-enumerated). The
 ///   enumeration runs synchronously within its 500 ms budget; running it in
@@ -314,7 +320,8 @@ fn non_local(probe: &dyn Probe, dir: &Path, home: Option<&Path>) -> bool {
 
 /// Stage 1. `None` is a miss.
 fn stage1(cx: &mut Ctx<'_>) -> Option<Out> {
-    let rec = lookup_valid(cx.registry, cx.probe, cx.file)?;
+    let folders = &cx.opts.workspace_folders;
+    let rec = lookup_valid_for(cx.registry, cx.probe, cx.file, folders)?;
     if rec.verdict_source == VerdictSource::Rate && rec.rate_confirmations < 2 {
         return None;
     }
@@ -359,9 +366,18 @@ fn stage1(cx: &mut Ctx<'_>) -> Option<Out> {
                 o.marker = Some((*name).to_owned());
                 return Some(o);
             }
-        } else if !markers_at(cx.probe, d).is_empty() {
+        } else if !markers_at(cx.probe, d).is_empty() || folders.iter().any(|w| w == d) {
             return None;
         }
+    }
+    // A markerless (loose or lazy) root gains a marker at its own directory:
+    // `.mdroots` or `git init` there re-decides it at once.
+    if !remote
+        && rec.marker.is_none()
+        && !is_editor(&rec)
+        && !markers_at(cx.probe, &rec.path).is_empty()
+    {
+        return None;
     }
     Some(Out::recorded(&rec))
 }
@@ -838,8 +854,11 @@ impl Ctx<'_> {
 
     /// Register `out` (unless single-file or unregistrable) and return its
     /// decision. A row at the same path is replaced keeping its `root_id`.
-    /// On an overlap, the nearest registered root containing the file wins;
-    /// with none, the decision is returned unregistered.
+    /// On an overlap with a row that no longer holds ([`on_disk`]: marker
+    /// gone, `st_dev` or `fs_type` changed), that row is removed and the
+    /// insert retried. On an overlap with a valid row, the nearest valid
+    /// registered root containing the file wins; with none, the decision is
+    /// returned unregistered.
     fn finish(&mut self, out: Out) -> Decision {
         let mut d = out.d;
         let Some(root) = d.root.clone() else {
@@ -852,6 +871,7 @@ impl Ctx<'_> {
         let marker_ino = out
             .marker
             .as_ref()
+            .filter(|m| *m != EDITOR_MARKER)
             .and_then(|m| self.probe.lstat(&root.join(m)).ok())
             .map(|s| s.ino);
         let mut rec = RootRecord {
@@ -879,9 +899,32 @@ impl Ctx<'_> {
             self.registry.update(rec);
             return d;
         }
-        match self.registry.insert(rec) {
+        // Each retry removes a different row (a failed remove, e.g. a
+        // SQLite error, ends the loop), so it terminates.
+        let mut removed: Vec<String> = Vec::new();
+        let res = loop {
+            match self.registry.insert(rec.clone()) {
+                Err(o) => {
+                    let gone = self.registry.all().into_iter().find(|e| {
+                        e.path == o.existing
+                            && !removed.contains(&e.root_id)
+                            && !on_disk(self.probe, e)
+                    });
+                    match gone {
+                        Some(e) => {
+                            self.registry.remove(&e.root_id);
+                            removed.push(e.root_id);
+                        }
+                        None => break Err(o),
+                    }
+                }
+                ok => break ok,
+            }
+        };
+        let folders = &self.opts.workspace_folders;
+        match res {
             Ok(()) => d,
-            Err(o) => match self.registry.lookup(self.file) {
+            Err(o) => match lookup_valid_for(self.registry, self.probe, self.file, folders) {
                 Some(r) => from_record(&r),
                 None => {
                     d.reason = format!(

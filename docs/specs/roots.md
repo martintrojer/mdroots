@@ -41,11 +41,15 @@ Each stage may stop with a decision. Only stage 4 calls `readdir` recursively. S
 
 ### Stage 1: registry lookup
 
-Longest-prefix match of `realpath(file)` in the registry (`roots.v<k>.db`). On macOS also canonicalise with `F_GETPATH`, because APFS is case-insensitive. A hit is used only if:
+Longest-prefix match of `realpath(file)` in the registry (`roots.v<k>.db`). On macOS also canonicalise with `F_GETPATH`, because APFS is case-insensitive. Rows containing the file are tried nearest first; a row is skipped for the next one up when:
 
-1. the recorded marker still exists (one `stat`);
-2. the root's `st_dev` and `fs_type` match the recorded values (else re-decide from stage 2, lazy verdicts included);
-3. no new marker sits between `dir(file)` and the root. Probe each level with the stage 2 marker list; on a virtual FS probe a short list instead (below, ~0.1–0.2 ms per name). The probe is not cached per directory: every `open_for` probes again. This is how a `git clone` or new `.zk/` inside a loose or lazy root becomes its own root.
+- its recorded marker is gone (one `stat`): a deleted nested `proj/.git` hands its files to the parent row, with no re-walk;
+- it was decided by an LSP `workspaceFolders` entry (recorded with marker `workspaceFolders`) and that folder is not a workspace folder of this session. Such a row never makes a folder a root for a later session without it, and it never blocks registering an enclosing root.
+
+The first row not skipped is a hit only if:
+
+1. the root's `st_dev` and `fs_type` match the recorded values (else re-decide from stage 2, lazy verdicts included);
+2. no new marker sits between `dir(file)` and the root, nor, for a markerless (loose or lazy) root on a local FS, at the root itself. Probe each level with the stage 2 marker list; on a virtual FS probe a short list instead (below, ~0.1–0.2 ms per name). A workspace folder of this session at one of those levels (not at the root) counts as a marker, as in the climb. The probe is not cached per directory: every `open_for` probes again. This is how a `git clone` or new `.zk/` inside a loose or lazy root becomes its own root, and how an `.mdroots` or `git init` at a loose or lazy root's own directory re-decides it at once.
 
 Otherwise treat it as a miss. After the first session the hit path is a few stats.
 
@@ -172,10 +176,10 @@ nb/proj/docs/    —      → B
 ```
 
 - Walks prune at nested markers, so DBs are disjoint and one root's GC never touches another.
-- **The registry rejects overlapping inserts**, except a nested root at a marker (nearest wins). A loose root never contains a marker root, and loose roots never nest; a new marker root may appear inside a loose root. When an insert is rejected, discovery uses the nearest registered root containing the file, or returns its decision unregistered with `(not registered: overlaps <dir>)`.
+- **The registry rejects overlapping inserts**, except a nested root at a marker (nearest wins; a workspace-folder root counts as one). A loose root never contains a marker root, and loose roots never nest; a new marker root may appear inside a loose root. When an insert is rejected by a row that is no longer valid (its marker is gone, or its `st_dev` or `fs_type` changed), discovery removes that row and inserts again. When it is rejected by a valid row, discovery uses the nearest valid registered root containing the file (as stage 1 picks it), or returns its decision unregistered with `(not registered: overlaps <dir>)`.
 - **Cross-root links**: a link into another root resolves only by `stat` (relative paths), as Unindexed. Completion stays in the current root. Planned ([ROADMAP](../ROADMAP.md)): on a miss in the current scope, find the root containing the target in the registry and `ATTACH` its DB read-only (LRU, SQLite's default limit is 10).
 - **New marker** (e.g. `git init` in a loose root): the stage 1 probe finds it on the next `open_for` of a file below it, which registers and indexes the new root in its own DB. The parent drops the subtree's rows on its next re-list (open or `refresh`), because the walk prunes at the new marker; a lazy parent keeps them. No rows move between DBs: each root parses its own files.
-- **Marker removed**: the nested row fails the stage 1 marker check, so its files are decided again and go to the parent, whose next re-list walks into the directory and indexes them. The orphan DB is GC-ed once it goes unseen for 30 days (§6).
+- **Marker removed**: the nested row fails the stage 1 marker check, so stage 1 skips it and its files go to the parent row (no discovery walk), whose next re-list walks into the directory and indexes them. The stale row stays until it blocks an insert (then it is removed) or goes unseen for 30 days, when GC removes it with its orphan DB (§6).
 - Moving rows between root DBs instead of re-parsing is planned ([ROADMAP](../ROADMAP.md)).
 - **Editor folder vs markers**: a file in `nb/proj` belongs to B even if the client's workspace folder is `nb`. The process just opens a second DB.
 

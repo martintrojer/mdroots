@@ -87,7 +87,14 @@ pub trait Registry {
     fn update(&mut self, r: RootRecord);
     /// Every row, sorted by path.
     fn all(&self) -> Vec<RootRecord>;
+    /// Delete the row of `root_id`; a missing row is fine.
+    fn remove(&mut self, root_id: &str);
 }
+
+/// [`RootRecord::marker`] of a root decided by an LSP `workspaceFolders`
+/// entry. It names no file: the row is valid only while the folder is a
+/// current workspace folder (see [`lookup_valid_for`]).
+pub const EDITOR_MARKER: &str = "workspaceFolders";
 
 /// A stable root id: FNV-1a 64 of the first path and decision time, in hex.
 pub fn new_root_id(path: &Path, decided_at_ms: u64) -> String {
@@ -116,9 +123,21 @@ impl MemRegistry {
     }
 }
 
-/// May `r` sit inside another root? Only a marker root that is not loose.
+/// Was `r` decided by a workspace folder? Rows written before
+/// [`EDITOR_MARKER`] existed have mode [`RootMode::Marker`] and no marker;
+/// no other decision registers that.
+pub fn is_editor(r: &RootRecord) -> bool {
+    match r.marker.as_deref() {
+        Some(m) => m == EDITOR_MARKER,
+        None => r.mode == RootMode::Marker,
+    }
+}
+
+/// May `r` sit inside another root? Only a marker root that is not loose;
+/// an editor root counts as one.
 fn nestable(r: &RootRecord) -> bool {
-    r.marker.is_some() && !matches!(r.mode, RootMode::Loose | RootMode::SingleFile)
+    (r.marker.is_some() || is_editor(r))
+        && !matches!(r.mode, RootMode::Loose | RootMode::SingleFile)
 }
 
 /// The overlap rules of §4: may `new` join the roots in `existing`?
@@ -196,25 +215,68 @@ impl Registry for MemRegistry {
         v.sort_by(|a, b| a.path.cmp(&b.path));
         v
     }
+
+    fn remove(&mut self, root_id: &str) {
+        self.rows.retain(|r| r.root_id != root_id);
+    }
 }
 
-/// Stage 1 lookup: the nearest registered root of `path`, if still valid.
-///
-/// Valid means the recorded marker still exists (skipped for markerless
-/// roots), the root directory's `st_dev` is unchanged and its mount's
-/// `fs_type` is unchanged. `None` tells the caller to re-decide.
+/// Stage 1 lookup without workspace folders: [`lookup_valid_for`] with
+/// none, so an editor row ([`EDITOR_MARKER`]) is never valid.
 pub fn lookup_valid(reg: &dyn Registry, probe: &dyn Probe, path: &Path) -> Option<RootRecord> {
-    let rec = reg.lookup(path)?;
-    if let Some(m) = &rec.marker {
-        probe.stat(&rec.path.join(m)).ok()?;
+    lookup_valid_for(reg, probe, path, &[])
+}
+
+/// Stage 1 lookup: the nearest registered root of `path` that is still
+/// valid, given the session's LSP `workspace_folders`.
+///
+/// Rows containing `path` are tried nearest first. A row is skipped for the
+/// next one above it when its recorded marker is gone (a deleted nested
+/// `.git`: its files go to the parent) or when it is an editor row
+/// ([`is_editor`]) whose folder is not in `workspace_folders`. Markerless
+/// rows skip the marker check. The first row not skipped is valid only if the root directory's
+/// `st_dev` and its mount's `fs_type` are unchanged; else `None`, and the
+/// caller re-decides.
+pub fn lookup_valid_for(
+    reg: &dyn Registry,
+    probe: &dyn Probe,
+    path: &Path,
+    workspace_folders: &[PathBuf],
+) -> Option<RootRecord> {
+    let mut rows: Vec<RootRecord> = reg
+        .all()
+        .into_iter()
+        .filter(|r| path.starts_with(&r.path))
+        .collect();
+    rows.sort_by_key(|r| std::cmp::Reverse(r.path.components().count()));
+    let rec = rows.into_iter().find(|r| match is_editor(r) {
+        true => workspace_folders.contains(&r.path),
+        false => marker_exists(probe, r),
+    })?;
+    same_fs(probe, &rec).then_some(rec)
+}
+
+/// Does `rec` still describe the filesystem: its marker exists and its
+/// `st_dev` and `fs_type` are unchanged? Workspace folders do not count:
+/// an editor row is on disk while its directory is.
+pub(crate) fn on_disk(probe: &dyn Probe, rec: &RootRecord) -> bool {
+    marker_exists(probe, rec) && same_fs(probe, rec)
+}
+
+/// The recorded marker file exists; true without one, or for an editor row.
+fn marker_exists(probe: &dyn Probe, rec: &RootRecord) -> bool {
+    match rec.marker.as_deref() {
+        Some(m) if !is_editor(rec) => probe.stat(&rec.path.join(m)).is_ok(),
+        _ => true,
     }
-    if probe.stat(&rec.path).ok()?.dev != rec.dev {
-        return None;
-    }
-    if probe.mount(&rec.path).ok()?.fs_type != rec.fs_type {
-        return None;
-    }
-    Some(rec)
+}
+
+/// The root directory's `st_dev` and mount `fs_type` match the row.
+fn same_fs(probe: &dyn Probe, rec: &RootRecord) -> bool {
+    probe.stat(&rec.path).is_ok_and(|s| s.dev == rec.dev)
+        && probe
+            .mount(&rec.path)
+            .is_ok_and(|m| m.fs_type == rec.fs_type)
 }
 
 /// Root move detection (§1 "Root moves").

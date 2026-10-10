@@ -103,9 +103,21 @@ fn run(
     file: &str,
     allowed: &[&str],
 ) -> Decision {
+    run_with(probe, reg, en, file, allowed, &opts())
+}
+
+/// [`run`] with explicit options.
+fn run_with(
+    probe: &Counting<FakeProbe>,
+    reg: &mut MemRegistry,
+    en: &dyn Enumerator,
+    file: &str,
+    allowed: &[&str],
+    o: &DiscoverOptions,
+) -> Decision {
     let allowed: Vec<PathBuf> = allowed.iter().map(|s| p(s)).collect();
     probe.forbid_read_dir_outside(&allowed);
-    let d = discover(probe, reg, en, Path::new(file), &opts(), &Cancel::new());
+    let d = discover(probe, reg, en, Path::new(file), o, &Cancel::new());
     assert!(probe.violations().is_empty(), "{:?}", probe.violations());
     d
 }
@@ -730,6 +742,145 @@ fn new_git_below_registered_loose_root_is_a_miss() {
 }
 
 #[test]
+fn marker_added_at_a_markerless_lazy_root_is_a_miss() {
+    // 5001 notes: over the loose md budget, so the loose root is lazy
+    // (verdict budget, no marker), normally a hit for 7 days.
+    let mut reg = MemRegistry::new();
+    let tree = || files(FakeProbe::new().home("/h"), "/h/big", 5001, 5001);
+    let d = run(
+        &Counting::new(tree()),
+        &mut reg,
+        &NoEnumerator,
+        "/h/big/f0000.md",
+        &["/h"],
+    );
+    assert_eq!(d.mode, RootMode::Lazy, "{}", explain(&d));
+    assert_eq!(row(&reg, "/h/big").unwrap().marker, None);
+
+    // An `.mdroots` at the root itself re-decides at once.
+    let probe = Counting::new(tree().file("/h/big/.mdroots", ""));
+    let d = run(
+        &probe,
+        &mut reg,
+        &NoEnumerator,
+        "/h/big/f0000.md",
+        &["/h/big"],
+    );
+    assert_eq!(d.mode, RootMode::Marker, "{}", explain(&d));
+    assert_eq!(d.root, Some(p("/h/big")));
+    let r = row(&reg, "/h/big").unwrap();
+    assert_eq!(r.marker.as_deref(), Some(".mdroots"));
+    assert_eq!(reg.all().len(), 1);
+}
+
+#[test]
+fn deleted_nested_git_goes_to_the_parent_without_rewalks() {
+    let mut reg = MemRegistry::new();
+    let tree = || {
+        FakeProbe::new()
+            .home("/h")
+            .dir("/h/nb/.zk")
+            .file("/h/nb/a.md", "")
+            .file("/h/nb/proj/b.md", "")
+    };
+    let with_git = Counting::new(tree().dir("/h/nb/proj/.git"));
+    run(&with_git, &mut reg, &NoEnumerator, "/h/nb/a.md", &["/h/nb"]);
+    let d = run(
+        &with_git,
+        &mut reg,
+        &NoEnumerator,
+        "/h/nb/proj/b.md",
+        &["/h/nb/proj"],
+    );
+    assert_eq!(d.root, Some(p("/h/nb/proj")));
+    assert_eq!(reg.all().len(), 2);
+
+    // `rm -rf proj/.git`: the nested row is skipped for its parent, a hit.
+    let probe = Counting::new(tree());
+    let mut counts = Vec::new();
+    for _ in 0..3 {
+        let d = run(&probe, &mut reg, &NoEnumerator, "/h/nb/proj/b.md", &[]);
+        assert_eq!(d.root, Some(p("/h/nb")));
+        assert_eq!(d.mode, RootMode::Marker);
+        counts.push(probe.read_dir_total());
+    }
+    assert_eq!(counts, [0, 0, 0]);
+}
+
+#[test]
+fn workspace_folder_root_is_not_reused_without_the_folder() {
+    let mut reg = MemRegistry::new();
+    let probe = Counting::new(
+        FakeProbe::new()
+            .home("/h")
+            .dir("/h/repo/.git")
+            .file("/h/repo/ws/a.md", ""),
+    );
+    let file = "/h/repo/ws/a.md";
+    let folders = DiscoverOptions {
+        workspace_folders: vec![p("/h/repo/ws")],
+        ..opts()
+    };
+    let d = run_with(
+        &probe,
+        &mut reg,
+        &NoEnumerator,
+        file,
+        &["/h/repo"],
+        &folders,
+    );
+    assert_eq!(d.root, Some(p("/h/repo/ws")));
+    assert!(explain(&d).starts_with("workspace folder ~/repo/ws"));
+
+    // A later session without that workspace folder: the git root, which
+    // registers despite the folder's row inside it.
+    let d = run(&probe, &mut reg, &NoEnumerator, file, &["/h/repo"]);
+    assert_eq!(d.root, Some(p("/h/repo")), "{}", explain(&d));
+    assert_eq!(d.mode, RootMode::Vcs);
+    assert_eq!(row(&reg, "/h/repo").unwrap().mode, RootMode::Vcs);
+
+    // Both rows are hits from now on, each in its own kind of session.
+    let n = probe.read_dir_total();
+    let d = run_with(&probe, &mut reg, &NoEnumerator, file, &[], &folders);
+    assert_eq!(d.root, Some(p("/h/repo/ws")));
+    let d = run(&probe, &mut reg, &NoEnumerator, file, &[]);
+    assert_eq!(d.root, Some(p("/h/repo")));
+    assert_eq!(probe.read_dir_total(), n);
+    assert_eq!(reg.all().len(), 2);
+}
+
+#[test]
+fn new_workspace_folder_below_a_registered_root_is_a_miss() {
+    // As the climb ranks a workspace folder at a level as a marker, so does
+    // the stage-1 probe: the folder becomes the root whatever was
+    // registered first.
+    let mut reg = MemRegistry::new();
+    let probe = Counting::new(
+        FakeProbe::new()
+            .home("/h")
+            .dir("/h/repo/.git")
+            .file("/h/repo/ws/a.md", ""),
+    );
+    let file = "/h/repo/ws/a.md";
+    let d = run(&probe, &mut reg, &NoEnumerator, file, &["/h/repo"]);
+    assert_eq!(d.root, Some(p("/h/repo")));
+    let folders = DiscoverOptions {
+        workspace_folders: vec![p("/h/repo/ws")],
+        ..opts()
+    };
+    let d = run_with(
+        &probe,
+        &mut reg,
+        &NoEnumerator,
+        file,
+        &["/h/repo"],
+        &folders,
+    );
+    assert_eq!(d.root, Some(p("/h/repo/ws")), "{}", explain(&d));
+    assert_eq!(reg.all().len(), 2);
+}
+
+#[test]
 fn moved_root_is_rekeyed_without_a_walk() {
     let mut reg = MemRegistry::new();
     let f = FakeProbe::new()
@@ -862,15 +1013,18 @@ fn stale(path: &str, mode: RootMode, marker: Option<&str>) -> RootRecord {
 
 #[test]
 fn overlap_insert_returns_the_existing_containing_root() {
-    // ~/n is registered but stale; the loose search picks ~/n/sub (~/n has
-    // too few notes to grow into), and a loose root may not sit inside a
-    // registered marker root.
+    // ~/n is a valid loose root whose budget verdict is due for a retry
+    // (a stage-1 miss); the loose search picks ~/n/sub (~/n has too few
+    // notes to grow into), and loose roots never nest.
     let f = files(FakeProbe::new().home("/h"), "/h/n/sub", 25, 25);
     let f = files(f, "/h/n", 100, 0);
     let probe = Counting::new(f);
     let mut reg = MemRegistry::new();
-    reg.insert(stale("/h/n", RootMode::Marker, Some(".zk")))
-        .unwrap();
+    let mut existing = stale("/h/n", RootMode::Loose, None);
+    existing.dev = 1;
+    existing.verdict_source = VerdictSource::Budget;
+    existing.reason = "loose root accepted at ~/n: recorded".into();
+    reg.insert(existing).unwrap();
     let d = run(
         &probe,
         &mut reg,
@@ -879,9 +1033,33 @@ fn overlap_insert_returns_the_existing_containing_root() {
         &["/h"],
     );
     assert_eq!(d.root, Some(p("/h/n")));
-    assert_eq!(d.mode, RootMode::Marker);
-    assert_eq!(explain(&d), "marker .zk at ~/n: recorded");
+    assert_eq!(d.mode, RootMode::Loose);
+    assert_eq!(explain(&d), "loose root accepted at ~/n: recorded");
     assert_eq!(reg.all().len(), 1);
+}
+
+#[test]
+fn overlap_with_a_row_whose_marker_is_gone_replaces_it() {
+    // ~/n was a .zk root; .zk is gone. Its row must not be served, and it
+    // must not keep the new loose root ~/n/sub from registering.
+    let f = files(FakeProbe::new().home("/h"), "/h/n/sub", 25, 25);
+    let f = files(f, "/h/n", 100, 0);
+    let probe = Counting::new(f);
+    let mut reg = MemRegistry::new();
+    let mut gone = stale("/h/n", RootMode::Marker, Some(".zk"));
+    gone.dev = 1;
+    reg.insert(gone).unwrap();
+    let file = "/h/n/sub/f0000.md";
+    let d = run(&probe, &mut reg, &NoEnumerator, file, &["/h"]);
+    assert_eq!(d.root, Some(p("/h/n/sub")), "{}", explain(&d));
+    assert_eq!(d.mode, RootMode::Loose);
+    let paths: Vec<_> = reg.all().into_iter().map(|r| r.path).collect();
+    assert_eq!(paths, [p("/h/n/sub")]);
+
+    let n = probe.read_dir_total();
+    let d = run(&probe, &mut reg, &NoEnumerator, file, &[]);
+    assert_eq!(d.root, Some(p("/h/n/sub")));
+    assert_eq!(probe.read_dir_total(), n);
 }
 
 #[test]

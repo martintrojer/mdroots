@@ -4,8 +4,8 @@ use std::thread;
 
 use mdroots_roots::probe::{FakeProbe, MountInfo, Probe};
 use mdroots_roots::registry::{
-    DiscoverLock, MemRegistry, Overlap, Registry, RootMode, RootRecord, VerdictSource, detect_move,
-    lookup_valid, new_root_id,
+    DiscoverLock, EDITOR_MARKER, MemRegistry, Overlap, Registry, RootMode, RootRecord,
+    VerdictSource, detect_move, is_editor, lookup_valid, lookup_valid_for, new_root_id,
 };
 use mdroots_roots::walk::WalkStats;
 
@@ -217,6 +217,81 @@ fn lookup_valid_rejects_fs_type_change() {
     let mut reg = MemRegistry::new();
     reg.insert(git("/r")).unwrap();
     assert_eq!(lookup_valid(&reg, &probe, Path::new("/r/a.md")), None);
+}
+
+#[test]
+fn lookup_valid_skips_a_row_whose_marker_is_gone_for_its_parent() {
+    let probe = FakeProbe::new().dir("/nb/.zk").file("/nb/proj/a.md", "");
+    let mut reg = MemRegistry::new();
+    reg.insert(zk("/nb")).unwrap();
+    reg.insert(git("/nb/proj")).unwrap();
+    let got = lookup_valid(&reg, &probe, Path::new("/nb/proj/a.md"));
+    assert_eq!(got.map(|r| r.path), Some("/nb".into()));
+    // Skipped, not removed.
+    assert_eq!(reg.all().len(), 2);
+}
+
+#[test]
+fn lookup_valid_does_not_skip_past_a_changed_filesystem() {
+    let probe = FakeProbe::new()
+        .dir("/nb/.zk")
+        .dir("/nb/proj/.git")
+        .mount("/nb/proj", mi("apfs", 7));
+    let mut reg = MemRegistry::new();
+    reg.insert(zk("/nb")).unwrap();
+    reg.insert(git("/nb/proj")).unwrap();
+    assert_eq!(lookup_valid(&reg, &probe, Path::new("/nb/proj/a.md")), None);
+}
+
+fn editor(path: &str) -> RootRecord {
+    rec(path, RootMode::Marker, Some(EDITOR_MARKER))
+}
+
+#[test]
+fn editor_rows_are_valid_only_for_their_workspace_folder() {
+    let probe = FakeProbe::new().dir("/r/.git").dir("/r/ws");
+    let mut reg = MemRegistry::new();
+    reg.insert(editor("/r/ws")).unwrap();
+    let file = Path::new("/r/ws/a.md");
+    assert_eq!(lookup_valid(&reg, &probe, file), None);
+    let other = [PathBuf::from("/r/other")];
+    assert_eq!(lookup_valid_for(&reg, &probe, file, &other), None);
+    let ws = [PathBuf::from("/r/ws")];
+    let got = lookup_valid_for(&reg, &probe, file, &ws);
+    assert_eq!(got.map(|r| r.path), Some("/r/ws".into()));
+
+    // The enclosing git root registers around it and is found without the
+    // folder.
+    reg.insert(git("/r")).unwrap();
+    let got = lookup_valid(&reg, &probe, file);
+    assert_eq!(got.map(|r| r.path), Some("/r".into()));
+}
+
+#[test]
+fn markerless_marker_rows_are_editor_rows() {
+    // Rows registered before EDITOR_MARKER: mode Marker, no marker.
+    let old = rec("/r/ws", RootMode::Marker, None);
+    assert!(is_editor(&old) && is_editor(&editor("/r/ws")));
+    assert!(!is_editor(&loose("/n")) && !is_editor(&zk("/n")));
+    assert!(!is_editor(&rec("/n", RootMode::Lazy, None)));
+    let probe = FakeProbe::new().dir("/r/.git").dir("/r/ws");
+    let mut reg = MemRegistry::new();
+    reg.insert(old).unwrap();
+    reg.insert(git("/r")).unwrap();
+    let got = lookup_valid(&reg, &probe, Path::new("/r/ws/a.md"));
+    assert_eq!(got.map(|r| r.path), Some("/r".into()));
+}
+
+#[test]
+fn remove_deletes_by_root_id() {
+    let mut reg = MemRegistry::new();
+    let r = git("/r");
+    reg.insert(r.clone()).unwrap();
+    reg.insert(loose("/n")).unwrap();
+    reg.remove(&r.root_id);
+    reg.remove("missing");
+    let paths: Vec<_> = reg.all().into_iter().map(|r| r.path).collect();
+    assert_eq!(paths, [PathBuf::from("/n")]);
 }
 
 // ---------------------------------------------------------------- detect_move
