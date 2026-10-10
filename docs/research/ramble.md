@@ -5,8 +5,8 @@ reader by the same author (Rust,
 [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) 0.13, no
 [tokio](https://tokio.rs)), embeds the
 `mdroots` library (0.2.3 or later) in process. Both projects are MIT
-licensed with the same author, so code was copied with the ramble commit
-recorded in a source comment or the commit message (tables below).
+licensed with the same author; ported code records the ramble commit it
+comes from in a source comment or the commit message (tables below).
 
 ## How ramble uses mdroots
 

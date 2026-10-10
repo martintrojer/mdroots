@@ -27,7 +27,7 @@ early" (golang/go#81721).
 | Cancellation | `$/cancelRequest` cancels the context; already-cancelled requests get `RequestCancelled` | `protocol.go` |
 | Two-phase diagnostics | changed open files at once; everything after `DiagnosticsDelay` (1 s); each edit cancels the previous pass; optional save trigger | `server/diagnostics.go` |
 | Progress | `workDoneProgress` with `showMessage` fallback | `progress/progress.go` |
-| File watching | LSP mode relies on client `didChangeWatchedFiles` (register new before unregistering old) | `server/general.go` |
+| File watching | LSP mode relies on client `didChangeWatchedFiles` (register the new ones, then unregister the old) | `server/general.go` |
 | Zero-config views | a view per workspace folder plus nearest `go.work`/`go.mod` for uncovered files; best view memoized per URI; no new view for files reached outside the workspace | `cache/session.go` |
 | Early start | file-cache warm-up runs concurrently with launch | `cmd/cmd.go` |
 
@@ -36,8 +36,8 @@ early" (golang/go#81721).
 Built in `mdroots lsp` ([library spec §4](../specs/library.md#4-scheduling)):
 
 1. Requests run in order, so `didChange` → query ordering holds without locks.
-2. `$/cancelRequest` marks a queued request cancelled and sets the running
-   one's cancel token; a `didChange` also cancels the queued requests on
+2. `$/cancelRequest` marks a queued request cancelled (a running request
+   is not interrupted); a `didChange` also cancels the queued requests on
    that document.
 3. Diagnostics are debounced: one pass, 500 ms after the last edit.
 4. Root-per-URI is memoized (`Workspaces` caches a workspace per root).
@@ -66,7 +66,7 @@ Adopted as target, not built ([ROADMAP](../ROADMAP.md)):
    opening a root on the first `didOpen` of a file in it).
 7. Any cache read error after open is a miss.
 8. Where client watchers are re-registered, the new ones are registered
-   before the old ones are unregistered (the server registers its watchers
+   first and the old ones unregistered after (the server registers its watchers
    once and never unregisters them).
 
 ## Skipped

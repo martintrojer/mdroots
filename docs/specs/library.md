@@ -122,6 +122,7 @@ The facade crate over `mdroots-roots`, `mdroots-index` and `MemStore`. Public pa
 ```rust
 use mdroots::{Workspace, Workspaces, Options, IndexMode, Freshness, Cancel};
 use mdroots::syntax::PositionEncoding;
+use mdroots::query::{NoteQuery, TagExpr, SortKey, parse_date, parse_sort, day_range};
 
 let ws = Workspace::open_for(path, Options::default())?;      // discovery first (roots spec), then index
 let ws = Workspace::open_at(&root_dir, Options::default())?;  // a directory as the root; no discovery, in memory
@@ -248,6 +249,22 @@ The types of §3.2, shaped by an embedder's needs ([ramble](../research/ramble.m
     pub create: Vec<(PathBuf, String)>,         // files to create (absolute, not existing) with content, before the edits
 }
 pub struct TextEdit { pub range: Range<usize>, pub new_text: String }
+#[non_exhaustive] #[derive(Default)] pub struct NoteQuery {   // mdroots::query; every filter set must hold
+    pub paths: Vec<PathBuf>, pub exclude: Vec<PathBuf>,       // prefixes: keep / drop the notes under them
+    pub tag: Vec<TagExpr>, pub tagless: bool,
+    pub matching: Option<String>,                             // as full_text
+    pub created_after: Option<SystemTime>, pub created_before: Option<SystemTime>,
+    pub modified_after: Option<SystemTime>, pub modified_before: Option<SystemTime>,
+    pub orphan: bool, pub missing_backlink: bool,
+    pub link_to: Vec<PathBuf>, pub linked_by: Vec<PathBuf>, pub related: Vec<PathBuf>,
+    pub sort: Option<(SortKey, bool)>,                        // None: title A–Z; bool: ascending
+    pub limit: Option<usize>,
+}
+pub struct TagExpr { /* private */ }     // TagExpr::parse(s) -> Result<TagExpr, String>; .matches(&tags)
+#[non_exhaustive] pub enum SortKey { Title, Path, Created, Modified }   // default_ascending(): title and path
+pub fn parse_sort(s: &str) -> Result<(SortKey, bool), String>;                       // `KEY[+|-]`, shortcuts t/p/c/m
+pub fn parse_date(s: &str, now: SystemTime) -> Result<SystemTime, String>;           // a date bound, UTC
+pub fn day_range(s: &str, now: SystemTime) -> Result<(SystemTime, SystemTime), String>; // `--created DAY`: [start, end)
 #[non_exhaustive] pub enum LinkStyle {   // mdroots_resolve::dialect, re-exported
     WikiStem,                            // [[stem]]
     WikiPath,                            // [[dir/stem]], root-relative
@@ -288,6 +305,7 @@ pub trait FileSystem: Send + Sync {          // mdroots-core; default StdFs; emb
     fn canonicalize(&self, p: &Path) -> io::Result<PathBuf>;
     fn case_sensitive(&self, dir: &Path) -> bool;
     fn fs_kind(&self, dir: &Path) -> FsKind;               // Local | Virtual | Remote | Cloud | Unknown
+    fn created(&self, p: &Path) -> Option<SystemTime> { None } // birth time; StdFs asks the OS, default None
 }
 pub trait ResolveEnv: Send + Sync {          // mdroots-resolve; core implements it over MemStore + FileSystem
     fn exists(&self, root_rel: &str) -> bool;
@@ -303,6 +321,7 @@ pub trait Enumerator: Send + Sync {          // mdroots-roots: lists a vcs-enume
 ```
 
 - `ResolveEnv` lives in `resolve` because `resolve` sits below `core`.
+- `FileSystem::created` is a default method, not a `Meta` field, so existing implementations keep compiling. A clone or checkout resets birth times, which is why a frontmatter date wins for `NoteSummary.created`.
 - `FileSystem` returns bytes, not `str`, so invalid UTF-8 is indexed lossily instead of failing the batch.
 - `FileSystem` and `Probe` make the roots safety rules testable: "no readdir on a large monorepo checkout" runs against a counting fake.
 - Planned: a `Store` trait once the derived tables (D9) give a second store, a `LinkResolver` trait to add house conventions (e.g. `[[wiki:Page]]`) to the ladder without forking, and an `Observer` for progress and file events.

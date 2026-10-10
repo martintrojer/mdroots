@@ -379,8 +379,10 @@ required or written.
 - [git](https://git-scm.com)'s own files (`.git/config`) and ignore files
   (`.gitignore`, `.ignore`, `.mdrootsignore`) are read as always; they are
   not tool configs.
-- Settings taken from a config are visible: `mdroots roots` lists each one
-  with its source, so a stale config is easy to spot.
+- Settings are visible: `mdroots roots` prints the link style, tag
+  syntaxes and broken-link severity (and a docs dir when set), each with its
+  source (a tool config key, a marker's default, the vote or mdroots'
+  default), so a stale config is easy to spot.
 - A corpus vote over the in-memory index, computed per process on first use
   and dropped on any content change, measures the insert style, wiki vs md,
   the `.md` suffix, `#tag` use and H1-as-title

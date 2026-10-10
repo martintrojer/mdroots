@@ -13,8 +13,8 @@ Unbuilt mechanics are collected in the [Planned design](#planned-design) appendi
 ## 0. Testbed
 
 Two [zk](https://github.com/zk-org/zk) notebooks, both local APFS [git](https://git-scm.com) repos: **vault A** (~730 notes, also has
-`.obsidian/`) and **vault B** (~210-note research vault). They are the
-author's private vaults, not in the repo; `tests/corpus` holds scrubbed
+`.obsidian/`) and **vault B** (~210-note research vault). They are two
+private vaults, not in the repo; `tests/corpus` holds scrubbed
 shapes of them. mdroots only reads them; state lives in the cache dir (D5) and rename/edit tests run on a copy.
 Counts skip hidden and editor temp files.
 

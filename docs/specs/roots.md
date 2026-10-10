@@ -145,7 +145,7 @@ A count going above its budget aborts; depth counts from the walk root (its chil
 4. The highest accepted ancestor is the loose root, registered with its reason (`loose root accepted at <dir>: <md> md / <files> files`, or the line of the first rejection). It is then walked once more with the loose budget for its md list; a folder over that budget (more than 5k md or 10k entries) is lazy. To index a larger notes folder fully, add an empty `.mdroots`, which makes it a marker root with the marker budget.
 5. **Hysteresis** (not applied yet; needs the reconcile's file counts): re-run the climb only if the recorded stats are > 7 days old or the reconcile sees the file count change > 2×, so roots do not flip around a threshold and rebuild.
 
-The 20-file, 30%, 2× and 7-day numbers are validated only on the fixtures in §7 (see [ROADMAP.md](../ROADMAP.md) §1). Results are staged: single-file features at once, then results published after each accepted level.
+The 20-file, 30%, 2× and 7-day numbers are validated only on the fixtures in §7 (see [ROADMAP §1](../ROADMAP.md#1-built-but-not-validated)). Results are staged: single-file features at once, then results published after each accepted level.
 
 ## 3. Lazy and vcs-enumerated modes
 

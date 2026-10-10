@@ -34,9 +34,8 @@ real world they are meant for.
    once has not been measured, nor cross-editor save visibility (p99) or a
    `kill -9` loop on the reconciler.
 4. **Small repos on a virtual filesystem.** vcs-enumerated mode (a small
-   [EdenFS](https://github.com/facebook/sapling) repo listed with
-   [Sapling](https://sapling-scm.com/)'s `sl files` within 500 ms) is tested
-   only with a fake enumerator.
+   repo in a large virtual-filesystem checkout, listed by the VCS within a
+   time budget) is tested only with a fake enumerator.
 5. **ramble as an embedder.** ramble's test suite drives its in-process
    backend (open, document links, goto, preview, pickers, watcher updates)
    on a fixture notebook with a temp cache dir. Not checked: real vaults,
@@ -78,6 +77,9 @@ Deliberate simplifications and gaps in what the specs describe.
   guard.
 - **No `mdroots.reindex` command.** The LSP commands are `backlinks`,
   `anchorLinks`, `info` and `renameFile`.
+- **`info` does not show settings.** `mdroots.info` (`:MdrootsInfo`) shows
+  root, mode, reason and file count; the effective settings and their
+  sources are printed only by `mdroots roots`.
 
 **Index and processes**
 - **Peers learn of writes on `refresh`**, not per query: nothing follows
@@ -163,8 +165,8 @@ Each ends as a spec change or a decision.
    destinations be silent?
 4. **Org-mode depth.** In scope: links, headings, `:ID:`, `#+TITLE`, `#+LINK`.
    Open: agenda, `id:` links across roots, properties beyond `:ID:`.
-5. **vcs-enumerated mode** (§1, item 4): is 500 ms the right budget, should
-   the EdenFS glob API replace the `sl files` child process, and should
+5. **vcs-enumerated mode** (§1, item 4): is the listing budget right,
+   should a filesystem-native glob API replace the VCS child process, and should
    [git](https://git-scm.com)'s `git ls-files` do the same for other lazy
    roots?
 6. **Memory at scale** (§1, item 3): up to which vault size must the 35 MB
