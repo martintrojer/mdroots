@@ -132,33 +132,79 @@ fn check(probe: &dyn Probe, env: &CacheEnv, c: &Candidate) -> Result<(), String>
         FsClass::Remote(t) => return Err(format!("not local ({t})")),
         other => return Err(format!("not local ({other:?})")),
     }
-    let io_err = |what: &str, e: io::Error| format!("{what}: {e}");
     if c.check_owner {
-        create_owned_private_dir(&c.path, env.uid)?;
+        create_owned_dir(&c.path, env.uid)?;
     } else {
-        crate::create_private_dir(&c.path).map_err(|e| io_err("create", e))?;
+        create_missing(&c.path).map_err(|e| format!("create: {e}"))?;
     }
-    let probe_file = c.path.join(WRITE_TEST);
-    std::fs::write(&probe_file, b"").map_err(|e| io_err("not writable", e))?;
-    std::fs::remove_file(&probe_file).map_err(|e| io_err("remove write test", e))?;
+    probe_then_make_private(&c.path)
+}
+
+/// Create `path` and its missing parents, each new one mode 0700 (before
+/// umask). An existing dir keeps its mode.
+fn create_missing(path: &Path) -> io::Result<()> {
+    let mut b = std::fs::DirBuilder::new();
+    b.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+    b.create(path)
+}
+
+/// Prove `dir` writable, then make it 0700, so a dir rejected here keeps its
+/// mode. A dir its owner made unwritable (0500, 0000) is made 0700 to probe
+/// it again; if that probe fails too, its mode is put back.
+fn probe_then_make_private(dir: &Path) -> Result<(), String> {
+    let why = |(what, e): (&str, io::Error)| format!("{what}: {e}");
+    match write_probe(dir) {
+        Ok(()) => {}
+        Err((_, e)) if e.kind() == io::ErrorKind::PermissionDenied => {
+            let before = std::fs::metadata(dir)
+                .map_err(|e| format!("stat: {e}"))?
+                .permissions();
+            // Not the owner: chmod fails and the first error is the reason.
+            if set_private(dir).is_err() {
+                return Err(why(("not writable", e)));
+            }
+            if let Err(err) = write_probe(dir) {
+                let _ = std::fs::set_permissions(dir, before);
+                return Err(why(err));
+            }
+        }
+        Err(err) => return Err(why(err)),
+    }
+    set_private(dir).map_err(|e| format!("chmod 0700: {e}"))
+}
+
+/// Create and remove [`WRITE_TEST`] in `dir`; on failure, the failed step.
+fn write_probe(dir: &Path) -> Result<(), (&'static str, io::Error)> {
+    let file = dir.join(WRITE_TEST);
+    std::fs::write(&file, b"").map_err(|e| ("not writable", e))?;
+    std::fs::remove_file(&file).map_err(|e| ("remove write test", e))
+}
+
+#[cfg(unix)]
+fn set_private(p: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn set_private(_: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Create `path` (mode 0700) in a shared dir such as `/var/tmp`, where
-/// another user may have planted it first. A symlink is never followed, and
-/// an existing dir is made 0700 only once it is known to be a real dir owned
-/// by `uid`: the chmod goes through a handle whose identity matches the
-/// checked entry, so nothing that is then rejected is ever chmodded.
+/// Create `path` in a shared dir such as `/var/tmp`, where another user may
+/// have planted it first, and accept it only as a real dir owned by `uid`.
+/// A symlink is never followed. The check is on the entry itself (no read
+/// or search permission needed, so an owner-only 0000 dir passes); later
+/// steps reach the dir by path, which in a sticky dir only its owner, the
+/// parent's owner or root can replace.
 #[cfg(unix)]
-fn create_owned_private_dir(path: &Path, uid: u32) -> Result<(), String> {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+fn create_owned_dir(path: &Path, uid: u32) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     if let Some(parent) = path.parent() {
         // Missing parents only: an existing shared parent keeps its mode.
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)
-            .map_err(|e| format!("create: {e}"))?;
+        create_missing(parent).map_err(|e| format!("create: {e}"))?;
     }
     // mkdir never follows a symlink in the last component.
     match std::fs::DirBuilder::new().mode(0o700).create(path) {
@@ -176,16 +222,10 @@ fn create_owned_private_dir(path: &Path, uid: u32) -> Result<(), String> {
     if entry.uid() != uid {
         return Err(format!("not owned by uid {uid}"));
     }
-    let dir = std::fs::File::open(path).map_err(|e| format!("open: {e}"))?;
-    let opened = dir.metadata().map_err(|e| format!("stat: {e}"))?;
-    if (opened.dev(), opened.ino()) != (entry.dev(), entry.ino()) {
-        return Err("replaced while checked".into());
-    }
-    dir.set_permissions(std::fs::Permissions::from_mode(0o700))
-        .map_err(|e| format!("chmod 0700: {e}"))
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn create_owned_private_dir(path: &Path, _: u32) -> Result<(), String> {
-    crate::create_private_dir(path).map_err(|e| format!("create: {e}"))
+fn create_owned_dir(path: &Path, _: u32) -> Result<(), String> {
+    create_missing(path).map_err(|e| format!("create: {e}"))
 }

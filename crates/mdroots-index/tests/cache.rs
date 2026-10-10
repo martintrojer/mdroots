@@ -224,3 +224,75 @@ fn tmp_dir_existing_own_dir_reset_to_0700() {
     assert_eq!(cache_dir(&StdProbe, &e).unwrap().path, cand);
     assert_eq!(mode(&cand), 0o700);
 }
+
+#[test]
+fn tmp_dir_owned_unreadable_dir_reset_to_0700() {
+    // The owner may have stripped read (0300) or every bit (0000) from its
+    // own dir; it can still chmod it, so the candidate is kept.
+    for initial in [0o300, 0o000] {
+        let tmp = tempfile::tempdir().unwrap();
+        let t = tmp.path();
+        let e = tmp_only(t, rustix::process::getuid().as_raw());
+        let cand = t.join(format!("vartmp/mdroots-{}", e.uid));
+        std::fs::create_dir_all(&cand).unwrap();
+        let _guard = RestorePerms(cand.clone());
+        std::fs::set_permissions(&cand, std::fs::Permissions::from_mode(initial)).unwrap();
+        let c = cache_dir(&StdProbe, &e);
+        assert_eq!(c.map(|c| c.path), Some(cand.clone()), "initial {initial:o}");
+        assert_eq!(mode(&cand), 0o700, "initial {initial:o}");
+    }
+}
+
+#[test]
+fn plain_unreadable_dir_reset_to_0700() {
+    let tmp = tempfile::tempdir().unwrap();
+    let e = env(tmp.path());
+    let want = tmp.path().join("xdg/mdroots");
+    std::fs::create_dir_all(&want).unwrap();
+    let _guard = RestorePerms(want.clone());
+    std::fs::set_permissions(&want, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert_eq!(cache_dir(&StdProbe, &e).unwrap().path, want);
+    assert_eq!(mode(&want), 0o700);
+}
+
+/// Make the write probe fail in `dir`: a dir sits where its file goes.
+fn block_write_probe(dir: &Path) {
+    std::fs::create_dir_all(dir.join(".mdroots-write-test")).unwrap();
+}
+
+#[test]
+fn tmp_dir_rejected_by_write_probe_keeps_mode() {
+    for initial in [0o755, 0o000] {
+        let tmp = tempfile::tempdir().unwrap();
+        let t = tmp.path();
+        let e = tmp_only(t, rustix::process::getuid().as_raw());
+        let cand = t.join(format!("vartmp/mdroots-{}", e.uid));
+        block_write_probe(&cand);
+        let _guard = RestorePerms(cand.clone());
+        std::fs::set_permissions(&cand, std::fs::Permissions::from_mode(initial)).unwrap();
+        assert_eq!(cache_dir(&StdProbe, &e), None, "initial {initial:o}");
+        assert_eq!(
+            mode(&cand),
+            initial,
+            "initial {initial:o}: rejected dir chmodded"
+        );
+    }
+}
+
+#[test]
+fn plain_dir_rejected_by_write_probe_keeps_mode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let e = env(tmp.path());
+    let xdg = tmp.path().join("xdg/mdroots");
+    block_write_probe(&xdg);
+    std::fs::set_permissions(&xdg, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let c = cache_dir(&StdProbe, &e).unwrap();
+    assert_ne!(c.path, xdg);
+    assert!(
+        c.reason
+            .starts_with(&format!("{}: not writable", xdg.display())),
+        "{}",
+        c.reason
+    );
+    assert_eq!(mode(&xdg), 0o755, "rejected dir chmodded");
+}
