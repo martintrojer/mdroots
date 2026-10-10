@@ -750,6 +750,20 @@ fn notes_dates_sort_and_limit() {
     let r = run_cached(&v, &v.dir(), &["notes", "--created", "someday"]);
     assert_eq!(r.code, 2);
     assert!(r.stderr.starts_with("mdroots: --created: "), "{}", r.stderr);
+    // Neither a panic (exit 101) nor a silent empty list.
+    for (flag, value) in [
+        ("--created-after", "é"),
+        ("--created-after", "9223372036854775807 months ago"),
+        ("--modified-before", "9223372036854775807 years ago"),
+        ("--created", "9223372036854775807 days ago"),
+    ] {
+        let r = run_cached(&v, &v.dir(), &["notes", flag, value]);
+        assert_eq!(r.code, 2, "{flag} {value:?}: {}", r.stderr);
+        assert_eq!(
+            r.stderr,
+            format!("mdroots: {flag}: unrecognised date: {value:?}\n")
+        );
+    }
 }
 
 #[test]

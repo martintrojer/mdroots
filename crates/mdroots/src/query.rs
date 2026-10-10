@@ -603,7 +603,8 @@ const DAY: i64 = 86_400;
 /// `N UNIT[s] ago`, `last N UNITs`, `last UNIT` with UNIT one of minute,
 /// hour, day, week, month, year and N digits or `a`/`an`/`one`…`twelve`
 /// (`last two weeks`); `Nd`/`Nw` (`7d`); `last WEEKDAY` (the start of the
-/// latest such day before today).
+/// latest such day before today). A time too far back to represent is an
+/// error.
 pub fn parse_date(s: &str, now: SystemTime) -> Result<SystemTime, String> {
     let t = s.trim();
     parse_absolute(t)
@@ -614,23 +615,44 @@ pub fn parse_date(s: &str, now: SystemTime) -> Result<SystemTime, String> {
 /// The day `s` names (see [`parse_date`]) as a `[start, end)` range of one
 /// UTC day, for zk's `--created DAY` / `--modified DAY`.
 pub fn day_range(s: &str, now: SystemTime) -> Result<(SystemTime, SystemTime), String> {
+    let bad = || format!("unrecognised date: {s:?}");
     let t = to_secs(parse_date(s, now)?);
-    let start = t.div_euclid(DAY) * DAY;
-    Ok((from_secs(start, 0), from_secs(start + DAY, 0)))
+    let start = t.checked_sub(t.rem_euclid(DAY)).ok_or_else(bad)?;
+    let end = start.checked_add(DAY).ok_or_else(bad)?;
+    Ok((
+        from_secs(start, 0).ok_or_else(bad)?,
+        from_secs(end, 0).ok_or_else(bad)?,
+    ))
 }
 
-fn parse_absolute(s: &str) -> Option<SystemTime> {
+/// `t` as RFC 3339 in UTC, rounded down to whole seconds:
+/// `2024-02-29T13:05:00Z`. [`parse_date`] reads it back.
+pub fn format_rfc3339(t: SystemTime) -> String {
+    let secs = to_secs(t);
+    let (y, m, d) = from_days(secs.div_euclid(DAY));
+    let tod = secs.rem_euclid(DAY);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        tod / 3600,
+        tod % 3600 / 60,
+        tod % 60
+    )
+}
+
+/// The absolute forms of [`parse_date`], untrimmed; also the frontmatter
+/// date parser.
+pub(crate) fn parse_absolute(s: &str) -> Option<SystemTime> {
     let b = s.as_bytes();
     let year = num(b, 0, 4)?;
     if b.len() == 4 {
-        return civil(year, 1, 1).map(|d| from_secs(d * DAY, 0));
+        return from_secs(civil(year, 1, 1)? * DAY, 0);
     }
     if b.get(4) != Some(&b'-') {
         return None;
     }
     let month = num(b, 5, 2)?;
     if b.len() == 7 {
-        return civil(year, month, 1).map(|d| from_secs(d * DAY, 0));
+        return from_secs(civil(year, month, 1)? * DAY, 0);
     }
     if b.get(7) != Some(&b'-') {
         return None;
@@ -638,7 +660,7 @@ fn parse_absolute(s: &str) -> Option<SystemTime> {
     let day = num(b, 8, 2)?;
     let days = civil(year, month, day)?;
     if b.len() == 10 {
-        return Some(from_secs(days * DAY, 0));
+        return from_secs(days * DAY, 0);
     }
     if !matches!(b.get(10), Some(b'T' | b't' | b' ')) || b.get(13) != Some(&b':') {
         return None;
@@ -678,10 +700,7 @@ fn parse_absolute(s: &str) -> Option<SystemTime> {
         }
         _ => return None,
     };
-    Some(from_secs(
-        days * DAY + h * 3600 + m * 60 + sec - offset,
-        nanos,
-    ))
+    from_secs(days * DAY + h * 3600 + m * 60 + sec - offset, nanos)
 }
 
 fn parse_relative(s: &str, now: SystemTime) -> Option<SystemTime> {
@@ -690,8 +709,8 @@ fn parse_relative(s: &str, now: SystemTime) -> Option<SystemTime> {
     let words: Vec<&str> = s.split_whitespace().collect();
     match words.as_slice() {
         ["now"] => return Some(now),
-        ["today"] => return Some(from_secs(today, 0)),
-        ["yesterday"] => return Some(from_secs(today - DAY, 0)),
+        ["today"] => return from_secs(today, 0),
+        ["yesterday"] => return from_secs(today - DAY, 0),
         ["last", w] if weekday(w).is_some() => {
             let want = weekday(w)?;
             let cur = (today.div_euclid(DAY) + 4).rem_euclid(7); // 1970-01-01: Thursday
@@ -699,7 +718,7 @@ fn parse_relative(s: &str, now: SystemTime) -> Option<SystemTime> {
                 0 => 7,
                 n => n,
             };
-            return Some(from_secs(today - back * DAY, 0));
+            return from_secs(today - back * DAY, 0);
         }
         _ => {}
     }
@@ -708,11 +727,9 @@ fn parse_relative(s: &str, now: SystemTime) -> Option<SystemTime> {
         ["last", n, unit] => (count(n)?, *unit),
         ["last", unit] => (1, *unit),
         [w] => {
-            let (digits, unit) = w.split_at(w.len().checked_sub(1)?);
-            let unit = match unit {
-                "d" => "day",
-                "w" => "week",
-                _ => return None,
+            let (digits, unit) = match w.strip_suffix('d') {
+                Some(d) => (d, "day"),
+                None => (w.strip_suffix('w')?, "week"),
             };
             (digits.parse().ok()?, unit)
         }
@@ -728,10 +745,7 @@ fn parse_relative(s: &str, now: SystemTime) -> Option<SystemTime> {
         "year" => return months_back(now_s, n.checked_mul(12)?, now),
         _ => return None,
     };
-    Some(from_secs(
-        now_s.checked_sub(n.checked_mul(secs)?)?,
-        sub_nanos(now),
-    ))
+    from_secs(now_s.checked_sub(n.checked_mul(secs)?)?, sub_nanos(now))
 }
 
 /// `now` moved back `n` calendar months, the day clamped to the month.
@@ -739,10 +753,13 @@ fn months_back(now_s: i64, n: i64, now: SystemTime) -> Option<SystemTime> {
     let days = now_s.div_euclid(DAY);
     let tod = now_s.rem_euclid(DAY);
     let (y, m, d) = from_days(days);
-    let total = y * 12 + (m - 1) - n;
+    let total = (y * 12 + (m - 1)).checked_sub(n)?;
     let (y, m) = (total.div_euclid(12), total.rem_euclid(12) + 1);
     let d = d.min(month_len(y, m));
-    Some(from_secs(civil(y, m, d)? * DAY + tod, sub_nanos(now)))
+    from_secs(
+        civil(y, m, d)?.checked_mul(DAY)?.checked_add(tod)?,
+        sub_nanos(now),
+    )
 }
 
 fn weekday(w: &str) -> Option<i64> {
@@ -794,7 +811,8 @@ fn month_len(y: i64, m: i64) -> i64 {
     }
 }
 
-/// Days since 1970-01-01 of a valid civil date (proleptic Gregorian).
+/// Days since 1970-01-01 of a valid civil date (proleptic Gregorian;
+/// Howard Hinnant's `days_from_civil`), `None` if it overflows.
 fn civil(y: i64, m: i64, d: i64) -> Option<i64> {
     if !(1..=12).contains(&m) || d < 1 || d > month_len(y, m) {
         return None;
@@ -805,10 +823,11 @@ fn civil(y: i64, m: i64, d: i64) -> Option<i64> {
     let mp = (m + 9) % 12;
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(era * 146_097 + doe - 719_468)
+    era.checked_mul(146_097)?.checked_add(doe - 719_468)
 }
 
-/// The civil date of a day count since 1970-01-01.
+/// The civil date of a day count since 1970-01-01 (the inverse of
+/// [`civil`]).
 fn from_days(z: i64) -> (i64, i64, i64) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);
@@ -822,13 +841,15 @@ fn from_days(z: i64) -> (i64, i64, i64) {
     (y, m, d)
 }
 
-fn from_secs(secs: i64, nanos: u32) -> SystemTime {
+/// `secs` seconds plus `nanos` after the epoch, if `SystemTime` can hold
+/// it.
+fn from_secs(secs: i64, nanos: u32) -> Option<SystemTime> {
     let base = if secs >= 0 {
-        UNIX_EPOCH + Duration::from_secs(secs.unsigned_abs())
+        UNIX_EPOCH.checked_add(Duration::from_secs(secs.unsigned_abs()))
     } else {
-        UNIX_EPOCH - Duration::from_secs(secs.unsigned_abs())
+        UNIX_EPOCH.checked_sub(Duration::from_secs(secs.unsigned_abs()))
     };
-    base + Duration::from_nanos(u64::from(nanos))
+    base?.checked_add(Duration::from_nanos(u64::from(nanos)))
 }
 
 /// Whole seconds since the epoch, rounded down.

@@ -1306,103 +1306,14 @@ fn fm_created(doc: &Document) -> Option<SystemTime> {
 
 /// A frontmatter date: `YYYY-MM-DD`, `YYYY-MM-DD[T ]HH:MM[:SS[.frac]]`,
 /// optionally followed by `Z` or `±HH:MM` (RFC 3339). A time without an
-/// offset is UTC. Surrounding quotes and blanks are ignored.
+/// offset is UTC. Surrounding quotes and blanks are ignored. The absolute
+/// forms of [`crate::query::parse_date`] that name at least a day.
 pub(crate) fn parse_fm_date(s: &str) -> Option<SystemTime> {
     let s = s.trim().trim_matches(|c| c == '"' || c == '\'');
-    let b = s.as_bytes();
-    let num = |r: Range<usize>| -> Option<i64> {
-        let t = s.get(r)?;
-        t.bytes()
-            .all(|c| c.is_ascii_digit())
-            .then(|| t.parse().ok())?
-    };
-    if b.len() < 10 || b[4] != b'-' || b[7] != b'-' {
+    if s.len() < 10 {
         return None;
     }
-    let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
-    if !(1..=12).contains(&mo) || d < 1 || d > days_in_month(y, mo) {
-        return None;
-    }
-    let mut secs = days_from_civil(y, mo, d) * 86_400;
-    let mut nanos = 0u32;
-    let mut rest = &s[10..];
-    if let Some(t) = rest.strip_prefix(['T', 't', ' ']) {
-        let tb = t.as_bytes();
-        if tb.len() < 5 || tb[2] != b':' {
-            return None;
-        }
-        let two = |i: usize| -> Option<i64> {
-            let x = t.get(i..i + 2)?;
-            x.bytes()
-                .all(|c| c.is_ascii_digit())
-                .then(|| x.parse().ok())?
-        };
-        let (h, mi) = (two(0)?, two(3)?);
-        let mut used = 5;
-        let mut sec = 0;
-        if tb.get(5) == Some(&b':') {
-            sec = two(6)?;
-            used = 8;
-            if tb.get(8) == Some(&b'.') {
-                let frac: String = t[9..].chars().take_while(char::is_ascii_digit).collect();
-                if frac.is_empty() {
-                    return None;
-                }
-                let digits: String = frac.chars().chain("000000000".chars()).take(9).collect();
-                nanos = digits.parse().ok()?;
-                used = 9 + frac.len();
-            }
-        }
-        if h > 23 || mi > 59 || sec > 60 {
-            return None;
-        }
-        secs += h * 3600 + mi * 60 + sec;
-        rest = &t[used..];
-        match rest.as_bytes() {
-            [] => {}
-            [b'Z' | b'z'] => rest = "",
-            [sign @ (b'+' | b'-'), ..] if rest.len() == 6 && rest.as_bytes()[3] == b':' => {
-                let oh: i64 = rest[1..3].parse().ok()?;
-                let om: i64 = rest[4..6].parse().ok()?;
-                let off = oh * 3600 + om * 60;
-                secs -= if *sign == b'+' { off } else { -off };
-                rest = "";
-            }
-            _ => return None,
-        }
-    }
-    if !rest.is_empty() {
-        return None;
-    }
-    let d = Duration::new(secs.unsigned_abs(), nanos);
-    if secs >= 0 {
-        UNIX_EPOCH.checked_add(d)
-    } else {
-        UNIX_EPOCH
-            .checked_sub(Duration::from_secs(secs.unsigned_abs()))?
-            .checked_add(Duration::new(0, nanos))
-    }
-}
-
-fn days_in_month(y: i64, m: i64) -> i64 {
-    match m {
-        2 if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    }
-}
-
-/// Days from 1970-01-01 to the proleptic Gregorian date `y-m-d`
-/// (Howard Hinnant's `days_from_civil`).
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+    crate::query::parse_absolute(s)
 }
 
 fn tag_names(doc: &Document) -> Vec<String> {

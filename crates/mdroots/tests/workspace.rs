@@ -596,6 +596,81 @@ fn note_summary_created_prefers_the_frontmatter_date() {
     );
 }
 
+#[test]
+fn frontmatter_dates_follow_rfc3339() {
+    // 2024-03-01T00:00:00Z.
+    const MAR1: u64 = 1_709_251_200;
+    let good: &[(&str, u64, u32)] = &[
+        ("2024-03-01", MAR1, 0),
+        ("'2024-03-01'", MAR1, 0),
+        ("2024-03-01T10:20", MAR1 + 37_200, 0),
+        ("2024-03-01 10:20", MAR1 + 37_200, 0),
+        ("2024-03-01T10:20:30", MAR1 + 37_230, 0),
+        ("2024-03-01T10:20:30Z", MAR1 + 37_230, 0),
+        ("2024-03-01t10:20:30z", MAR1 + 37_230, 0),
+        ("2024-03-01T10:20:30.5Z", MAR1 + 37_230, 500_000_000),
+        (
+            "2024-03-01T10:20:30.1234567891Z",
+            MAR1 + 37_230,
+            123_456_789,
+        ),
+        ("2024-03-01T10:20:30+01:00", MAR1 + 37_230 - 3600, 0),
+        ("2024-03-01T10:20:30-05:30", MAR1 + 37_230 + 19_800, 0),
+        ("2024-03-01T10:20+23:59", MAR1 + 37_200 - 86_340, 0),
+        ("2024-03-01T23:59:60Z", MAR1 + 86_400, 0),
+    ];
+    let bad = [
+        "2024-03-01T10:20:30+99:99",
+        "2024-03-01T10:20:30+-1:00",
+        "2024-03-01T10:20:30+24:00",
+        "2024-03-01T10:20:30+01:60",
+        "2024-03-01T10:20:30+0100",
+        "2024-03-01T10:20:30.Z",
+        "2024-03-01é",
+        // Query dates may be a year or a month; a frontmatter date is a day.
+        "2024-03",
+        "'2024'",
+    ];
+    let mut files = vec![("/c/.mdroots".to_owned(), String::new())];
+    for (i, (s, _, _)) in good.iter().enumerate() {
+        files.push((
+            format!("/c/good{i:02}.md"),
+            format!("---\ndate: {s}\n---\n"),
+        ));
+    }
+    for (i, s) in bad.iter().enumerate() {
+        files.push((format!("/c/bad{i:02}.md"), format!("---\ndate: {s}\n---\n")));
+    }
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, t)| (p.as_str(), t.as_str()))
+        .collect();
+    let (fs, probe) = both(&refs);
+    let ws = Workspace::open_for(
+        Path::new("/c/good00.md"),
+        opts(Arc::new(fs), Arc::new(probe)),
+    )
+    .unwrap();
+    let created = |name: &str| {
+        ws.notes()
+            .into_iter()
+            .find(|n| n.path.file_name().unwrap() == name)
+            .unwrap()
+            .created
+    };
+    for (i, (s, secs, nanos)) in good.iter().enumerate() {
+        assert_eq!(
+            created(&format!("good{i:02}.md")),
+            Some(std::time::UNIX_EPOCH + Duration::new(*secs, *nanos)),
+            "{s:?}"
+        );
+    }
+    // MemFs has no birth times: an invalid date leaves no created time.
+    for (i, s) in bad.iter().enumerate() {
+        assert_eq!(created(&format!("bad{i:02}.md")), None, "{s:?}");
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn note_summary_created_falls_back_to_the_birth_time() {

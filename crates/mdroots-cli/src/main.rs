@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
-use mdroots::query::{NoteQuery, TagExpr, day_range, parse_date, parse_sort};
+use mdroots::query::{NoteQuery, TagExpr, day_range, format_rfc3339, parse_date, parse_sort};
 use mdroots::syntax::PositionEncoding;
 use mdroots::{
     Cancel, Diagnostic, DialectMarker, Error, ErrorKind, NoteSummary, Options, Role, Severity,
@@ -678,8 +678,8 @@ fn notes(out: &Out, args: &[String]) -> Result<Outcome, Error> {
                     out.show(&n.path),
                     n.title.clone(),
                     n.tags.join(","),
-                    n.modified.map(rfc3339).unwrap_or_default(),
-                    n.created.map(rfc3339).unwrap_or_default(),
+                    n.modified.map(format_rfc3339).unwrap_or_default(),
+                    n.created.map(format_rfc3339).unwrap_or_default(),
                 ];
                 let fields: Vec<String> = fields.iter().map(|f| tsv_escape(f)).collect();
                 s.push_str(&fields.join("\t"));
@@ -770,7 +770,8 @@ fn tsv_escape(s: &str) -> String {
 /// One note as a JSON object: absolute path, title, tags, and the times as
 /// RFC 3339 UTC strings or null.
 fn note_json(n: &NoteSummary) -> String {
-    let time = |t: Option<SystemTime>| t.map_or("null".to_owned(), |t| json_str(&rfc3339(t)));
+    let time =
+        |t: Option<SystemTime>| t.map_or("null".to_owned(), |t| json_str(&format_rfc3339(t)));
     let tags: Vec<String> = n.tags.iter().map(|t| json_str(t)).collect();
     format!(
         "{{\"path\":{},\"title\":{},\"tags\":[{}],\"modified\":{},\"created\":{}}}",
@@ -798,29 +799,4 @@ fn json_str(s: &str) -> String {
     }
     out.push('"');
     out
-}
-
-/// `t` as RFC 3339 in UTC, whole seconds: `2024-02-29T13:05:00Z`.
-fn rfc3339(t: SystemTime) -> String {
-    let secs = match t.duration_since(UNIX_EPOCH) {
-        Ok(d) => i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
-        Err(e) => -i64::try_from(e.duration().as_secs()).unwrap_or(i64::MAX),
-    };
-    let (days, tod) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    // Civil date of a day count (Howard Hinnant's days_from_civil inverse).
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
-        tod / 3600,
-        tod % 3600 / 60,
-        tod % 60
-    )
 }

@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mdroots::query::{NoteQuery, SortKey, TagExpr, day_range, parse_date, parse_sort};
+use mdroots::query::{
+    NoteQuery, SortKey, TagExpr, day_range, format_rfc3339, parse_date, parse_sort,
+};
 use mdroots::{ErrorKind, Freshness, IndexMode, NoEnumerator, Options, Workspace};
 use mdroots_core::MemFs;
 use mdroots_roots::probe::{FakeProbe, MountInfo};
@@ -243,8 +245,43 @@ fn bad_dates_are_errors() {
         "2026-10-10X12:30",
         "last fortnight",
         "x days ago",
+        // A multibyte last character, not a `d`/`w` suffix.
+        "é",
+        "7é",
+        // Too far back to represent.
+        "9223372036854775807 months ago",
+        "last 9223372036854775807 months",
+        "768614336404564650 years ago",
+        "9223372036854775807 years ago",
+        "9223372036854775807 days ago",
+        "9223372036854775807d",
+        "2026-10-10T12:30+99:99",
+        "2026-10-10T12:30+-1:00",
     ] {
         assert!(parse_date(s, at(NOW)).is_err(), "{s:?}");
+    }
+}
+
+#[test]
+fn rfc3339_formats_whole_utc_seconds() {
+    let table: &[(SystemTime, &str)] = &[
+        (at(0), "1970-01-01T00:00:00Z"),
+        (at(NOW), "2026-10-10T12:30:00Z"),
+        (at(1_709_211_900), "2024-02-29T13:05:00Z"),
+        (at(NOW) + Duration::from_millis(999), "2026-10-10T12:30:00Z"),
+        (UNIX_EPOCH - Duration::from_secs(1), "1969-12-31T23:59:59Z"),
+        // Rounded down, not toward the epoch.
+        (
+            UNIX_EPOCH - Duration::from_millis(500),
+            "1969-12-31T23:59:59Z",
+        ),
+    ];
+    for (t, want) in table {
+        assert_eq!(format_rfc3339(*t), *want);
+        assert_eq!(
+            parse_date(want, at(NOW)).map(format_rfc3339).as_deref(),
+            Ok(*want)
+        );
     }
 }
 
