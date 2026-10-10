@@ -28,7 +28,7 @@ use crate::markers::{
 use crate::probe::{FsClass, Probe, classify};
 use crate::registry::{
     EDITOR_MARKER, Registry, RootMode, RootRecord, VerdictSource, detect_move, is_editor,
-    lookup_valid_for, new_root_id, removable,
+    lookup_valid_for, new_root_id, on_disk, removable,
 };
 use crate::walk::{Abort, Budget, WalkOptions, WalkStats, walk};
 
@@ -873,6 +873,30 @@ impl Ctx<'_> {
     /// the insert retried. On an overlap with any other row, the nearest valid
     /// registered root containing the file wins; with none, the decision is
     /// returned unregistered.
+    /// After the real marker root `rec` is registered, remove the rows
+    /// strictly inside it that are not on disk or have no marker (a legacy
+    /// workspace-folder row from 0.2.8, or a row that predates the marker).
+    /// These rows never overlapped, so the insert loop did not see them: the
+    /// enclosing root was already registered (an update), or the row is a
+    /// nestable `(Marker, None)` one. Nested marker roots and current-style
+    /// editor rows ([`EDITOR_MARKER`]) stay; each serves its own sessions.
+    fn sweep_inside(&mut self, rec: &RootRecord) {
+        if !rec.marker.as_deref().is_some_and(|m| m != EDITOR_MARKER) {
+            return;
+        }
+        let gone: Vec<String> = self
+            .registry
+            .all()
+            .into_iter()
+            .filter(|e| e.path != rec.path && e.path.starts_with(&rec.path))
+            .filter(|e| e.marker.is_none() || !on_disk(self.probe, e))
+            .map(|e| e.root_id)
+            .collect();
+        for id in gone {
+            self.registry.remove(&id);
+        }
+    }
+
     fn finish(&mut self, out: Out) -> Decision {
         let mut d = out.d;
         let Some(root) = d.root.clone() else {
@@ -908,14 +932,15 @@ impl Ctx<'_> {
             reason: d.reason.clone(),
             last_seen_ms: now,
         };
+        let folders = &self.opts.workspace_folders;
         if let Some(e) = self.registry.lookup(&root).filter(|e| e.path == root) {
             rec.root_id = e.root_id;
-            self.registry.update(rec);
+            self.registry.update(rec.clone());
+            self.sweep_inside(&rec);
             return d;
         }
         // Each retry removes a different row (a failed remove, e.g. a
         // SQLite error, ends the loop), so it terminates.
-        let folders = &self.opts.workspace_folders;
         let mut removed: Vec<String> = Vec::new();
         let res = loop {
             match self.registry.insert(rec.clone()) {
@@ -937,7 +962,10 @@ impl Ctx<'_> {
             }
         };
         match res {
-            Ok(()) => d,
+            Ok(()) => {
+                self.sweep_inside(&rec);
+                d
+            }
             Err(o) => match lookup_valid_for(self.registry, self.probe, self.file, folders) {
                 Some(r) => from_record(&r),
                 None => {

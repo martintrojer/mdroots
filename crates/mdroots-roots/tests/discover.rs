@@ -1250,6 +1250,104 @@ fn a_legacy_lazy_workspace_folder_row_gives_way_to_the_git_root() {
     assert!(row(&reg, "/h/repo/ws").is_none());
 }
 
+/// A legacy `(Lazy, None)` workspace-folder row below an enclosing git root
+/// that is already registered: the update of the git root removes it, so
+/// the next open is a stage 1 hit with no walk.
+#[test]
+fn a_legacy_row_below_a_registered_git_root_is_removed_on_update() {
+    let probe = Counting::new(
+        FakeProbe::new()
+            .home("/h")
+            .dir("/h/repo/.git")
+            .file("/h/repo/top.md", "")
+            .file("/h/repo/ws/a.md", ""),
+    );
+    let mut reg = MemRegistry::new();
+    let d = run(
+        &probe,
+        &mut reg,
+        &NoEnumerator,
+        "/h/repo/top.md",
+        &["/h/repo"],
+    );
+    assert_eq!(d.root, Some(p("/h/repo")));
+    let mut legacy = row(&reg, "/h/repo").unwrap();
+    legacy.root_id = "legacy".into();
+    legacy.path = p("/h/repo/ws");
+    legacy.mode = RootMode::Lazy;
+    legacy.marker = None;
+    legacy.marker_ino = None;
+    // Lazy rows do not nest, so plant the row directly (`update` with a
+    // new id adds it), as an old registry would hold it.
+    reg.update(legacy);
+
+    let file = "/h/repo/ws/a.md";
+    let d = run(
+        &probe,
+        &mut reg,
+        &NoEnumerator,
+        file,
+        &["/h/repo", "/h/repo/ws"],
+    );
+    assert_eq!(d.root, Some(p("/h/repo")), "{}", explain(&d));
+    assert!(row(&reg, "/h/repo/ws").is_none(), "legacy row removed");
+    let before = probe.read_dir_total();
+    let d = run(
+        &probe,
+        &mut reg,
+        &NoEnumerator,
+        file,
+        &["/h/repo", "/h/repo/ws"],
+    );
+    assert_eq!(d.root, Some(p("/h/repo")));
+    assert_eq!(probe.read_dir_total(), before, "reopen is a stage 1 hit");
+}
+
+/// A legacy `(Marker, None)` workspace-folder row nests, so registering the
+/// enclosing git root succeeds without an overlap; the row is still removed
+/// (no workspace folders now).
+#[test]
+fn a_new_git_root_removes_a_markerless_editor_row_inside_it() {
+    let probe = Counting::new(
+        FakeProbe::new()
+            .home("/h")
+            .dir("/h/repo/.git")
+            .file("/h/repo/ws/a.md", ""),
+    );
+    let mut reg = MemRegistry::new();
+    let file = "/h/repo/ws/a.md";
+    let folders = DiscoverOptions {
+        workspace_folders: vec![p("/h/repo/ws")],
+        ..opts()
+    };
+    run_with(
+        &probe,
+        &mut reg,
+        &NoEnumerator,
+        file,
+        &["/h/repo", "/h/repo/ws"],
+        &folders,
+    );
+    let mut old = row(&reg, "/h/repo/ws").unwrap();
+    old.marker = None;
+    old.marker_ino = None;
+    reg.update(old);
+
+    let d = run(
+        &probe,
+        &mut reg,
+        &NoEnumerator,
+        file,
+        &["/h/repo", "/h/repo/ws"],
+    );
+    assert_eq!(d.root, Some(p("/h/repo")), "{}", explain(&d));
+    assert!(row(&reg, "/h/repo").is_some());
+    assert!(
+        row(&reg, "/h/repo/ws").is_none(),
+        "markerless child removed"
+    );
+}
+
 // --- list_root ----------------------------------------------------------------
 
 /// Discover `file`, then re-list its root with `list_root` on the same
