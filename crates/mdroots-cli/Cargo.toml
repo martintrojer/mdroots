@@ -22,8 +22,8 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-mdroots = { path = "../mdroots", version = "=0.2.4" }
-mdroots-lsp = { path = "../mdroots-lsp", version = "=0.2.4" }
+mdroots = { path = "../mdroots", version = "=0.2.5" }
+mdroots-lsp = { path = "../mdroots-lsp", version = "=0.2.5" }
 lsp-server = "0.7"
 
 [dev-dependencies]

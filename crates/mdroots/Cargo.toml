@@ -13,11 +13,11 @@ keywords = ["markdown", "org-mode", "notes", "zettelkasten", "wiki-links"]
 categories = ["text-processing", "parser-implementations"]
 
 [dependencies]
-mdroots-syntax = { path = "../mdroots-syntax", version = "=0.2.4" }
-mdroots-resolve = { path = "../mdroots-resolve", version = "=0.2.4" }
-mdroots-core = { path = "../mdroots-core", version = "=0.2.4" }
-mdroots-roots = { path = "../mdroots-roots", version = "=0.2.4" }
-mdroots-index = { path = "../mdroots-index", version = "=0.2.4" }
+mdroots-syntax = { path = "../mdroots-syntax", version = "=0.2.5" }
+mdroots-resolve = { path = "../mdroots-resolve", version = "=0.2.5" }
+mdroots-core = { path = "../mdroots-core", version = "=0.2.5" }
+mdroots-roots = { path = "../mdroots-roots", version = "=0.2.5" }
+mdroots-index = { path = "../mdroots-index", version = "=0.2.5" }
 notify = "8"
 unicode-normalization = "0.1"
 

@@ -49,7 +49,7 @@ Obsidian config or voted from the notes), and a background open in
 discovered and indexed, with a progress notification for opens over a
 second.
 
-0.2.4 is on crates.io (`cargo install mdroots-cli`, `cargo add mdroots`).
+0.2.5 is on crates.io (`cargo install mdroots-cli`, `cargo add mdroots`).
 Each release also has prebuilt `mdroots` binaries for macOS (Apple silicon)
 and Linux (x86_64) on the
 [releases page](https://github.com/martintrojer/mdroots/releases).
