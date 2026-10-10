@@ -4,12 +4,13 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
-## Unreleased
+## 0.2.8
 
 - Tag expressions take `AND` (as the comma) and parentheses:
   `-t "career AND NOT projects"`, `-t "(a OR b), NOT c"`. Before, both
   were read as tag names and matched nothing; an unclosed `(` or a
-  dangling `AND` is now a usage error naming its column.
+  dangling `AND` is now a usage error naming its column. Keywords may be
+  separated by tabs as well as spaces.
 
 ## 0.2.7
 
