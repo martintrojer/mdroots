@@ -51,7 +51,7 @@ fn current_uid() -> u32 {
     0
 }
 
-/// The chosen cache dir and why it was chosen (printed by `mdroots roots`).
+/// The chosen cache dir and why it was chosen.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CacheDir {
     pub path: PathBuf,

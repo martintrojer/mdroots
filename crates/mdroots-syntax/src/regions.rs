@@ -43,7 +43,6 @@ impl Regions {
     }
 
     /// Sorted, gapless partition of `0..len`; adjacent equal contexts merged.
-    #[allow(dead_code)] // consumed by scan (task syntax_scan)
     pub(crate) fn segments(&self) -> impl Iterator<Item = (Range<usize>, Context)> + '_ {
         self.resolved().iter().cloned()
     }

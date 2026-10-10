@@ -1,7 +1,9 @@
 //! Per-root flock roles (docs/DECISIONS.md D3).
 //!
 //! Every process with a root's DB open holds `LOCK_SH` on `<stem>.open`, so
-//! GC and rebuilds (which need it exclusively) never unlink a DB in use.
+//! GC (which needs it exclusively) never unlinks a DB in use. A rebuild
+//! does not take it exclusively: it writes a new generation file and leaves
+//! the old one for GC.
 //! The process that wins a non-blocking `LOCK_EX` on `<stem>.lock` is the
 //! reconciler, the only writer of the DB; everyone else is a read-only peer.
 //! The kernel releases both locks when the process exits or crashes, so there

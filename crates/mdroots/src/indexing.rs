@@ -305,8 +305,8 @@ impl Listing {
 ///   removed. An unlistable root keeps the DB's file set.
 /// - Peer: the DB's file set, re-statting files and reading changed ones
 ///   without writing; a peer of a still-empty DB (another process is
-///   indexing) uses the working set, else `discovered`, else `current` (the
-///   files it already serves).
+///   indexing) uses the working set on a lazy root, else `discovered`, else
+///   a fresh listing, else `current` (the files it already serves).
 ///
 /// The opened file is read when it has no row or is dataless.
 ///

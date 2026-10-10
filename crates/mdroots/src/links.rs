@@ -31,8 +31,9 @@ impl Workspace {
     /// to another note from `from` (a note at the same path under `from`'s
     /// directory wins) gets a leading `/`, else (or for wiki paths) is
     /// written relative to `from`.
-    /// A wiki target or label that cannot be written (`|`, `]`, a line break)
-    /// is `Unsupported`, as are paths outside the root.
+    /// A wiki target containing `|`, `]` or a line break, or a label
+    /// containing `]]` or a line break, is `Unsupported`, as are paths
+    /// outside the root.
     pub fn link_to(
         &self,
         from: &Path,

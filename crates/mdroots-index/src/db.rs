@@ -23,8 +23,8 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, pa
 /// different schemas never share a file.
 pub const SCHEMA: u32 = 2;
 
-/// `change_log` keeps this many newest entries; peers that fall further
-/// behind re-read the file list.
+/// `change_log` keeps this many newest entries. Nothing reads the log yet:
+/// peers re-stat every row on each sync.
 const CHANGE_LOG_KEEP: i64 = 10_000;
 
 const SCHEMA_SQL: &str = "

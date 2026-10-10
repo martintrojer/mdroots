@@ -7,8 +7,10 @@
 //! Self-links never count ([zk](https://github.com/zk-org/zk) counts them:
 //! a note linking only to itself is an orphan here, not in zk).
 //!
-//! Every query builds the graph once from the store's backlink index, so it
-//! costs O(notes + links). They need every note indexed: on a
+//! Every query builds the graph once from the store's backlink index. The
+//! build is not linear: each backlink is fetched by its position in the
+//! source note's links, so a note with `k` links costs up to O(k²).
+//! They need every note indexed: on a
 //! [`Freshness::Lazy`] root they are an `Unsupported` error rather than a
 //! partial answer.
 

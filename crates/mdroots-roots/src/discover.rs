@@ -303,8 +303,8 @@ pub fn discover(
     cx.finish(out)
 }
 
-/// One line describing `d`, as `mdroots roots` and `window/logMessage`
-/// print it, e.g. `lazy: statfs edenfs:, MNT_LOCAL unset`.
+/// One line describing `d`: its reason with line breaks replaced by spaces,
+/// e.g. `lazy: statfs edenfs:, MNT_LOCAL unset`.
 pub fn explain(d: &Decision) -> String {
     d.reason.replace(['\n', '\r'], " ")
 }

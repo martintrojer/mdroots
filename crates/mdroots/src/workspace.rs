@@ -355,7 +355,8 @@ impl Workspace {
     /// Discover the root of the existing file `path` and index it: the
     /// whole root, or for lazy and single-file decisions a working set (the
     /// file's directory, one level; or the file alone). The opened file is
-    /// always indexed, and read even if dataless.
+    /// always read, even if dataless, and indexed unless it is binary or
+    /// unreadable.
     ///
     /// With a cache (see [`IndexMode`]) discovery runs under the cache's
     /// `discover.lock` with the persistent registry, and a registered root
