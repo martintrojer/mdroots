@@ -50,6 +50,9 @@ discovered and indexed, with a progress notification for opens over a
 second.
 
 0.2.4 is on crates.io (`cargo install mdroots-cli`, `cargo add mdroots`).
+Each release also has prebuilt `mdroots` binaries for macOS (Apple silicon)
+and Linux (x86_64) on the
+[releases page](https://github.com/martintrojer/mdroots/releases).
 What is left (Linux CI, real-vault validation, known limitations, deferred
 work and open questions): [docs/ROADMAP.md](docs/ROADMAP.md).
 

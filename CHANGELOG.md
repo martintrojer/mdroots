@@ -4,6 +4,11 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
+## Unreleased
+
+- Releases: a `v*` tag builds `mdroots` for macOS (arm64) and Linux
+  (x86_64) and attaches the archives to the GitHub release.
+
 ## 0.2.4
 
 - `mdroots lsp` answers `textDocument/documentLink` (and advertises
