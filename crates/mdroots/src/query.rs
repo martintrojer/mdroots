@@ -316,7 +316,6 @@ impl Workspace {
                 t.is_some_and(|t| after.is_none_or(|a| t >= a) && before.is_none_or(|b| t < b))
             };
 
-        let root = self.root().path;
         let mut rows: Vec<(NoteSummary, Option<SystemTime>)> = Vec::new();
         for n in self.notes() {
             let p = n.path.as_path();
@@ -334,7 +333,7 @@ impl Workspace {
             {
                 continue;
             }
-            let created = self.created(&root, &n);
+            let created = n.created;
             if !in_range(created, q.created_after, q.created_before) {
                 continue;
             }
@@ -410,31 +409,6 @@ impl Workspace {
         }
         Ok(out)
     }
-
-    /// The note's created time: the frontmatter `date`, else `created`,
-    /// parsed; else the summary's.
-    fn created(&self, root: &Path, n: &NoteSummary) -> Option<SystemTime> {
-        let rel = n.path.strip_prefix(root).ok()?;
-        let rel = crate::workspace::slash(rel);
-        let store = self.store();
-        let fm = store.document(&rel).and_then(|d| d.frontmatter());
-        let from_fm = fm.and_then(|fm| {
-            let dates = fm.dates();
-            ["date", "created"].iter().find_map(|k| {
-                dates
-                    .iter()
-                    .find(|(key, _)| key.eq_ignore_ascii_case(k))
-                    .and_then(|(_, v)| parse_absolute(v))
-            })
-        });
-        from_fm.or_else(|| summary_created(n))
-    }
-}
-
-/// `NoteSummary::created` once the field exists (the parallel created-time
-/// unit adds it); until then unknown.
-fn summary_created(_n: &NoteSummary) -> Option<SystemTime> {
-    None
 }
 
 /// As the backlink index counts links: not footnotes, not in code.

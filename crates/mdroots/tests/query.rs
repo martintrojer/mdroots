@@ -501,3 +501,23 @@ fn graph_filters_on_a_lazy_root_are_unsupported() {
         assert_eq!(err.kind(), ErrorKind::Unsupported, "{q:?}");
     }
 }
+
+#[test]
+fn created_falls_back_to_the_file_birth_time() {
+    // No frontmatter date: the created filter uses the file's birth time.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::write(root.join("a.md"), "# A\n").unwrap();
+    let ws = Workspace::open_at(&root, Options::default().index(IndexMode::Memory)).unwrap();
+    let n = ws.notes().into_iter().next().unwrap();
+    let Some(born) = n.created else {
+        return; // This filesystem reports no birth time.
+    };
+    let mut q = NoteQuery::default();
+    q.created_after = Some(born - Duration::from_secs(60));
+    q.created_before = Some(born + Duration::from_secs(60));
+    assert_eq!(ws.query(&q).unwrap().len(), 1);
+    q.created_after = Some(born + Duration::from_secs(60));
+    q.created_before = None;
+    assert!(ws.query(&q).unwrap().is_empty());
+}
