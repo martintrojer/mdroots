@@ -164,6 +164,13 @@ fn relative_paths() {
     // Root-relative input, as `link_to` passes it.
     assert_eq!(r("", "a/b.md"), "a/b.md");
     assert_eq!(r("x", "a/b.md"), "../a/b.md");
+    // A leading `..` of a relative target is kept, not folded away.
+    assert_eq!(r("", "../b.md"), "../b.md");
+    assert_eq!(r("a", "../b.md"), "../../b.md");
+    assert_eq!(r("a", "../../b.md"), "../../../b.md");
+    assert_eq!(r("../x", "../b.md"), "../b.md");
+    // Above `/` there is nothing to climb to.
+    assert_eq!(r("/", "/../b.md"), "b.md");
 }
 
 #[test]

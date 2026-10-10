@@ -180,16 +180,23 @@ fn drop_ext(path: &str) -> &str {
 
 /// `to` relative to the directory `from`, `/`-separated, both absolute or
 /// both relative to the same dir. `.` is dropped and `..` folded first, so
-/// `from = /r/a/../b` is the directory `/r/b`.
+/// `from = /r/a/../b` is the directory `/r/b`. A leading `..` of a relative
+/// `to` is kept (`"a"` to `"../b.md"` is `../../b.md`); `from` must not climb
+/// above the dir both are relative to, which has no name to come back by.
+/// Above `/`, `..` is dropped.
 pub fn relative_path(from: &Path, to: &Path) -> String {
     let norm = |p: &Path| -> Vec<String> {
         let mut v: Vec<String> = Vec::new();
         for c in p.components() {
             match c {
                 Component::Normal(s) => v.push(s.to_string_lossy().into_owned()),
-                Component::ParentDir => {
-                    v.pop();
-                }
+                Component::ParentDir => match v.last() {
+                    Some(l) if l != ".." => {
+                        v.pop();
+                    }
+                    _ if !p.has_root() => v.push("..".to_owned()),
+                    _ => {}
+                },
                 _ => {}
             }
         }
