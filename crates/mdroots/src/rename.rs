@@ -10,6 +10,7 @@ use mdroots_resolve::ladder::LinkStatus;
 use mdroots_resolve::normalize::percent_decode;
 use mdroots_syntax::{Context, Document, Link, LinkKind};
 
+use crate::links::encode_destination;
 use crate::workspace::{Workspace, is_note};
 
 /// File changes for an editor to apply: create, then edit, then rename.
@@ -323,15 +324,16 @@ impl Rewrite<'_> {
         }
     }
 
-    /// Markdown destinations get spaces percent-encoded unless written in
-    /// `<…>`.
+    /// Markdown destinations are encoded by
+    /// [`encode_destination`](crate::links::encode_destination), in `<…>`
+    /// when written so.
     fn encode(&self, s: String) -> String {
         let md = matches!(
             self.kind,
             LinkKind::Markdown | LinkKind::Image | LinkKind::Reference
         );
-        match md && !self.bracketed {
-            true => s.replace(' ', "%20"),
+        match md {
+            true => encode_destination(&s, self.bracketed),
             false => s,
         }
     }

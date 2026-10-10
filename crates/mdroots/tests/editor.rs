@@ -244,6 +244,28 @@ fn rename_in_place_and_percent_encoding() {
 }
 
 #[test]
+fn rename_encodes_characters_that_end_or_alter_a_destination() {
+    let a = "[b](b.md) [s](<b.md>) [x](b.md#sec)\n";
+    for new in ["a)b.md", "a#b.md", "a(b.md", "a b.md", "a<b>.md", "100%.md"] {
+        let ws = open(
+            &[("/v/.mdroots", ""), ("/v/a.md", a), ("/v/b.md", "")],
+            "/v/a.md",
+        );
+        let new_abs = format!("/v/move/{new}");
+        let got = rename(&ws, "/v/b.md", &new_abs);
+        assert_eq!(got.len(), 1, "{new}: {got:?}");
+        let text = &got[0].1;
+        // The renamed tree: every link in a.md still reaches the note.
+        let after = open(
+            &[("/v/.mdroots", ""), ("/v/a.md", text), (&new_abs, "")],
+            "/v/a.md",
+        );
+        let back = after.backlinks(Path::new(&new_abs)).unwrap();
+        assert_eq!(back.len(), 3, "{new}: {text}");
+    }
+}
+
+#[test]
 fn rename_refusals() {
     let ws = open(RENAME_VAULT, "/v/top.md");
     let c = Cancel::new();

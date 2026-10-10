@@ -864,6 +864,61 @@ fn completion_of_notes_headings_paths_and_tags() {
 }
 
 #[test]
+fn completion_inserts_text_that_resolves_to_the_chosen_note() {
+    let v = Vault::corpus("zk-min");
+    v.write("loose-note.md", LOOSE);
+    fs::create_dir_all(v.dir.join("dir")).unwrap();
+    v.write("dir/dup.md", "# Dup in dir\n");
+    v.write("dup.md", "# Dup at root\n");
+    v.write("paren).md", "# Paren\n");
+    let mut c = session(&v, UTF8, &["loose-note.md"]);
+    let uri = v.uri("loose-note.md");
+    let mut version = 1;
+    let mut complete = |c: &mut Client, text: &str| -> Value {
+        version += 1;
+        c.change(&uri, version, &format!("{LOOSE}{text}"));
+        ok(c.request("textDocument/completion", at(&uri, 11, text.len() as u32)))
+    };
+    // Where `text` (on the last line) leads, as a path below the vault.
+    let goto = |c: &mut Client, version: i32, text: &str| -> String {
+        c.change(&uri, version, &format!("{LOOSE}{text}"));
+        let r = ok(c.request("textDocument/definition", at(&uri, 11, 2)));
+        // URIs percent-encode `)`; the test paths hold no other escapes.
+        let u = r[0]["uri"].as_str().unwrap_or_default().replace("%29", ")");
+        u.strip_prefix(&v.uri("")).unwrap_or(&u).to_owned()
+    };
+    let r = complete(&mut c, "[[du");
+    let new_texts: Vec<(String, String)> = r["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["detail"].as_str().unwrap().starts_with("Dup"))
+        .map(|i| {
+            let t = i["textEdit"]["newText"].as_str().unwrap().to_owned();
+            (i["detail"].as_str().unwrap().to_owned(), t)
+        })
+        .collect();
+    assert_eq!(new_texts.len(), 2, "{r}");
+    assert_ne!(new_texts[0].1, new_texts[1].1, "{r}");
+    for (i, (detail, t)) in new_texts.iter().enumerate() {
+        let want = match detail.as_str() {
+            "Dup in dir" => "dir/dup.md",
+            _ => "dup.md",
+        };
+        assert_eq!(goto(&mut c, 100 + i as i32, &format!("[[{t}]]")), want);
+    }
+    let r = complete(&mut c, "[x](paren");
+    let t = r["items"][0]["textEdit"]["newText"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(labels(&r), ["paren).md"]);
+    assert_eq!(t, "paren%29.md");
+    assert_eq!(goto(&mut c, 200, &format!("[x]({t})")), "paren).md");
+    c.shutdown().unwrap();
+}
+
+#[test]
 fn completion_of_paths_from_a_subdirectory_and_headings_of_another_note() {
     let v = Vault::corpus("notesvault");
     let mut c = session(&v, UTF8, &["notes/note-a.md"]);

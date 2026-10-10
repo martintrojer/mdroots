@@ -113,6 +113,64 @@ fn markdown_root_relative_from_obsidian_absolute() {
     );
 }
 
+/// The note `link` (written in `from`) resolves to.
+fn target(w: &Workspace, from: &str, link: &str) -> Vec<PathBuf> {
+    w.resolve(&p(from), link).unwrap().targets
+}
+
+#[test]
+fn root_relative_links_are_not_shadowed_by_a_sibling() {
+    let shadow = [("/v/sub/ref.md", ""), ("/v/sub/a.md", "# Sub A\n")];
+    let obsidian_abs = (
+        "/v/.obsidian/app.json",
+        r#"{"useMarkdownLinks": true, "newLinkFormat": "absolute"}"#,
+    );
+    let zk_wiki = ("/v/.zk/config.toml", ZK_WIKI);
+    for cfg in [obsidian_abs, zk_wiki] {
+        let w = ws(&[shadow[0], shadow[1], cfg]);
+        let l = link(&w, "/v/sub/ref.md", "/v/a.md", None);
+        assert_eq!(target(&w, "/v/sub/ref.md", &l), [p("/v/a.md")], "{l}");
+        // Unshadowed links keep the bare root-relative form.
+        let l = link(&w, "/v/sub/ref.md", "/v/sub/deep/b.md", None);
+        assert!(
+            l.contains("(sub/deep/b.md)") || l == "[[sub/deep/b]]",
+            "{l}"
+        );
+    }
+}
+
+#[test]
+fn wiki_stem_shared_with_a_root_note_is_not_shadowed() {
+    let w = ws(&[
+        ("/v/.obsidian/app.json", "{}"),
+        ("/v/one/x.md", ""),
+        ("/v/dup.md", ""),
+    ]);
+    for to in ["/v/dup.md", "/v/one/dup.md", "/v/two/dup.md"] {
+        let l = link(&w, "/v/one/x.md", to, None);
+        assert_eq!(target(&w, "/v/one/x.md", &l), [p(to)], "{l}");
+    }
+}
+
+#[test]
+fn markdown_destinations_encode_characters_that_end_or_alter_them() {
+    let names = [
+        "a#b.md", "a)b.md", "a(b.md", "a<b>.md", "t\tab.md", "100%.md",
+    ];
+    let extra: Vec<(String, &str)> = names.iter().map(|n| (format!("/v/x/{n}"), "")).collect();
+    let mut files: Vec<(&str, &str)> = extra.iter().map(|(f, t)| (f.as_str(), *t)).collect();
+    files.push(("/v/.obsidian/app.json", r#"{"useMarkdownLinks": true}"#));
+    let w = ws(&files);
+    for (to, _) in &extra {
+        let l = link(&w, "/v/a.md", to, None);
+        assert_eq!(target(&w, "/v/a.md", &l), [p(to)], "{l}");
+    }
+    assert_eq!(
+        link(&w, "/v/a.md", "/v/x/a#b.md", Some("L")),
+        "[L](x/a%23b.md)"
+    );
+}
+
 #[test]
 fn zk_default_drops_the_extension() {
     let w = ws(&[("/v/.zk/config.toml", "")]);

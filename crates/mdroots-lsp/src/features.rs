@@ -17,7 +17,7 @@ use lsp_types::{
     ResourceOp, SymbolInformation, SymbolKind, TextDocumentEdit,
 };
 use mdroots::syntax::{Heading, LineIndex, PositionEncoding};
-use mdroots::{Cancel, ErrorKind, LinkStatus, Workspace};
+use mdroots::{Cancel, ErrorKind, LinkStatus, Workspace, markdown_destination};
 
 use crate::{position, uri};
 
@@ -480,11 +480,22 @@ pub(crate) fn completion(c: &Ctx, pos: Position) -> Result<CompletionList, Fail>
         Want::Notes(typed) => {
             let notes = c.ws.search_notes(typed, NOTE_LIMIT);
             incomplete = notes.len() == NOTE_LIMIT;
+            // A stem two notes share (case-insensitively) names neither:
+            // insert the root-relative path without extension.
+            let mut stems: HashMap<String, usize> = HashMap::new();
+            for f in c.ws.files() {
+                *stems.entry(file_stem(&f).to_lowercase()).or_default() += 1;
+            }
+            let root = c.ws.root().path;
             notes
                 .into_iter()
                 .map(|n| {
                     let stem = file_stem(&n.path);
-                    item(stem.clone(), stem, CompletionItemKind::FILE, Some(n.title))
+                    let text = match stems.get(&stem.to_lowercase()) {
+                        Some(k) if *k > 1 => relative(&root, &n.path.with_extension("")),
+                        _ => stem.clone(),
+                    };
+                    item(stem, text, CompletionItemKind::FILE, Some(n.title))
                 })
                 .collect()
         }
@@ -520,13 +531,20 @@ pub(crate) fn completion(c: &Ctx, pos: Position) -> Result<CompletionList, Fail>
                     .into_iter()
                     .filter(|n| n.path != c.path)
                     .map(|n| (relative(&dir, &n.path), n.title))
-                    .filter(|(p, _)| p.to_lowercase().contains(&typed))
+                    .filter(|(p, _)| {
+                        p.to_lowercase().contains(&typed)
+                            || markdown_destination(p).to_lowercase().contains(&typed)
+                    })
                     .collect();
             incomplete = paths.len() > NOTE_LIMIT;
             paths.truncate(NOTE_LIMIT);
+            // The label is the path; the inserted destination is encoded.
             paths
                 .into_iter()
-                .map(|(p, title)| item(p.clone(), p, CompletionItemKind::FILE, Some(title)))
+                .map(|(p, title)| {
+                    let dest = markdown_destination(&p);
+                    item(p, dest, CompletionItemKind::FILE, Some(title))
+                })
                 .collect()
         }
         // The partial tag being typed is a tag of the overlay too: drop it
