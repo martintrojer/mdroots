@@ -4,6 +4,53 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
+## Unreleased
+
+Fixes from a review of 0.2.8.
+
+- Dates: frontmatter dates with out-of-range offsets (`+99:99`, `+-1:00`)
+  are no longer read as created times. A non-ASCII `--created-*` or
+  `--modified-*` value, or a huge relative count
+  (`"9223372036854775807 months ago"`), is a usage error (exit 2)
+  instead of a panic or an empty result. Frontmatter and query dates now
+  share one parser.
+- Written links resolve back to their note. Rename, `link_to` (and
+  extract-note) and LSP completion percent-encode `% ( ) # < > &`, spaces
+  and control characters in Markdown destinations. A root-relative or
+  wiki link that a same-named file next to the linking note would shadow
+  gets a leading `/` or a file-relative path instead. `[[` completion
+  inserts what `link_to` writes, so notes sharing a name stay distinct.
+  `](` completion handles `..` in the current file's path.
+- Resolution: an Org heading's `:ID:` resolves `[[id:…]]` to its file. A
+  site-rooted link to an existing unindexed file under the docs dir is
+  unindexed, not broken. Title links match whatever the Unicode
+  composition (NFC). On case-insensitive filesystems, `file:` links into
+  the root match its path case-insensitively.
+- JSON frontmatter decodes `\uXXXX` surrogate pairs (escaped emoji).
+- In-memory search (no cache, peers, unsaved buffers) folds diacritics
+  like the index: `cafes` finds a decomposed `cafés`, and kana, Greek and
+  Cyrillic accents are no longer folded.
+- LSP: a buffer opened before its file exists gets diagnostics, symbols
+  and info once it is saved or edited, without reopening it.
+- Root discovery and registry:
+  - Stale rows are skipped: a deleted nested `.git` goes to the parent
+    root with no re-walk on every open.
+  - An `.mdroots` or `.git` added at a loose or lazy root's own
+    directory is seen at once, not after the 7-day retry.
+  - A file below a registered root on another filesystem (a new mount)
+    is decided afresh.
+  - Workspace-folder roots from earlier sessions, including lazy ones
+    written by 0.2.8, no longer persist or block an enclosing loose or
+    git root.
+  - Loose roots no longer grow across a mount boundary.
+  - Directories with non-UTF-8 names are descended instead of skipped.
+    `Probe::read_dir` returns `OsString` names (an API change for `Probe`
+    implementors).
+- Cache dir: the shared `/var/tmp/mdroots-<uid>` fallback never follows
+  a planted symlink, and a candidate it rejects keeps its mode.
+- `zkdiff` opens notebook databases in directories with `?`, `#` or `%`.
+- Docs, code comments and tests corrected; duplicated helpers merged.
+
 ## 0.2.8
 
 - Tag expressions take `AND` (as the comma) and parentheses:
