@@ -18,6 +18,10 @@ use mdroots::{Cancel, Diagnostic, Error, ErrorKind, Options, Role, Severity, Wor
 const USAGE: &str = "\
 usage: mdroots <command> [args]
 
+options:
+  -V, --version               print the version and exit
+  -h, --help                  print this usage
+
 commands:
   check [--quiet] [PATH...]   report diagnostics of notes under each PATH
                               (a file or a directory; default .); exit 1 on
@@ -64,6 +68,10 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[String]) -> Result<Outcome, Error> {
+    if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
+        println!("mdroots {}", env!("CARGO_PKG_VERSION"));
+        return Ok(Outcome::Ok);
+    }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         return Ok(Outcome::Usage);
     }

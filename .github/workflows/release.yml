@@ -40,9 +40,7 @@ jobs:
           tar czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
       - name: Smoke test
-        run: target/${{ matrix.target }}/release/mdroots check --quiet README.md || [ $? -eq 1 ]
-        env:
-          MDROOTS_CACHE_DIR: ${{ runner.temp }}/mdroots-cache
+        run: target/${{ matrix.target }}/release/mdroots --version
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}

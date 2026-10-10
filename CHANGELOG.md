@@ -4,6 +4,11 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
+## Unreleased
+
+- `mdroots --version` (or `-V`) prints `mdroots <version>` and exits 0;
+  before it printed the usage. The release smoke test runs it.
+
 ## 0.2.5
 
 - Releases: a `v*` tag builds `mdroots` for macOS (arm64) and Linux

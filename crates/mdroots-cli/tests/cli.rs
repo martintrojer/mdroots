@@ -150,6 +150,21 @@ fn help_and_unknown_args_print_usage_and_exit_2() {
     insta::assert_snapshot!("usage", v.run(&[]).stderr);
 }
 
+#[test]
+fn version_prints_the_version_and_exits_0() {
+    let v = Vault::corpus("zk-min");
+    for flag in ["--version", "-V"] {
+        let r = v.run(&[flag]);
+        assert_eq!(r.code, 0, "{flag}");
+        assert_eq!(
+            r.stdout,
+            format!("mdroots {}\n", env!("CARGO_PKG_VERSION")),
+            "{flag}"
+        );
+        assert!(r.stderr.is_empty(), "{flag}: {}", r.stderr);
+    }
+}
+
 /// Frames each JSON-RPC message with its Content-Length header.
 fn frame(msgs: &[serde_json::Value]) -> Vec<u8> {
     let mut out = Vec::new();
