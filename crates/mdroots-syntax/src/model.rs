@@ -434,8 +434,10 @@ impl Hash for LinkTarget {
 }
 
 impl LinkTarget {
-    fn key(&self) -> (&str, (u32, u32), Option<&Anchor>, Option<u32>) {
-        (&self.raw, self.path, self.anchor(), self.line())
+    /// What equality and hashing compare: the values the accessors show,
+    /// not where `path` sits inside `raw`.
+    fn key(&self) -> (&str, &str, Option<&Anchor>, Option<u32>) {
+        (&self.raw, self.path(), self.anchor(), self.line())
     }
 }
 
@@ -721,6 +723,23 @@ mod tests {
             .with_target(LinkTarget::new("a", 0..1, None));
         assert_eq!((moved.label(), moved.group()), (Some("L"), Some(1)));
         assert_eq!(moved.target(), link("a").target());
+    }
+
+    #[test]
+    fn target_equality_compares_the_path_text_not_its_offset() {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let (a, b) = (
+            LinkTarget::new("aa", 0..1, None),
+            LinkTarget::new("aa", 1..2, None),
+        );
+        assert_eq!((a.path(), b.path()), ("a", "a"));
+        assert_eq!(a, b);
+        let h = |t: &LinkTarget| {
+            let mut s = DefaultHasher::new();
+            t.hash(&mut s);
+            s.finish()
+        };
+        assert_eq!(h(&a), h(&b));
     }
 
     #[test]
