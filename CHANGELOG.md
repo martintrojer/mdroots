@@ -4,6 +4,25 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
+## Unreleased
+
+- **Memory:** the in-memory index is about half the size. At 10,000 notes a
+  `Workspace` holds 38 MB of live heap (was 75.5 MB) and `mdroots lsp`
+  60 MB phys_footprint (was 92 MB); at 1,000 notes 14 MB (was 17 MB).
+  Query speed is unchanged ([benchmark](docs/research/benchmark.md#memory)).
+- **API change** in `mdroots::syntax` (the internal syntax crate's types,
+  re-exported):
+  - `Link`: `target`, `label`, `group` are accessor methods
+    (`link.target()`, `link.label()`, `link.group()`); `Link::with_target`
+    replaces a target.
+  - `LinkTarget`: `raw`, `path`, `anchor`, `line` are accessor methods;
+    `LinkTarget::new(raw, path_range, anchor)` builds one.
+  - `Heading`: `text` and `slug` are `Box<str>`; `id` and `custom_id` are
+    accessor methods.
+  - `Frontmatter::fields()` is removed; use `Document::frontmatter_fields()`,
+    built from the source on first use.
+  Embedders reading these fields (ramble) need updating.
+
 ## 0.2.10
 
 Fixes from user reports against 0.2.9.

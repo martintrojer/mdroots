@@ -29,9 +29,10 @@ real world they are meant for.
 3. **Many editors at once.** The memory target is < 35 MB `phys_footprint`
    per process with 10 editors on one root
    ([D3](DECISIONS.md#d3-in-process-no-daemon-one-writer-per-root)). Single
-   processes measure 23–31 MB on a synthetic 3,000-note notebook, 17 MB at
-   1,000 notes and **92 MB at 10,000 notes**, above the target
-   ([benchmark](research/benchmark.md)). Ten at once has not been measured,
+   processes measure 14 MB at 1,000 notes and **60 MB at 10,000 notes**
+   (92 MB in 0.2.10), above the target
+   ([benchmark](research/benchmark.md#memory)). At 10k the live heap is
+   38 MB, of which 17.8 MB is note text kept in memory (D9). Ten at once has not been measured,
    nor cross-editor save visibility (p99) or a `kill -9` loop on the
    reconciler.
 4. **Small repos on a virtual filesystem.** vcs-enumerated mode (a small
@@ -144,7 +145,7 @@ Ordered by expected value. Each has a reason it is not built yet.
 | WAL management: periodic `wal_checkpoint(PASSIVE)`, `journal_size_limit`, exit checkpoint above 4 MB | no WAL growth seen yet |
 | Background reconcile and sweeps, background QoS, `Freshness::Stale`, working-set growth for lazy roots | the synchronous reconcile is fast enough on the target vaults |
 | Frontmatter features and the dialect specifics in §2 | no user asked yet |
-| Derived SQL tables (`keys`, `links`, `frontmatter`) | the likely fix for memory above 3,000 notes (92 MB at 10,000, §1.3); adds a second query layer and a parser version to keep in sync ([D9](DECISIONS.md#d9-the-db-caches-content-queries-run-in-memory)) |
+| Derived SQL tables (`keys`, `links`, `frontmatter`) | the remaining fix for memory at 10,000 notes (60 MB, of which 17.8 MB note text, §1.3); adds a second query layer and a parser version to keep in sync ([D9](DECISIONS.md#d9-the-db-caches-content-queries-run-in-memory)) |
 | FSEvents replay (`sinceWhen`) | needs FFI and the workspace forbids unsafe code; the re-list on open already catches offline changes (D9) |
 | Cross-root `ATTACH` | no measured need ([roots spec §4](specs/roots.md#4-nested-roots)) |
 | [Watchman](https://facebook.github.io/watchman/) clocks | no measured need |
@@ -167,7 +168,9 @@ Each ends as a spec change or a decision.
    [git](https://git-scm.com)'s `git ls-files` do the same for other lazy
    roots?
 5. **Memory at scale** (§1, item 3): up to which vault size must the 35 MB
-   target hold, and is that what triggers the derived tables?
+   target hold, and is that what triggers the derived tables? After the
+   index slimming it holds at 1,000 notes (14 MB) and is missed at 10,000
+   (60 MB); the next step down needs the note text out of memory.
 6. **FSEvents replay cost.** After a day offline, replay may degrade to
    directories only (`MustScanSubDirs`, dropped events, `EventIdsWrapped`).
    Is it cheaper than today's re-list on open, and is it worth an FFI

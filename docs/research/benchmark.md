@@ -158,7 +158,9 @@ documents. All three see the same notebook and agree on the probe page.
     loaded.
 * **mdroots misses its own memory target at 10k.** The target is
   < 35 MB phys_footprint ([ROADMAP §1.3](../ROADMAP.md)); it was set from a
-  3,000-note measurement. At 10k mdroots holds 92 MB. At 1k it holds 17 MB.
+  3,000-note measurement. At 10k mdroots 0.2.10 holds 92 MB. At 1k it holds
+  17 MB. The memory work after 0.2.10 brings that to 60 MB and 14 MB
+  ([Memory](#memory)).
 * **Cold mdroots vs zk with no index:**
   * mdroots' notebook-wide results take 2.3 s cold at 10k (median) and
     about 0.32 s at 1k.
@@ -175,6 +177,47 @@ documents. All three see the same notebook and agree on the probe page.
   quieter machine zk and marksman got faster (`zk index` 112 → 97 s,
   `zk lsp` with no index 144 → 125 s, marksman about 5%) and their ranges
   tightened. mdroots' medians barely moved. The conclusions are the same.
+
+## Memory
+
+After 0.2.10 the in-memory index was made smaller without changing what it
+holds (the note text stays in memory, D9). Measured on the same 10k and 1k
+notebooks, release build of local main e86c74a:
+
+| | 0.2.10 | after | change |
+|---|---|---|---|
+| live heap of a `Workspace`, 10k notes | 75.5 MB | 38.0 MB | −50% |
+| live heap, 1k notes | 7.5 MB | 3.8 MB | −49% |
+| `mdroots lsp` phys_footprint at end, 10k (median of 3) | 92 MB | 60 MB | −35% |
+| `mdroots lsp` phys_footprint_peak, 10k | 92 MB | 65 MB | |
+| `mdroots lsp` phys_footprint, 1k | 17 MB | 14 MB | |
+| peak RSS, 10k | 117 MB | 85 MB | |
+
+Speed, `run.py --runs 3 10k`, medians (0.2.10 in brackets): warm full
+completion 411 ms (422), warm broken-link diagnostic 368 ms (379), cold full
+completion 2.33 s (2.30), cold diagnostic 2.29 s (2.26). Within the run's
+noise; the first cold run of a fresh notebook was again the slow outlier
+(30.8 s).
+
+**Where the live heap went at 10k** (a counting global allocator over the
+public API; the probe is not in the repo):
+
+| | 0.2.10 | after | how |
+|---|---|---|---|
+| note text | 17.8 MB | 17.8 MB | kept (D9) |
+| element vectors | ~19 MB + 6.4 MB spare capacity | 8.6 MB | `Link` 160 → 72 B and `Heading` 120 → 64 B (rare fields in one box, read through accessors), so `Element` 160 → 72 B; vectors shrunk to fit after parsing |
+| key index | 12.2 MB | ~2.4 MB | note ids and per-kind hash maps of id lists, instead of a one-element `BTreeSet<String>` per key |
+| per-note entries and stored keys | ~8.8 MB | ~5 MB | entries boxed and keyed by id; keys derived from the document when it changes |
+| frontmatter | 4.0 MB | 1.8 MB | `fields()` built on demand (`Document::frontmatter_fields`) |
+| backlink index | 3.6 MB | 1.0 MB | note ids instead of path strings |
+
+The rest of the gap to phys_footprint (38 MB live, 60 MB footprint) is the
+allocator, SQLite, thread stacks and the runtime.
+
+**What is left above the 35 MB target at 10k:** the note text (17.8 MB) is
+the largest single part. Dropping it means answering from the DB instead of
+memory: derived tables, D9 ([ROADMAP §3](../ROADMAP.md#3-deferred-work)).
+At 1k notes the target holds with room to spare.
 
 ## Caveats
 
