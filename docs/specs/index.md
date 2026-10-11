@@ -456,7 +456,7 @@ every file in 46–65 ms.
 - **Codes.** `BrokenLink` and `BrokenAnchor` (a link to one note in which the
   heading, custom id or block anchor is missing) at the broken severity;
   `AmbiguousLink` at info, with every candidate in `related`;
-  `InvalidFrontmatter` at info, the rest of the note still indexed. Partial
+  `InvalidFrontmatter` at warning, the rest of the note still indexed (§4.1). Partial
   matches (hints) are never diagnosed.
 - **Lazy.** The share counts only `stat`-checkable links: path link forms
   (markdown, reference, image, HTML, org) or any target containing `/`. An
@@ -478,7 +478,7 @@ documents (by following `change_log`) is [planned](#reads-with-derived-tables). 
 
 ### 4.1 Formats and parsing
 - YAML `---…---` (or `...` close), TOML `+++…+++`, JSON `{…}`; org `#+KEY:` and `:PROPERTIES:`; Logseq `key:: value` at the top; [MultiMarkdown](https://fletcherpenney.net/multimarkdown/) `Key: value` only with no other frontmatter and a matching first line.
-- Tolerant: unparsable YAML → `InvalidFrontmatter` info diagnostic, the rest still indexed. Scalars and string lists kept; nested maps flattened (`a.b`).
+- Tolerant: unparsable YAML or TOML → `InvalidFrontmatter` warning, the rest still indexed. A line scan recovers the entries: valid values keep working, but an entry whose own value opens a quote, `[` or `{` it never closes (`tags: [a`, `title: "x`) has no value (`Value::Null` in `entries()`): no tag, title, alias, id, date or link. `fields()` still shows it as written. Scalars and string lists kept; nested maps flattened (`a.b`).
 - **Key case**: stored as written; mapping to a standard meaning is case-insensitive. On collision (`Title`/`title`, `title`/`linkTitle`) the exact standard name wins (in the order listed in §4.2), else the first case-insensitive match. An info diagnostic on the loser is [planned](#frontmatter-features).
 - **Placeholders** `—`, `–`, `-`, `n/a`, `N/A`, `TBD`, `none`, `""`, `~`, `null` mean no value: stored, but not links, ids or titles, and not offered in completion (vault B: 51 values).
 - **Comma-joined lists**: a value containing `, ` is split and each part tried as an implicit link; links only if every non-placeholder part resolves, else a plain string (vault B: 39 files like `"gen/a.html, gen/a.txt"`). Tags split without the resolve check.

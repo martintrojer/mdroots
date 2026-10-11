@@ -605,6 +605,7 @@ impl Flatten<'_, '_> {
             path.push(e.key);
             let scanned = self.inner.start + e.src.start..self.inner.start + e.src.end;
             let value = match e.value {
+                _ if e.broken => Value::Null,
                 FmValue::Map(children) if !children.is_empty() => {
                     self.run(&path, children);
                     continue;
@@ -793,6 +794,11 @@ struct FmEntry {
     key: String,
     value: FmValue,
     src: Range<usize>,
+    /// The value, or one of its list items, opens a quote, `[` or `{` it
+    /// never closes (`tags: [a`, `title: "x`). Set by the scan; cleared
+    /// when the parser accepts the block. Such an entry has no value for
+    /// any consumer, but stays in the fields as written.
+    broken: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -863,7 +869,7 @@ fn parse_at(src: &str, kind: FmKind, depth: usize) -> Parsed {
         Ok(real) => (
             combine(
                 real.into_iter().map(|(k, v)| (k, one_line(v))).collect(),
-                scanned,
+                scanned.into_iter().map(unbroken).collect(),
                 &nested,
                 src,
                 kind,
@@ -878,6 +884,16 @@ fn parse_at(src: &str, kind: FmKind, depth: usize) -> Parsed {
         parsed,
         error,
     }
+}
+
+/// The entry and its children with `broken` cleared: the parser accepted
+/// the block they are in.
+fn unbroken(mut e: FmEntry) -> FmEntry {
+    e.broken = false;
+    if let FmValue::Map(children) = e.value {
+        e.value = FmValue::Map(children.into_iter().map(unbroken).collect());
+    }
+    e
 }
 
 fn shift_entry(mut e: FmEntry, by: usize) -> FmEntry {
@@ -967,6 +983,7 @@ fn combine(
                 },
                 src: found.map_or(0..src.len(), |(_, e)| e.src.clone()),
                 key: key.clone(),
+                broken: false,
             }
         })
         .collect()
@@ -1080,6 +1097,7 @@ fn yaml_shape(y: &saphyr::Yaml, len: usize) -> FmValue {
                         key: yaml_scalar(k)?,
                         value: yaml_shape(v, len),
                         src: 0..len,
+                        broken: false,
                     })
                 })
                 .collect(),
@@ -1111,6 +1129,7 @@ fn toml_shape(v: &toml::Value, len: usize) -> FmValue {
                     key: k.clone(),
                     value: toml_shape(v, len),
                     src: 0..len,
+                    broken: false,
                 })
                 .collect(),
         ),
@@ -1145,12 +1164,17 @@ struct Building {
     map: bool,
     /// After a `|` / `>` header: every more-indented line is text.
     block: bool,
+    /// A list item opened a quote or bracket it never closed.
+    broken: bool,
     src: Range<usize>,
 }
 
 impl Building {
     fn finish(self) -> (FmEntry, bool) {
         let nested = self.nested;
+        let broken = !self.map
+            && !self.block
+            && (self.broken || (self.items.is_empty() && unclosed(&self.parts.join(" "))));
         let value = if self.block {
             FmValue::Scalar(self.parts.join(" "))
         } else if self.map {
@@ -1171,6 +1195,7 @@ impl Building {
             key: self.key,
             value,
             src: self.src,
+            broken,
         };
         (entry, nested)
     }
@@ -1185,6 +1210,7 @@ impl Building {
         }
         self.item_block = None;
         self.nested |= is_item(raw) || split_entry(raw).is_some();
+        self.broken |= unclosed(raw);
         self.items.push(unquote(raw).to_string());
     }
 
@@ -1240,6 +1266,7 @@ fn scan(src: &str) -> (Vec<FmEntry>, Vec<bool>) {
             item_block: None,
             map: false,
             block,
+            broken: false,
             src: at..at + t.len(),
         }
     };
@@ -1403,6 +1430,38 @@ fn comment_start(v: &str) -> Option<usize> {
         prev = c;
     }
     None
+}
+
+/// A value that opens a quote (TOML `"""` / `'''` included), `[` or `{`
+/// and never closes it. Inside brackets a quote counts only at the start
+/// of an item (`[don't]` is closed); a `#` does not start a comment there
+/// (Obsidian's `[#a, #b]`).
+fn unclosed(v: &str) -> bool {
+    if let Some(f) = ["\"\"\"", "'''"].into_iter().find(|f| v.starts_with(f)) {
+        return !v[3..].contains(f);
+    }
+    if v.starts_with(['"', '\'']) {
+        return closing_quote(v).is_none();
+    }
+    if !v.starts_with(['[', '{']) {
+        return false;
+    }
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut item_start = true;
+    for c in v.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') if item_start => quote = Some(c),
+            (None, '[' | '{') => depth += 1,
+            (None, ']' | '}') => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        item_start =
+            quote.is_none() && (matches!(c, '[' | '{' | ',' | ':') || (item_start && c == ' '));
+    }
+    depth > 0 || quote.is_some()
 }
 
 /// For a value starting with a quote, the byte just past its closing
@@ -1755,6 +1814,57 @@ mod tests {
     fn broken_yaml_unclosed_quote() {
         let fm = parse("title: \"Hello\nauthor: Ann\n", FmKind::Yaml);
         assert_eq!(kv(&fm), [("title", s("\"Hello")), ("author", s("Ann"))]);
+    }
+
+    #[test]
+    fn unclosed_values() {
+        for v in [
+            "[a",
+            "[a, [b]",
+            "{a: 1",
+            "\"x",
+            "'x",
+            "[\"a]",
+            "\"\"\"x",
+            "['a', 'b]",
+        ] {
+            assert!(unclosed(v), "{v}");
+        }
+        for v in [
+            "",
+            "a",
+            "don't",
+            "[a]",
+            "[don't]",
+            "[#a, #b]",
+            "{k: v}",
+            "\"x\"",
+            "'it''s'",
+            "[\"a, b\", c]",
+            "\"\"\"x\"\"\"",
+            "a [b",
+            "[a: 'b']",
+        ] {
+            assert!(!unclosed(v), "{v}");
+        }
+        // Only when the parser rejected the block: an unclosed item whose
+        // block parses (none can) or a valid block clears the flag.
+        let fm = parse("tags: [a\nt: x\n", FmKind::Yaml);
+        assert!(fm.error.is_some());
+        let broken: Vec<bool> = fm.entries.iter().map(|e| e.broken).collect();
+        assert_eq!(broken, [true, false]);
+        let fm = parse("l:\n  - \"a\n  - b\nt: [x]\n", FmKind::Yaml);
+        assert!(fm.error.is_some());
+        let broken: Vec<bool> = fm.entries.iter().map(|e| e.broken).collect();
+        assert_eq!(broken, [true, false]);
+        let fm = parse("m:\n  k: [a\n", FmKind::Yaml);
+        let FmValue::Map(children) = &fm.entries[0].value else {
+            panic!("{fm:?}")
+        };
+        assert!(children[0].broken);
+        let fm = parse("t: \"it's\"\nm:\n  k: v\n", FmKind::Yaml);
+        assert_eq!(fm.error, None);
+        assert!(fm.entries.iter().all(|e| !e.broken));
     }
 
     #[test]

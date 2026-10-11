@@ -108,7 +108,7 @@ impl DiagnosticPolicy {
         {
             out.push(Diagnostic {
                 range: fm.range.clone(),
-                severity: Severity::Info,
+                severity: Severity::Warning,
                 code: DiagCode::InvalidFrontmatter,
                 message: format!("frontmatter: {err}"),
                 related: Vec::new(),

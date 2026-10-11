@@ -191,6 +191,60 @@ fn invalid_yaml_sets_error_and_the_rest_still_parses() {
 }
 
 #[test]
+fn a_broken_value_in_an_invalid_block_means_nothing() {
+    // `tags: [a` is no tag `[a`; the entry stays as written in fields().
+    let doc = md("---\ntags: [a\n---\nbody\n");
+    let f = fm(&doc);
+    assert!(f.error.is_some());
+    assert!(f.tags().is_empty(), "{:?}", f.tags());
+    assert!(tag_names(&doc).is_empty(), "{:?}", tag_names(&doc));
+    assert_eq!(f.entries(), [("tags".into(), Value::Null)]);
+    assert_eq!(f.fields()[0].value, FieldValue::Scalar("[a".into()));
+
+    // An unclosed quote gives no title; the valid entry after it stays.
+    let doc = md("---\ntitle: \"unclosed\nauthor: Ann\n---\n");
+    let f = fm(&doc);
+    assert!(f.error.is_some());
+    assert_eq!(f.title(), None);
+    assert_eq!(f.get("author"), Some(&str_("Ann")));
+
+    // No alias, id, date or link from a broken value either.
+    let doc = md("---\naliases: [x, y\nid: 'z1\ndate: [2024\nup: {a.md\nsee: \"[[n]]\n---\n");
+    let f = fm(&doc);
+    assert!(f.error.is_some());
+    assert!(f.aliases().is_empty(), "{:?}", f.aliases());
+    assert_eq!(f.id(), None);
+    assert!(f.dates().is_empty(), "{:?}", f.dates());
+    assert!(fm_links(&doc).is_empty(), "{:?}", fm_links(&doc));
+
+    // TOML too.
+    let doc = md("+++\ntitle = \"T\ntags = [\"a\"\nid = \"z1\"\n+++\n");
+    let f = fm(&doc);
+    assert!(f.error.is_some());
+    assert_eq!(f.title(), None);
+    assert!(f.tags().is_empty(), "{:?}", f.tags());
+    assert_eq!(f.id(), Some("z1"));
+}
+
+#[test]
+fn valid_entries_survive_an_unrelated_broken_line() {
+    let doc = md("---\ntags: [valid]\ntitle: \"unclosed\n---\n");
+    let f = fm(&doc);
+    assert!(f.error.is_some());
+    assert_eq!(f.tags(), ["valid"]);
+    assert_eq!(tag_names(&doc), ["valid"]);
+    assert_eq!(f.title(), None);
+
+    // Bad indentation breaks the block, not the values.
+    let doc = md("---\ntitle: X\n author: Y\ntags: [a, b]\nup: a.md\n---\n");
+    let f = fm(&doc);
+    assert!(f.error.is_some());
+    assert_eq!(f.title(), Some("X"));
+    assert_eq!(f.tags(), ["a", "b"]);
+    assert_eq!(fm_links(&doc).len(), 1);
+}
+
+#[test]
 fn title_collisions() {
     let doc = md("---\nTitle: Upper\ntitle: lower\n---\n");
     assert_eq!(fm(&doc).title(), Some("lower"));

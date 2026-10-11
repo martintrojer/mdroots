@@ -935,6 +935,25 @@ fn check_fail_on_sets_the_exit_threshold() {
 }
 
 #[test]
+fn invalid_frontmatter_is_a_warning_and_a_broken_value_no_tag() {
+    let v = graph_vault();
+    v.write("bad.md", "---\ntags: [a\n---\n# Bad\n");
+    let r = run_cached(&v, &v.dir(), &["tags"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.stdout, "draft\t1\nindex\t1\nproject\t3\n");
+    assert!(notes(&v, &["-t", "[a"]).is_empty());
+    let r = v.run(&["check", "--quiet", "bad.md"]);
+    assert_eq!(r.code, 1, "{}{}", r.stdout, r.stderr);
+    assert!(
+        r.stdout.starts_with("bad.md:1:1: warning: frontmatter: "),
+        "{}",
+        r.stdout
+    );
+    let r = v.run(&["check", "--quiet", "--fail-on", "error", "bad.md"]);
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
+}
+
+#[test]
 fn roots_prints_settings_and_their_sources() {
     let v = Vault::corpus("zk-min");
     v.write(

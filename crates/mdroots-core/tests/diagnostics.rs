@@ -124,11 +124,11 @@ fn ambiguous_link_lists_candidates() {
 }
 
 #[test]
-fn invalid_frontmatter_is_info() {
+fn invalid_frontmatter_is_a_warning() {
     let src = "---\ntitle: [unclosed\n---\nbody\n";
     let d = diags(MemFs::new().with_file("a.md", src), false, "a.md");
     assert_eq!(codes(&d), [DiagCode::InvalidFrontmatter]);
-    assert_eq!(d[0].severity, Severity::Info);
+    assert_eq!(d[0].severity, Severity::Warning);
     assert_eq!(d[0].range.start, 0);
     assert!(
         d[0].message.starts_with("frontmatter: "),
