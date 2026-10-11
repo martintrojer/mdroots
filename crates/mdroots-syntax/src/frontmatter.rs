@@ -84,6 +84,8 @@ pub(crate) fn parse_block(
             None
         }
     };
+    // Line formats push their fields; the block lives as long as the document.
+    fields.shrink_to_fit();
     let fm = Frontmatter::from_entries(
         format,
         range,

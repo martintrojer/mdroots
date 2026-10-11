@@ -16,7 +16,7 @@ use crate::regions::Regions;
 use crate::{frontmatter, markdown_options, org, scan, slug};
 
 /// Parse `src` into a document (no lossy flag).
-pub(crate) fn parse_document(src: String, opts: &ParseOptions) -> Document {
+pub(crate) fn parse_document(mut src: String, opts: &ParseOptions) -> Document {
     let (mut elements, regions, fm, abbrevs) = match opts.dialect {
         Dialect::Org => org::parse_org(&src),
         _ => {
@@ -34,6 +34,9 @@ pub(crate) fn parse_document(src: String, opts: &ParseOptions) -> Document {
         let r = e.range();
         (r.start, r.end)
     });
+    // A document lives as long as its workspace: drop the build slack.
+    elements.shrink_to_fit();
+    src.shrink_to_fit();
     Document {
         source: src,
         dialect: opts.dialect,
@@ -123,6 +126,7 @@ fn markdown_with(src: &str, unfenced: bool) -> MarkdownPass {
                 if let Some(mut h) = heading.take() {
                     // Always from the text; an explicit `{#id}` stays in `id`.
                     h.slug = slug::unique(&slug::github(&h.text), &mut used_slugs);
+                    h.text.shrink_to_fit();
                     elements.push(Element::Heading(h));
                 }
             }
@@ -350,7 +354,9 @@ fn close_link(src: &str, o: Open) -> Option<Link> {
         return Some(org);
     }
     if o.has_pothole {
-        link.label = Some(o.text);
+        let mut label = o.text;
+        label.shrink_to_fit();
+        link.label = Some(label);
     }
     Some(link)
 }
@@ -404,6 +410,37 @@ mod tests {
         assert_eq!(ctx("---\n---\nbody", "body"), Context::Prose);
         assert_eq!(ctx("+++\n\n+++\n", "+++"), Context::Frontmatter);
         assert_eq!(ctx("\u{feff}---\n---\n", "---"), Context::Frontmatter);
+    }
+
+    /// A parsed document holds no spare capacity: it lives as long as the
+    /// workspace, so slack from building by push is memory per note.
+    #[test]
+    fn parsed_document_has_no_spare_capacity() {
+        let mut src = String::with_capacity(4096);
+        src.push_str("# A heading with `code` and text\n\n");
+        for i in 0..20 {
+            src.push_str(&format!(
+                "[[note {i}|label `x` {i}]] #tag{i} [m](m{i}.md)\n\n"
+            ));
+        }
+        for dialect in [Dialect::Markdown, Dialect::Org] {
+            let doc = parse_document(src.clone() + "\u{fffd}", &ParseOptions::new(dialect));
+            assert_eq!(doc.source.capacity(), doc.source.len(), "{dialect:?}");
+            assert_eq!(doc.elements.capacity(), doc.elements.len(), "{dialect:?}");
+        }
+        let doc = parse_document(src, &ParseOptions::new(Dialect::Markdown));
+        let mut labels = 0;
+        for e in &doc.elements {
+            match e {
+                Element::Heading(h) => assert_eq!(h.text.capacity(), h.text.len(), "{h:?}"),
+                Element::Link(Link { label: Some(l), .. }) => {
+                    labels += 1;
+                    assert_eq!(l.capacity(), l.len(), "{l:?}");
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(labels, 20);
     }
 
     #[test]
