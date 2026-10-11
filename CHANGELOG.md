@@ -4,7 +4,7 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
-## Unreleased
+## 0.3.0
 
 - **Memory:** the in-memory index is about half the size. At 10,000 notes a
   `Workspace` holds 38 MB of live heap (was 75.5 MB) and `mdroots lsp`
