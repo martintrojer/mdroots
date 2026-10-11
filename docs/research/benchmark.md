@@ -20,7 +20,7 @@ machine, or at another load, the numbers will differ.
 
 | | |
 |---|---|
-| mdroots | 0.2.6, release build of commit 385d41e, rustc 1.98.0 |
+| mdroots | 0.2.9, release build of commit 644c8ec, rustc 1.98.0 |
 | zk | 0.15.6 |
 | marksman | 2026-02-08 |
 | machine | Apple M4 Max, 16 cores, 64 GB RAM, macOS 27.0.1, APFS |
@@ -85,39 +85,39 @@ once, interleaved, after the page cache was warmed by reading every note:
 
 | measure | mdroots cold | mdroots warm | zk (indexed) | zk (no index) | marksman |
 |---|---|---|---|---|---|
-| `initialize` response | 11 ms [8–17] | 12 ms [8–17] | 32 ms [31–34] | 1.97 s [1.83–2.04] | 981 ms [964–1207] |
-| first definition (correct target) | 12 ms [8–18] | 13 ms [9–18] | 33 ms [32–35] | 1.97 s [1.83–2.04] | 997 ms [980–1223] |
-| first non-empty completion | 12 ms [9–18] | 13 ms [10–18] | 41 ms [40–43] | 1.98 s [1.84–2.05] | 1.01 s [0.99–1.24] |
-| first full completion (≥10 items) | 260 ms [229–415] | 61 ms [57–71] | 41 ms [40–43] | 1.98 s [1.84–2.05] | 1.01 s [0.99–1.24] |
-| first documentSymbol | 12 ms [9–18] | 14 ms [10–18] | not supported | not supported | 1.02 s [1.00–1.24] |
-| first workspaceSymbol ("Note 12") | 265 ms [235–422] | 67 ms [64–78] | not supported | not supported | 1.03 s [1.01–1.26] |
-| broken-link error on open page | 258 ms [226–412] | 59 ms [55–68] | 34 ms [33–36] | 1.97 s [1.83–2.04] | 1.26 s [1.24–1.50] |
+| `initialize` response | 10 ms [9–38] | 10 ms [8–16] | 31 ms [31–35] | 2.02 s [1.99–2.12] | 969 ms [961–1259] |
+| first definition (correct target) | 15 ms [10–39] | 10 ms [9–17] | 32 ms [32–36] | 2.02 s [1.99–2.12] | 985 ms [977–1279] |
+| first non-empty completion | 15 ms [10–39] | 11 ms [9–17] | 40 ms [40–46] | 2.03 s [2.00–2.13] | 1000 ms [993–1296] |
+| first full completion (≥10 items) | 323 ms [286–3446] | 63 ms [61–70] | 40 ms [40–46] | 2.03 s [2.00–2.13] | 1000 ms [993–1296] |
+| first documentSymbol | 16 ms [10–40] | 11 ms [9–17] | not supported | not supported | 1.00 s [1.00–1.30] |
+| first workspaceSymbol ("Note 12") | 331 ms [294–3454] | 71 ms [69–78] | not supported | not supported | 1.01 s [1.01–1.31] |
+| broken-link error on open page | 318 ms [280–3440] | 58 ms [56–65] | 33 ms [33–37] | 2.02 s [1.99–2.12] | 1.25 s [1.24–1.55] |
 | diagnostics on probe page (count) | 1 | 1 | 1 | 1 | 1 |
 | files with published diagnostics | 1 | 1 | 1 | 1 | 112 |
-| peak RSS (sampled 20 ms) | 26 MB [25–26] | 25 MB [25–25] | 36 MB [36–37] | 44 MB [43–45] | 139 MB [137–139] |
-| phys_footprint at end | 17 MB [17–18] | 17 MB [17–17] | 24 MB [24–25] | 30 MB [28–31] | 105 MB [104–106] |
-| phys_footprint_peak | 17 MB [17–18] | 17 MB [17–17] | 24 MB [24–25] | 30 MB [29–31] | 105 MB [104–106] |
-| `zk index` from scratch | | | 1.44 s [1.42–1.53] | | |
-| `zk index` no-op | | | 36 ms [35–43] | | |
+| peak RSS (sampled 20 ms) | 26 MB [26–26] | 25 MB [25–25] | 37 MB [36–37] | 44 MB [44–45] | 139 MB [133–139] |
+| phys_footprint at end | 17 MB [17–18] | 17 MB [17–17] | 25 MB [24–26] | 32 MB [29–32] | 105 MB [100–106] |
+| phys_footprint_peak | 17 MB [17–18] | 17 MB [17–17] | 25 MB [24–26] | 32 MB [30–32] | 105 MB [100–106] |
+| `zk index` from scratch | | | 1.51 s [1.45–1.66] | | |
+| `zk index` no-op | | | 36 ms [33–62] | | |
 
 ### 10,000 notes (median [min–max] of 5 runs; times are ms since spawn)
 
 | measure | mdroots cold | mdroots warm | zk (indexed) | zk (no index) | marksman |
 |---|---|---|---|---|---|
-| `initialize` response | 22 ms [14–92] | 8 ms [7–10] | 209 ms [207–250] | 143.94 s [122.45–162.60] | 4.90 s [4.45–9.60] |
-| first definition (correct target) | 28 ms [15–98] | 9 ms [8–11] | 210 ms [208–250] | 143.94 s [122.45–162.60] | 4.92 s [4.47–9.61] |
-| first non-empty completion | 28 ms [16–98] | 9 ms [8–11] | 294 ms [287–339] | 144.02 s [122.54–162.68] | 4.93 s [4.49–9.63] |
-| first full completion (≥10 items) | 2.34 s [2.14–9.76] | 404 ms [396–424] | 294 ms [287–339] | 144.02 s [122.54–162.68] | 4.93 s [4.49–9.63] |
-| first documentSymbol | 29 ms [16–98] | 9 ms [8–11] | not supported | not supported | 4.94 s [4.49–9.64] |
-| first workspaceSymbol ("Note 12") | 2.42 s [2.22–9.84] | 480 ms [467–510] | not supported | not supported | 4.99 s [4.54–9.69] |
-| broken-link error on open page | 2.32 s [2.12–9.74] | 380 ms [373–398] | 227 ms [220–264] | 143.95 s [122.47–162.61] | 5.54 s [5.08–10.25] |
+| `initialize` response | 23 ms [8–62] | 8 ms [7–13] | 202 ms [200–212] | 124.51 s [116.71–167.58] | 4.64 s [4.57–5.29] |
+| first definition (correct target) | 23 ms [10–64] | 9 ms [8–14] | 203 ms [201–213] | 124.51 s [116.72–167.58] | 4.65 s [4.58–5.31] |
+| first non-empty completion | 24 ms [10–64] | 9 ms [8–14] | 287 ms [284–296] | 124.60 s [116.81–167.66] | 4.67 s [4.60–5.32] |
+| first full completion (≥10 items) | 2.30 s [2.25–30.87] | 422 ms [406–427] | 287 ms [284–296] | 124.60 s [116.81–167.66] | 4.67 s [4.60–5.32] |
+| first documentSymbol | 24 ms [10–64] | 9 ms [8–14] | not supported | not supported | 4.69 s [4.61–5.33] |
+| first workspaceSymbol ("Note 12") | 2.38 s [2.33–30.95] | 504 ms [494–518] | not supported | not supported | 4.73 s [4.65–5.38] |
+| broken-link error on open page | 2.26 s [2.21–30.82] | 379 ms [363–382] | 215 ms [213–226] | 124.53 s [116.73–167.59] | 5.23 s [5.16–5.87] |
 | diagnostics on probe page (count) | 1 | 1 | 1 | 1 | 1 |
-| files with published diagnostics | 1 | 1 | 1 | 1 | 1015 |
-| peak RSS (sampled 20 ms) | 117 MB [117–118] | 117 MB [117–117] | 79 MB [78–83] | 136 MB [122–142] | 354 MB [351–354] |
-| phys_footprint at end | 92 MB [92–93] | 92 MB [92–92] | 54 MB [51–64] | 68 MB [65–80] | 320 MB [317–321] |
-| phys_footprint_peak | 92 MB [92–93] | 92 MB [92–92] | 64 MB [62–68] | 120 MB [106–126] | 320 MB [317–321] |
-| `zk index` from scratch | | | 111.72 s [100.03–122.49] | | |
-| `zk index` no-op | | | 220 ms [211–280] | | |
+| files with published diagnostics | 1 | 1 | 1 | 1 | 1005/1013/1015 |
+| peak RSS (sampled 20 ms) | 117 MB [117–118] | 118 MB [118–118] | 85 MB [84–88] | 122 MB [114–134] | 350 MB [350–355] |
+| phys_footprint at end | 92 MB [92–92] | 92 MB [92–92] | 67 MB [46–68] | 69 MB [59–79] | 317 MB [317–322] |
+| phys_footprint_peak | 92 MB [92–93] | 92 MB [92–92] | 68 MB [64–76] | 106 MB [98–118] | 317 MB [317–322] |
+| `zk index` from scratch | | | 97.18 s [95.91–104.58] | | |
+| `zk index` no-op | | | 213 ms [209–234] | | |
 
 **Capabilities.** mdroots and marksman advertise all four methods. zk
 0.15.6 has no documentSymbol or workspace/symbol: they are missing from its
@@ -132,7 +132,9 @@ probe page, on line 23 (`[[missing-probe]]`), at error severity:
 
 marksman also publishes diagnostics for every file with a broken link: 112
 files at 1k and 1,015 at 10k (the 1,049 broken links sit in 1,015 notes,
-because some notes have two). mdroots and zk publish only for open
+because some notes have two). At 10k two of the five runs shut down before
+it had published them all (1,005 and 1,013 files), hence
+"1005/1013/1015" in the table. mdroots and zk publish only for open
 documents. All three see the same notebook and agree on the probe page.
 
 ## Reading the numbers
@@ -140,17 +142,17 @@ documents. All three see the same notebook and agree on the probe page.
 * **Warm is mdroots' design point, and there it is fast.**
   * At 10k it answers `initialize`, definition and documentSymbol in about
     9 ms.
-  * At 10k it returns a full completion list in about 0.40 s,
-    workspaceSymbol in about 0.48 s and the broken-link diagnostic in about
+  * At 10k it returns a full completion list in about 0.42 s,
+    workspaceSymbol in about 0.50 s and the broken-link diagnostic in about
     0.38 s, at a steady 92 MB phys_footprint.
 * **An already-indexed zk beats mdroots at 10k on the index-dependent
   measures.**
-  * zk is faster on full completion (294 vs 404 ms) and on the broken-link
-    diagnostic (227 vs 380 ms).
-  * zk uses less memory: 54 MB vs 92 MB phys_footprint, and 79 vs 117 MB
+  * zk is faster on full completion (287 vs 422 ms) and on the broken-link
+    diagnostic (215 vs 379 ms).
+  * zk uses less memory: 67 MB vs 92 MB phys_footprint, and 85 vs 118 MB
     RSS.
-  * At 1k, indexed zk is also faster on completion (41 vs 61 ms) and on the
-    diagnostic (34 vs 59 ms). mdroots uses less memory there (17 vs 24 MB).
+  * At 1k, indexed zk is also faster on completion (40 vs 63 ms) and on the
+    diagnostic (33 vs 58 ms). mdroots uses less memory there (17 vs 25 MB).
   * mdroots wins on time to `initialize`, definition and documentSymbol. It
     answers those from the open file and the cache before the root is
     loaded.
@@ -158,27 +160,36 @@ documents. All three see the same notebook and agree on the probe page.
   < 35 MB phys_footprint ([ROADMAP §1.3](../ROADMAP.md)); it was set from a
   3,000-note measurement. At 10k mdroots holds 92 MB. At 1k it holds 17 MB.
 * **Cold mdroots vs zk with no index:**
-  * mdroots' notebook-wide results take 2.3 s cold at 10k (median; one run
-    took 9.8 s under load).
-  * `zk index` from scratch took 112 s at 10k and 1.4 s at 1k: it grows
+  * mdroots' notebook-wide results take 2.3 s cold at 10k (median) and
+    about 0.32 s at 1k.
+  * `zk index` from scratch took 97 s at 10k and 1.5 s at 1k: it grows
     faster than the notebook.
   * `zk lsp` with no index blocks `initialize` until indexing is done:
-    144 s at 10k.
+    125 s at 10k.
 * **marksman:**
-  * It is the slowest to a first useful answer: about 1.0 s at 1k and 4.9 s
+  * It is the slowest to a first useful answer: about 1.0 s at 1k and 4.6 s
     at 10k. It holds every request until the workspace is loaded.
-  * It uses the most memory: 105 MB at 1k and 320 MB at 10k phys_footprint.
+  * It uses the most memory: 105 MB at 1k and 317 MB at 10k phys_footprint.
   * Once loaded, its per-request latency is low (5–20 ms).
+* **Against the earlier run** (mdroots 0.2.6, load average 13–34): on the
+  quieter machine zk and marksman got faster (`zk index` 112 → 97 s,
+  `zk lsp` with no index 144 → 125 s, marksman about 5%) and their ranges
+  tightened. mdroots' medians barely moved. The conclusions are the same.
 
 ## Caveats
 
-* **The machine was loaded.**
-  * The load average was 13–34 during the runs on 16 cores, from
-    background security daemons and parallel builds.
-  * The medians are the figures to quote; they are fairly stable. The
-    maxima are noisy: one mdroots cold 10k run took 9.8 s, one marksman 10k
-    run took 9.6 s, and the zk 10k index ranged from 100 to 122 s.
-  * Re-run on an idle machine before relying on absolute numbers.
+* **The machine was quiet, not idle.**
+  * The 1-minute load average was 5.3–11.9 (mean 7.4) during the run on
+    16 cores, from background monitoring and security daemons. Nothing else
+    was building. The earlier run had 13–34.
+  * The medians are the figures to quote. The maxima are noisy.
+* **The first cold mdroots run is an outlier.** In round 1 of each size,
+  the first launch after the notebook was generated, mdroots cold took
+  3.4 s at 1k (vs about 0.3 s in rounds 2–5) and 30.9 s at 10k (vs about
+  2.3 s) to its notebook-wide results. Rounds 2–5 agree with each other,
+  and the medians use all five. The cause was not measured; security
+  daemons scanning the fresh notes and the new cache DB are a likely one.
+  A rerun with `--work` on an existing work dir reuses the notebooks.
 * **Synthetic notebook.** Notes are uniform and flat (one directory), link
   to random targets, and have no attachments or nested folders. Real
   notebooks differ.
@@ -201,8 +212,8 @@ documents. All three see the same notebook and agree on the probe page.
   * marksman computes diagnostics for the whole workspace up front (more
     work, more memory). mdroots and zk diagnose open files only.
 * **Persistence differs.**
-  * mdroots warm uses its [SQLite](https://sqlite.org) cache: 9 MB for 1k
-    notes and 51 MB for 10k, in the work dir.
+  * mdroots warm uses its [SQLite](https://sqlite.org) cache: 9.5 MB for
+    1k notes and 50 MB for 10k, in the work dir.
   * zk indexed uses `.zk/notebook.db`, which it writes into the notebook.
   * marksman keeps nothing on disk.
   * zk (indexed) and mdroots warm are the like-for-like pair. zk (no index)

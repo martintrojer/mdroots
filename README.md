@@ -37,15 +37,15 @@ Time from server start, synthetic notebooks, median of 5 runs
 
 | 10,000 notes | mdroots (warm cache) | mdroots (cold) | zk (indexed) | marksman |
 |---|---|---|---|---|
-| first answer (go to definition) | 9 ms | 28 ms | 210 ms | 4.9 s |
-| full note completion | 404 ms | 2.3 s | 294 ms | 4.9 s |
-| broken-link diagnostic | 380 ms | 2.3 s | 227 ms | 5.5 s |
-| memory (phys_footprint) | 92 MB | 92 MB | 54 MB | 320 MB |
-| setup | none | none | `zk index`: 112 s | none |
+| first answer (go to definition) | 9 ms | 23 ms | 203 ms | 4.7 s |
+| full note completion | 422 ms | 2.3 s | 287 ms | 4.7 s |
+| broken-link diagnostic | 379 ms | 2.3 s | 215 ms | 5.2 s |
+| memory (phys_footprint) | 92 MB | 92 MB | 67 MB | 317 MB |
+| setup | none | none | `zk index`: 97 s | none |
 
 zk answers fastest once `zk index` has run, and uses less memory at this
 size; mdroots needs no index step and answers the open note first. At 1,000
-notes mdroots uses the least memory (17 MB vs 24 MB for zk and 105 MB for
+notes mdroots uses the least memory (17 MB vs 25 MB for zk and 105 MB for
 marksman).
 
 ## What it is not
