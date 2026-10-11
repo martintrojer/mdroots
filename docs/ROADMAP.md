@@ -57,6 +57,14 @@ real world they are meant for.
      70% of docs;
    - the 500 ms diagnostics debounce and the 1 s progress delay.
 
+7. **Flaky many-process fixtures.** `crates/mdroots-cli/tests/many_process.rs`
+   spawns real processes that race on one cache DB. Fixtures 13 (cold herd,
+   `many_process.rs:92`) and 15 (corrupt DB rebuilt, "early EOF" at `:498`)
+   have each failed in CI and passed on rerun of the same commit
+   (385d41e Ubuntu, e634a5d macOS, 1ea3a51 MSRV). Not reproduced locally;
+   the cause (a child that exits before printing, or a timing assumption)
+   is unknown.
+
 ## 2. Known limitations
 
 Deliberate simplifications and gaps in what the specs describe.
