@@ -1,5 +1,7 @@
 //! The public document model: what `parse` returns.
 
+use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -178,17 +180,15 @@ pub struct Heading {
 }
 
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone)]
 pub struct Link {
     pub kind: LinkKind,
     pub context: Context,
     pub confidence: Confidence,
-    pub target: LinkTarget,
-    pub label: Option<String>,
+    /// Also holds the link's label and group, which are rare.
+    target: LinkTarget,
     pub range: Range<usize>,
     pub text_range: Range<usize>,
-    /// Shared by links that came from one comma-joined frontmatter list.
-    pub group: Option<u32>,
 }
 
 impl Link {
@@ -201,47 +201,168 @@ impl Link {
             context,
             confidence,
             target: LinkTarget::parse(raw),
-            label: None,
             range: 0..raw.len(),
             text_range: 0..raw.len(),
-            group: None,
         }
     }
 
+    pub fn target(&self) -> &LinkTarget {
+        &self.target
+    }
+
+    /// The link text when it differs from the target (`[[t|label]]`, org
+    /// `[[t][label]]`, a markdown link's text is not kept here).
+    pub fn label(&self) -> Option<&str> {
+        self.target.extra.as_ref()?.label.as_deref()
+    }
+
+    /// Shared by links that came from one comma-joined frontmatter list.
+    pub fn group(&self) -> Option<u32> {
+        self.target.extra.as_ref()?.group
+    }
+
+    /// This link pointing at `target`, keeping its label and group.
+    pub fn with_target(mut self, target: LinkTarget) -> Self {
+        let (label, group) = (self.label().map(Box::from), self.group());
+        self.target = target;
+        self.set_label(label);
+        self.set_group(group);
+        self
+    }
+
     pub fn with_label(mut self, label: &str) -> Self {
-        self.label = Some(label.to_owned());
+        self.set_label(Some(label.into()));
         self
     }
 
     pub fn with_line(mut self, line: u32) -> Self {
-        self.target.line = Some(line);
+        self.target.set_line(Some(line));
         self
     }
 
     pub fn with_anchor(mut self, anchor: Anchor) -> Self {
-        self.target.anchor = Some(anchor);
+        self.target.set_anchor(Some(anchor));
         self
     }
 
     pub fn with_group(mut self, group: u32) -> Self {
-        self.group = Some(group);
+        self.set_group(Some(group));
         self
+    }
+
+    pub(crate) fn target_mut(&mut self) -> &mut LinkTarget {
+        &mut self.target
+    }
+
+    pub(crate) fn set_label(&mut self, label: Option<Box<str>>) {
+        self.target.edit(|x| x.label = label);
+    }
+
+    pub(crate) fn set_group(&mut self, group: Option<u32>) {
+        self.target.edit(|x| x.group = group);
     }
 }
 
+impl Link {
+    #[allow(clippy::type_complexity)]
+    fn key(
+        &self,
+    ) -> (
+        LinkKind,
+        Context,
+        Confidence,
+        &LinkTarget,
+        Option<&str>,
+        &Range<usize>,
+        &Range<usize>,
+        Option<u32>,
+    ) {
+        (
+            self.kind,
+            self.context,
+            self.confidence,
+            &self.target,
+            self.label(),
+            &self.range,
+            &self.text_range,
+            self.group(),
+        )
+    }
+}
+
+impl PartialEq for Link {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for Link {}
+
+impl Hash for Link {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.key().hash(state);
+    }
+}
+
+impl fmt::Debug for Link {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Link")
+            .field("kind", &self.kind)
+            .field("context", &self.context)
+            .field("confidence", &self.confidence)
+            .field("target", &self.target)
+            .field("label", &self.label())
+            .field("range", &self.range)
+            .field("text_range", &self.text_range)
+            .field("group", &self.group())
+            .finish()
+    }
+}
+
+/// A link's target: `raw` as written and `path`, a part of it. Parts most
+/// links lack (anchor, line, and the link's label and group) sit behind
+/// one box, so a plain link costs 32 bytes plus its text.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone)]
 pub struct LinkTarget {
-    /// As written (after `#+LINK` expansion).
-    pub raw: String,
-    /// `raw` minus the anchor or search part; not percent-decoded.
-    pub path: String,
-    pub anchor: Option<Anchor>,
-    /// Line from a code mention `path:LINE`.
-    pub line: Option<u32>,
+    raw: Box<str>,
+    /// `raw[path.0..path.1]`.
+    path: (u32, u32),
+    /// `None` when every part is empty, so equal targets compare equal.
+    extra: Option<Box<LinkExtra>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LinkExtra {
+    label: Option<Box<str>>,
+    anchor: Option<Anchor>,
+    line: Option<u32>,
+    group: Option<u32>,
 }
 
 impl LinkTarget {
+    /// A target `raw` whose path is `raw[path]`. A `path` that is not a
+    /// range of `raw` on char boundaries (or ends past 4 GiB) is a bug: it
+    /// panics in debug builds and gives an empty path in release ones, so
+    /// parsing stays total.
+    pub fn new(raw: &str, path: Range<usize>, anchor: Option<Anchor>) -> LinkTarget {
+        debug_assert!(
+            raw.get(path.clone()).is_some(),
+            "path {path:?} is not part of {raw:?}"
+        );
+        let path = match (u32::try_from(path.start), u32::try_from(path.end)) {
+            (Ok(a), Ok(b)) if raw.get(path).is_some() => (a, b),
+            _ => (0, 0),
+        };
+        let mut t = LinkTarget {
+            raw: raw.into(),
+            path,
+            extra: None,
+        };
+        t.set_anchor(anchor);
+        t
+    }
+
     /// Split `raw` at the first `#`: `#^x` is a block anchor, `#x` a
     /// heading anchor, an empty fragment no anchor.
     pub(crate) fn parse(raw: &str) -> LinkTarget {
@@ -256,12 +377,76 @@ impl LinkTarget {
                 (path, anchor)
             }
         };
-        LinkTarget {
-            raw: raw.to_owned(),
-            path: path.to_owned(),
-            anchor,
-            line: None,
+        LinkTarget::new(raw, 0..path.len(), anchor)
+    }
+
+    /// As written (after `#+LINK` expansion).
+    pub fn raw(&self) -> &str {
+        &self.raw
+    }
+
+    /// `raw` minus the anchor or search part; not percent-decoded.
+    pub fn path(&self) -> &str {
+        &self.raw[self.path.0 as usize..self.path.1 as usize]
+    }
+
+    pub fn anchor(&self) -> Option<&Anchor> {
+        self.extra.as_ref()?.anchor.as_ref()
+    }
+
+    /// Line from a code mention `path:LINE`.
+    pub fn line(&self) -> Option<u32> {
+        self.extra.as_ref()?.line
+    }
+
+    pub(crate) fn set_anchor(&mut self, anchor: Option<Anchor>) {
+        self.edit(|x| x.anchor = anchor);
+    }
+
+    pub(crate) fn set_line(&mut self, line: Option<u32>) {
+        self.edit(|x| x.line = line);
+    }
+
+    /// Change the boxed parts; drops the box when they end up empty.
+    fn edit(&mut self, f: impl FnOnce(&mut LinkExtra)) {
+        let x = self.extra.get_or_insert_with(Box::default);
+        f(x);
+        if **x == LinkExtra::default() {
+            self.extra = None;
         }
+    }
+}
+
+/// Compares what [`LinkTarget`] shows: raw, path, anchor and line (not the
+/// owning link's label or group stored alongside).
+impl PartialEq for LinkTarget {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for LinkTarget {}
+
+impl Hash for LinkTarget {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.key().hash(state);
+    }
+}
+
+impl LinkTarget {
+    fn key(&self) -> (&str, (u32, u32), Option<&Anchor>, Option<u32>) {
+        (&self.raw, self.path, self.anchor(), self.line())
+    }
+}
+
+impl fmt::Debug for LinkTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LinkTarget")
+            .field("raw", &self.raw())
+            .field("path", &self.path())
+            .field("anchor", &self.anchor())
+            .field("line", &self.line())
+            .finish()
     }
 }
 
@@ -492,4 +677,56 @@ pub enum Value {
     Null,
     Str(String),
     List(Vec<String>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every parsed link lives as long as the workspace: 50,000 links at
+    /// 10,000 notes. Rare parts (label, anchor, line, group) sit behind
+    /// one box so the common link stays small.
+    #[test]
+    fn link_sizes() {
+        assert!(size_of::<LinkTarget>() <= 32, "{}", size_of::<LinkTarget>());
+        assert!(size_of::<Link>() <= 72, "{}", size_of::<Link>());
+    }
+
+    fn link(raw: &str) -> Link {
+        Link::new(LinkKind::Wiki, Context::Prose, Confidence::Explicit, raw)
+    }
+
+    #[test]
+    fn rare_parts_box_only_when_set() {
+        let plain = link("a#h");
+        assert_eq!(plain.target().path(), "a");
+        assert!(plain.target().extra.is_some(), "anchor is boxed");
+        assert!(link("a").target().extra.is_none());
+        let mut l = link("a").with_label("L").with_group(2);
+        assert_eq!((l.label(), l.group()), (Some("L"), Some(2)));
+        l.set_label(None);
+        l.set_group(None);
+        assert!(l.target().extra.is_none(), "emptied box is dropped");
+        assert_eq!(l, link("a"));
+    }
+
+    #[test]
+    fn target_equality_ignores_link_parts() {
+        let a = link("a").with_label("L");
+        assert_eq!(a.target(), link("a").target());
+        assert_ne!(a, link("a"));
+        let moved = link("b")
+            .with_label("L")
+            .with_group(1)
+            .with_target(LinkTarget::new("a", 0..1, None));
+        assert_eq!((moved.label(), moved.group()), (Some("L"), Some(1)));
+        assert_eq!(moved.target(), link("a").target());
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "is not part of")]
+    fn target_path_must_be_part_of_raw() {
+        let _ = LinkTarget::new("ab", 1..3, None);
+    }
 }

@@ -87,16 +87,20 @@ fn summarize(doc: &Document) -> Summary {
             .collect(),
         links: doc
             .links()
+            .inspect(|l| {
+                let (raw, path) = (l.target().raw(), l.target().path());
+                assert!(raw.contains(path), "path {path:?} not part of raw {raw:?}");
+            })
             .map(|l| LinkSummary {
                 kind: l.kind,
                 context: l.context,
                 confidence: l.confidence,
-                raw: l.target.raw.clone(),
-                path: l.target.path.clone(),
-                anchor: l.target.anchor.clone(),
-                label: l.label.clone(),
-                line: l.target.line,
-                group: l.group,
+                raw: l.target().raw().to_owned(),
+                path: l.target().path().to_owned(),
+                anchor: l.target().anchor().cloned(),
+                label: l.label().map(str::to_owned),
+                line: l.target().line(),
+                group: l.group(),
                 range: slice(&l.range),
                 text_range: slice(&l.text_range),
                 src_line: line_of(l.range.start),

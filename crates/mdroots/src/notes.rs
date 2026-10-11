@@ -141,7 +141,7 @@ impl Workspace {
             .into_iter()
             .filter(|(from, _)| *from != rel)
             .filter_map(|(from, l)| {
-                let i = heading_index(doc, l.target.anchor.as_ref()?)?;
+                let i = heading_index(doc, l.target().anchor()?)?;
                 Some((i, self.backlink(&store, from, &l)?))
             })
             .collect())

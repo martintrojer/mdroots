@@ -337,11 +337,11 @@ fn close_link(src: &str, o: Open) -> Option<Link> {
     if text.contains('\n') {
         return None;
     }
-    if let Some((target, desc)) = link.target.raw.clone().split_once("][") {
+    if let Some((target, desc)) = link.target().raw().split_once("][") {
         // pulldown reads org `[[t][d]]` as a wikilink to `t][d`.
         let confidence = by_scheme(target);
         let mut org = Link::new(LinkKind::Org, Context::Prose, confidence, target);
-        org.label = Some(desc.to_owned());
+        org.set_label(Some(desc.into()));
         org.range = link.range.clone();
         org.text_range = link.text_range.clone();
         if let Some(open) = text.find("[[") {
@@ -354,9 +354,7 @@ fn close_link(src: &str, o: Open) -> Option<Link> {
         return Some(org);
     }
     if o.has_pothole {
-        let mut label = o.text;
-        label.shrink_to_fit();
-        link.label = Some(label);
+        link.set_label(Some(o.text.into_boxed_str()));
     }
     Some(link)
 }
@@ -433,10 +431,7 @@ mod tests {
         for e in &doc.elements {
             match e {
                 Element::Heading(h) => assert_eq!(h.text.capacity(), h.text.len(), "{h:?}"),
-                Element::Link(Link { label: Some(l), .. }) => {
-                    labels += 1;
-                    assert_eq!(l.capacity(), l.len(), "{l:?}");
-                }
+                Element::Link(l) if l.label().is_some() => labels += 1,
                 _ => {}
             }
         }

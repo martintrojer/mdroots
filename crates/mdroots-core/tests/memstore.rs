@@ -28,7 +28,7 @@ fn link(s: &MemStore, from: &str, raw: &str) -> (Link, Resolution) {
     let mut hits: Vec<(Link, Resolution)> = s
         .links(from)
         .into_iter()
-        .filter(|(l, _)| l.target.raw == raw)
+        .filter(|(l, _)| l.target().raw() == raw)
         .collect();
     assert!(!hits.is_empty(), "no link {raw:?} in {from}");
     hits.swap_remove(0)
@@ -44,7 +44,7 @@ fn diagnosed(s: &MemStore, rel: &str, code: DiagCode) -> Vec<String> {
         .filter(|d| d.code == code)
         .map(|d| {
             let (l, _) = links.iter().find(|(l, _)| l.range == d.range).unwrap();
-            l.target.raw.clone()
+            l.target().raw().to_owned()
         })
         .collect()
 }
@@ -104,7 +104,7 @@ fn zkvault_resolutions() {
 
     // Piped wiki: the left side resolves.
     let (l, r) = link(&s, "README.md", "reference/composting");
-    assert_eq!(l.label.as_deref(), Some("composting notes"));
+    assert_eq!(l.label(), Some("composting notes"));
     assert_eq!(r.targets, ["reference/composting.md"]);
     assert_eq!(r.status, LinkStatus::Resolved);
 }
@@ -125,7 +125,7 @@ fn notesvault_resolutions() {
 
     // Piped links resolve on their target.
     let (l, r) = link(&s, "concepts/c.md", "b");
-    assert_eq!(l.label.as_deref(), Some("Concept B"));
+    assert_eq!(l.label(), Some("Concept B"));
     assert_eq!(r.targets, ["concepts/b.md"]);
     assert_eq!(r.status, LinkStatus::Resolved);
 
@@ -195,7 +195,7 @@ fn all_backlinks(s: &MemStore) -> Vec<(String, String, String, std::ops::Range<u
         .flat_map(|t| {
             s.backlinks(t)
                 .into_iter()
-                .map(move |(f, l)| (t.to_owned(), f, l.target.raw, l.range))
+                .map(move |(f, l)| (t.to_owned(), f, l.target().raw().to_owned(), l.range))
         })
         .collect()
 }
@@ -316,7 +316,7 @@ fn anchors_are_checked_separately_from_file_status() {
     let (l, r) = link(&s, "a.md", "b.md#missing");
     assert_eq!(r.status, LinkStatus::Resolved);
     assert_eq!(
-        s.check_anchor(&r.targets[0], l.target.anchor.as_ref().unwrap()),
+        s.check_anchor(&r.targets[0], l.target().anchor().unwrap()),
         AnchorStatus::Missing
     );
     assert!(broken(&s, "a.md").is_empty());

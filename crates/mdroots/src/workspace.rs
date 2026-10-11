@@ -1063,19 +1063,19 @@ impl Workspace {
                     _ => None,
                 };
                 let anchor = l
-                    .target
-                    .raw
+                    .target()
+                    .raw()
                     .split_once('#')
                     .map(|(_, a)| a.to_owned())
                     .filter(|a| !a.is_empty());
                 DocLink {
+                    line: l.target().line(),
                     range: l.range,
                     text_range: l.text_range,
                     kind: l.kind,
                     context: l.context,
                     target,
                     anchor,
-                    line: l.target.line,
                     status: r.status,
                 }
             })

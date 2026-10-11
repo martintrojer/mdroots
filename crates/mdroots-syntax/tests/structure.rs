@@ -43,36 +43,39 @@ fn headings_levels_text_slugs() {
 fn wiki_links() {
     let l = one_link("x [[a]] y");
     assert_eq!(l.kind, LinkKind::Wiki);
-    assert_eq!(l.target.raw, "a");
-    assert_eq!(l.target.path, "a");
-    assert_eq!(l.label, None);
+    assert_eq!(l.target().raw(), "a");
+    assert_eq!(l.target().path(), "a");
+    assert_eq!(l.label(), None);
     assert_eq!(l.confidence, Confidence::Explicit);
     assert_eq!(l.context, Context::Prose);
     assert_eq!(l.range, 2..7);
     assert_eq!(l.text_range, 4..5);
 
     let l = one_link("[[a|b]]");
-    assert_eq!(
-        (l.target.raw.as_str(), l.label.as_deref()),
-        ("a", Some("b"))
-    );
+    assert_eq!((l.target().raw(), l.label()), ("a", Some("b")));
     assert_eq!(l.text_range, 4..5);
 
     let l = one_link("[[a#h]]");
-    assert_eq!(l.target.path, "a");
-    assert_eq!(l.target.anchor, Some(Anchor::Heading("h".into())));
+    assert_eq!(l.target().path(), "a");
+    assert_eq!(
+        l.target().anchor().cloned(),
+        Some(Anchor::Heading("h".into()))
+    );
 
     let l = one_link("[[a#^blk]]");
-    assert_eq!(l.target.path, "a");
-    assert_eq!(l.target.anchor, Some(Anchor::Block("blk".into())));
+    assert_eq!(l.target().path(), "a");
+    assert_eq!(
+        l.target().anchor().cloned(),
+        Some(Anchor::Block("blk".into()))
+    );
 }
 
 #[test]
 fn org_style_wiki_becomes_org_link() {
     let l = one_link("see [[t][d]] now");
     assert_eq!(l.kind, LinkKind::Org);
-    assert_eq!(l.target.raw, "t");
-    assert_eq!(l.label.as_deref(), Some("d"));
+    assert_eq!(l.target().raw(), "t");
+    assert_eq!(l.label(), Some("d"));
     assert_eq!(l.range, 4..12);
     assert_eq!(l.text_range, 9..10);
 }
@@ -86,16 +89,13 @@ fn multi_line_wiki_is_not_a_link() {
 fn wiki_embed() {
     let l = one_link("![[emb]]");
     assert_eq!(l.kind, LinkKind::WikiEmbed);
-    assert_eq!(l.target.raw, "emb");
+    assert_eq!(l.target().raw(), "emb");
 }
 
 #[test]
 fn link_kinds() {
     let doc = md("[a](x.md) [b][r] [r] [r][] ![i](p.png) <https://x> <a@b.c>\n\n[r]: ./r.md\n");
-    let kinds: Vec<(LinkKind, &str)> = doc
-        .links()
-        .map(|l| (l.kind, l.target.raw.as_str()))
-        .collect();
+    let kinds: Vec<(LinkKind, &str)> = doc.links().map(|l| (l.kind, l.target().raw())).collect();
     assert_eq!(
         kinds,
         vec![
@@ -168,7 +168,7 @@ fn reference_definition() {
     let l = one_link("[r]: ./a.md\n");
     assert_eq!(l.kind, LinkKind::Reference);
     assert_eq!(l.context, Context::Prose);
-    assert_eq!(l.target.raw, "./a.md");
+    assert_eq!(l.target().raw(), "./a.md");
     assert_eq!(l.range, 0..11);
 
     assert_eq!(md("> [q]: ./q.md").link_defs().count(), 1);
@@ -212,8 +212,11 @@ fn link_builder() {
         Confidence::Explicit,
         "a/b#^x",
     );
-    assert_eq!(l.target.path, "a/b");
-    assert_eq!(l.target.anchor, Some(Anchor::Block("x".into())));
+    assert_eq!(l.target().path(), "a/b");
+    assert_eq!(
+        l.target().anchor().cloned(),
+        Some(Anchor::Block("x".into()))
+    );
     assert_eq!((l.range.clone(), l.text_range.clone()), (0..6, 0..6));
     let l = Link::new(
         LinkKind::Markdown,
@@ -225,9 +228,12 @@ fn link_builder() {
     .with_line(3)
     .with_group(7)
     .with_anchor(Anchor::CustomId("c".into()));
-    assert_eq!(l.target.anchor, Some(Anchor::CustomId("c".into())));
     assert_eq!(
-        (l.label.as_deref(), l.target.line, l.group),
+        l.target().anchor().cloned(),
+        Some(Anchor::CustomId("c".into()))
+    );
+    assert_eq!(
+        (l.label(), l.target().line(), l.group()),
         (Some("L"), Some(3), Some(7))
     );
 }

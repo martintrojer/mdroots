@@ -395,7 +395,7 @@ fn elements(src: &str, fm: &Frontmatter, entries: &[Entry]) -> Vec<Element> {
                 );
                 l.range = r.clone();
                 l.text_range = r;
-                l.group = shared;
+                l.set_group(shared);
                 found.push(Element::Link(l));
             }
             out.extend(found);
@@ -466,7 +466,7 @@ fn wiki_links(src: &str, within: Range<usize>, out: &mut Vec<Element>) {
             Some(lb) => base + close - lb.len()..base + close,
             None => base + inner..base + close,
         };
-        l.label = label.map(str::to_owned);
+        l.set_label(label.map(Box::from));
         out.push(Element::Link(l));
     }
 }

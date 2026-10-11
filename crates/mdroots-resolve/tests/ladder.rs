@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use mdroots_resolve::keys::ResolveStep;
 use mdroots_resolve::ladder::{LinkStatus, Resolution, ResolveCtx, resolve};
 use mdroots_resolve::{KeyKind, KeyLookup, ResolveEnv};
-use mdroots_syntax::{Anchor, Confidence, Context, Dialect, Link, LinkKind, parse};
+use mdroots_syntax::{Anchor, Confidence, Context, Dialect, Link, LinkKind, LinkTarget, parse};
 
 /// Files on disk (root-relative; may start with `..` for outside the root).
 struct FakeEnv {
@@ -159,10 +159,9 @@ fn code(raw: &str) -> Link {
 
 /// An org link as the org pass builds it: `raw` keeps `file:`/`id:`.
 fn org(raw: &str, path: &str, anchor: Option<Anchor>) -> Link {
-    let mut l = Link::new(LinkKind::Org, Context::Prose, Confidence::Explicit, raw);
-    l.target.path = path.into();
-    l.target.anchor = anchor;
-    l
+    let at = raw.find(path).expect("path is part of raw");
+    Link::new(LinkKind::Org, Context::Prose, Confidence::Explicit, raw)
+        .with_target(LinkTarget::new(raw, at..at + path.len(), anchor))
 }
 
 struct Root {

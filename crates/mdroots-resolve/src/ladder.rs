@@ -147,19 +147,19 @@ pub fn resolve(from_root_rel: &str, link: &Link, ctx: &ResolveCtx) -> Resolution
             None => Resolution::none(no_hit_status(explicit)),
         };
     }
-    let q = match Query::new(&n, &link.target.path, explicit, ctx) {
+    let q = match Query::new(&n, link.target().path(), explicit, ctx) {
         Ok(q) => q,
         Err(r) => return r,
     };
     let alt = n
         .piped_alt
         .as_ref()
-        .and(link.label.as_deref())
-        .filter(|l| *l != link.target.raw)
+        .and(link.label())
+        .filter(|l| *l != link.target().raw())
         .map(|l| normalize_str(l, true))
         .filter(|a| !a.is_external() && !a.id_ref && !a.key.is_empty())
         .and_then(|a| {
-            let src = l_path(link.label.as_deref().unwrap_or(""));
+            let src = l_path(link.label().unwrap_or(""));
             Query::new(&a, src, explicit, ctx).ok()
         });
     let dir = parent(from_root_rel);
@@ -184,9 +184,9 @@ pub fn resolve(from_root_rel: &str, link: &Link, ctx: &ResolveCtx) -> Resolution
     // Implicit `./`, `../` (and mapped `~/`) bare paths get one stat (spec
     // §2.3); other implicit forms resolve through the index only.
     let dotted = matches!(link.kind, LinkKind::BarePath)
-        && (link.target.path.starts_with("./")
-            || link.target.path.starts_with("../")
-            || link.target.path.starts_with("~/"));
+        && (link.target().path().starts_with("./")
+            || link.target().path().starts_with("../")
+            || link.target().path().starts_with("~/"));
     if (explicit || dotted)
         && let Some(p) = tries.iter().flatten().find_map(|q| on_disk(q, dir, ctx))
     {
@@ -561,7 +561,7 @@ pub fn outside_rel(root: Option<&Path>, abs: &Path) -> Option<String> {
 /// text, then the form with `:LINE[:COL]` stripped; relative paths against
 /// the linking file's dir, each `code_dirs` entry, then the root.
 fn code_mention(from: &str, link: &Link, ctx: &ResolveCtx) -> Resolution {
-    let text = link.target.raw.trim();
+    let text = link.target().raw().trim();
     if text.is_empty()
         || text.len() > MAX_CODE_LEN
         || text.contains(char::is_whitespace)
@@ -569,7 +569,7 @@ fn code_mention(from: &str, link: &Link, ctx: &ResolveCtx) -> Resolution {
     {
         return Resolution::none(LinkStatus::Unchecked);
     }
-    let path = link.target.path.trim();
+    let path = link.target().path().trim();
     let stripped = if path != text && !path.is_empty() {
         Some(path)
     } else {

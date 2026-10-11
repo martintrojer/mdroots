@@ -73,8 +73,11 @@ fn wiki_in_fence_is_code_block_explicit() {
     assert_eq!(w.len(), 1);
     assert_eq!(w[0].context, Context::CodeBlock);
     assert_eq!(w[0].confidence, Confidence::Explicit);
-    assert_eq!(w[0].target.path, "note");
-    assert_eq!(w[0].target.anchor, Some(Anchor::Heading("h".into())));
+    assert_eq!(w[0].target().path(), "note");
+    assert_eq!(
+        w[0].target().anchor().cloned(),
+        Some(Anchor::Heading("h".into()))
+    );
     assert_eq!(at(&doc, &w[0].range), "[[note#h]]");
     assert_eq!(at(&doc, &w[0].text_range), "note#h");
     let e = of_kind(&doc, LinkKind::WikiEmbed);
@@ -86,8 +89,8 @@ fn wiki_in_fence_is_code_block_explicit() {
 fn wiki_in_inline_code() {
     let l = one("a `[[x|lab]]` b", LinkKind::Wiki);
     assert_eq!(l.context, Context::InlineCode);
-    assert_eq!(l.target.raw, "x");
-    assert_eq!(l.label.as_deref(), Some("lab"));
+    assert_eq!(l.target().raw(), "x");
+    assert_eq!(l.label(), Some("lab"));
     assert_eq!(l.text_range, 7..10);
 }
 
@@ -101,17 +104,14 @@ fn wiki_in_comment() {
 fn template_wiki_in_fence_is_still_emitted() {
     let l = one("```\n[[{{filename-stem}}]]\n```\n", LinkKind::Wiki);
     assert_eq!(l.context, Context::CodeBlock);
-    assert_eq!(l.target.raw, "{{filename-stem}}");
+    assert_eq!(l.target().raw(), "{{filename-stem}}");
 }
 
 #[test]
 fn code_wiki_edge_cases() {
     none("```\n[[]] [[a\nb]]\n```\n", LinkKind::Wiki);
     let l = one("```\n[[t][d]]\n```\n", LinkKind::Org);
-    assert_eq!(
-        (l.target.raw.as_str(), l.label.as_deref()),
-        ("t", Some("d"))
-    );
+    assert_eq!((l.target().raw(), l.label()), ("t", Some("d")));
     assert_eq!(l.context, Context::CodeBlock);
     // Markdown-style links inside code are not proposed.
     none("`[t](x.md)`", LinkKind::Markdown);
@@ -120,17 +120,17 @@ fn code_wiki_edge_cases() {
 #[test]
 fn code_mentions() {
     let l = one("open `src/main.rs:12` now", LinkKind::CodeMention);
-    assert_eq!(l.target.path, "src/main.rs");
-    assert_eq!(l.target.raw, "src/main.rs:12");
-    assert_eq!(l.target.line, Some(12));
+    assert_eq!(l.target().path(), "src/main.rs");
+    assert_eq!(l.target().raw(), "src/main.rs:12");
+    assert_eq!(l.target().line(), Some(12));
     assert_eq!(l.context, Context::InlineCode);
     assert_eq!(l.confidence, Confidence::Implicit);
 
     let l = one("`x.rs:3:1`", LinkKind::CodeMention);
-    assert_eq!((l.target.path.as_str(), l.target.line), ("x.rs", Some(3)));
+    assert_eq!((l.target().path(), l.target().line()), ("x.rs", Some(3)));
 
     let l = one("`~/notes/a`", LinkKind::CodeMention);
-    assert_eq!(l.target.line, None);
+    assert_eq!(l.target().line(), None);
 
     none("`foo bar`", LinkKind::CodeMention);
     none("`https://x.com/a`", LinkKind::CodeMention);
@@ -138,7 +138,7 @@ fn code_mentions() {
     // An overflowing line on a token that is not path-like: no link at all.
     assert_eq!(md("`x:99999999999`").links().count(), 0);
     let l = one("`a.rs:99999999999`", LinkKind::CodeMention);
-    assert_eq!((l.target.path.as_str(), l.target.line), ("a.rs", None));
+    assert_eq!((l.target().path(), l.target().line()), ("a.rs", None));
     // Inline code used as link text is the link, not a mention.
     none("[`a/b.rs`](x)", LinkKind::CodeMention);
 }
@@ -147,15 +147,21 @@ fn code_mentions() {
 fn bare_paths() {
     let doc = md("see notes/foo.md.");
     let l = &of_kind(&doc, LinkKind::BarePath)[0];
-    assert_eq!(l.target.path, "notes/foo.md");
+    assert_eq!(l.target().path(), "notes/foo.md");
     assert_eq!(l.confidence, Confidence::Implicit);
     assert_eq!(l.context, Context::Prose);
     assert_eq!(at(&doc, &l.range), "notes/foo.md");
 
-    assert_eq!(one("(./a.png)", LinkKind::BarePath).target.raw, "./a.png");
-    assert_eq!(one("x ../up/a b", LinkKind::BarePath).target.raw, "../up/a");
     assert_eq!(
-        one("read me.md, ok", LinkKind::BarePath).target.raw,
+        one("(./a.png)", LinkKind::BarePath).target().raw(),
+        "./a.png"
+    );
+    assert_eq!(
+        one("x ../up/a b", LinkKind::BarePath).target().raw(),
+        "../up/a"
+    );
+    assert_eq!(
+        one("read me.md, ok", LinkKind::BarePath).target().raw(),
         "me.md"
     );
     assert_eq!(
@@ -176,7 +182,7 @@ fn bare_urls() {
     let doc = md("go to https://x.com/a?b=1. And (http://y.org/p_(q)).");
     let urls: Vec<String> = of_kind(&doc, LinkKind::Url)
         .iter()
-        .map(|l| l.target.raw.clone())
+        .map(|l| l.target().raw().to_owned())
         .collect();
     assert_eq!(urls, ["https://x.com/a?b=1", "http://y.org/p_(q)"]);
     assert!(
@@ -196,7 +202,7 @@ fn bare_urls_in_headings() {
     let doc = md("# loop: https://x.com/a?b=1\n\n## see https://y.org/p\n");
     let urls: Vec<(String, Context)> = of_kind(&doc, LinkKind::Url)
         .iter()
-        .map(|l| (l.target.raw.clone(), l.context))
+        .map(|l| (l.target().raw().to_owned(), l.context))
         .collect();
     assert_eq!(
         urls,
@@ -216,7 +222,7 @@ fn bare_url_drops_trailing_brackets() {
     let doc = md("[[https://x.com/a][\ndesc]]\n");
     let urls: Vec<String> = of_kind(&doc, LinkKind::Url)
         .iter()
-        .map(|l| l.target.raw.clone())
+        .map(|l| l.target().raw().to_owned())
         .collect();
     assert_eq!(urls, ["https://x.com/a"]);
 }
@@ -294,8 +300,8 @@ fn footnotes() {
     let doc = md("text[^1] more.\n\n[^1]: the note\n");
     let f = of_kind(&doc, LinkKind::Footnote);
     assert_eq!(f.len(), 1, "{f:#?}");
-    assert_eq!(f[0].target.raw, "^1");
-    assert_eq!(f[0].target.path, "^1");
+    assert_eq!(f[0].target().raw(), "^1");
+    assert_eq!(f[0].target().path(), "^1");
     assert_eq!(f[0].confidence, Confidence::Explicit);
     assert_eq!(at(&doc, &f[0].range), "[^1]");
 }
@@ -303,16 +309,16 @@ fn footnotes() {
 #[test]
 fn templating() {
     let l = one(r#"see {{< ref "x.md" >}} and"#, LinkKind::Templating);
-    assert_eq!(l.target.raw, "x.md");
+    assert_eq!(l.target().raw(), "x.md");
     assert_eq!(l.confidence, Confidence::Explicit);
     assert_eq!(
         one(r#"{{< relref "y" >}}"#, LinkKind::Templating)
-            .target
-            .raw,
+            .target()
+            .raw(),
         "y"
     );
     assert_eq!(
-        one("{% link z.md %}", LinkKind::Templating).target.raw,
+        one("{% link z.md %}", LinkKind::Templating).target().raw(),
         "z.md"
     );
     none("{{< figure src=\"a.png\" >}}", LinkKind::Templating);
@@ -325,13 +331,16 @@ fn templating_anchor_is_split_off() {
         "{% link posts/b.md#sec %}",
     ] {
         let l = one(src, LinkKind::Templating);
-        assert_eq!(l.target.raw, "posts/b.md#sec");
-        assert_eq!(l.target.path, "posts/b.md");
-        assert_eq!(l.target.anchor, Some(Anchor::Heading("sec".into())));
+        assert_eq!(l.target().raw(), "posts/b.md#sec");
+        assert_eq!(l.target().path(), "posts/b.md");
+        assert_eq!(
+            l.target().anchor().cloned(),
+            Some(Anchor::Heading("sec".into()))
+        );
     }
     let l = one(r##"{{< ref "#here" >}}"##, LinkKind::Templating);
     assert_eq!(
-        (l.target.path.as_str(), l.target.anchor),
+        (l.target().path(), l.target().anchor().cloned()),
         ("", Some(Anchor::Heading("here".into())))
     );
 }
@@ -339,16 +348,22 @@ fn templating_anchor_is_split_off() {
 #[test]
 fn bare_path_and_html_anchor_is_split_off() {
     let l = one("see notes/a.md#sec now", LinkKind::BarePath);
-    assert_eq!(l.target.raw, "notes/a.md#sec");
-    assert_eq!(l.target.path, "notes/a.md");
-    assert_eq!(l.target.anchor, Some(Anchor::Heading("sec".into())));
+    assert_eq!(l.target().raw(), "notes/a.md#sec");
+    assert_eq!(l.target().path(), "notes/a.md");
+    assert_eq!(
+        l.target().anchor().cloned(),
+        Some(Anchor::Heading("sec".into()))
+    );
     let l = one("<a href=\"b.md#^blk\">b</a>\n", LinkKind::Html);
-    assert_eq!(l.target.path, "b.md");
-    assert_eq!(l.target.anchor, Some(Anchor::Block("blk".into())));
+    assert_eq!(l.target().path(), "b.md");
+    assert_eq!(
+        l.target().anchor().cloned(),
+        Some(Anchor::Block("blk".into()))
+    );
     // URLs are external: left as written.
     let l = one("go https://x.com/a#frag now", LinkKind::Url);
     assert_eq!(
-        (l.target.path.as_str(), l.target.anchor),
+        (l.target().path(), l.target().anchor().cloned()),
         ("https://x.com/a#frag", None)
     );
 }
@@ -359,7 +374,7 @@ fn html_links() {
     let h = of_kind(&doc, LinkKind::Html);
     let got: Vec<(&str, Confidence, Context)> = h
         .iter()
-        .map(|l| (l.target.raw.as_str(), l.confidence, l.context))
+        .map(|l| (l.target().raw(), l.confidence, l.context))
         .collect();
     assert_eq!(
         got,
@@ -369,7 +384,7 @@ fn html_links() {
         ]
     );
     let l = one("<div>\n<a href=b.md>b</a>\n</div>\n", LinkKind::Html);
-    assert_eq!(l.target.raw, "b.md");
+    assert_eq!(l.target().raw(), "b.md");
 }
 
 #[test]
@@ -378,7 +393,7 @@ fn multibyte_neighbours() {
     let doc = md("é#tag 😀 notes/é.md. `é/ü.rs:2` https://é.x/ü");
     check_ranges(&doc);
     assert_eq!(
-        of_kind(&doc, LinkKind::BarePath)[0].target.raw,
+        of_kind(&doc, LinkKind::BarePath)[0].target().raw(),
         "notes/é.md"
     );
     assert!(doc.tags().next().is_none());

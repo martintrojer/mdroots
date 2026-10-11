@@ -476,12 +476,14 @@ fn org_link(line: &str, at: usize, raw: RawLink, ctx: Context, abbrevs: &Abbrevs
     let written = &line[raw.target.clone()];
     let mut confidence = Confidence::Explicit;
     let mut raw_s = written.to_owned();
+    // The path is `raw_s[path]`.
     let (path, anchor) = if let Some(rest) = written.strip_prefix("file:") {
-        split_search(rest)
+        let (n, anchor) = split_search(rest);
+        (5..5 + n, anchor)
     } else if let Some(id) = written.strip_prefix("id:") {
-        (id.to_owned(), None)
+        (3..3 + id.len(), None)
     } else if written.starts_with('*') || written.starts_with('#') {
-        split_search(&format!("::{written}"))
+        (0..0, split_search(&format!("::{written}")).1)
     } else if let Some((prefix, rest)) = written.split_once(':')
         && is_prefix(prefix)
         && !rest.starts_with(':')
@@ -494,34 +496,27 @@ fn org_link(line: &str, at: usize, raw: RawLink, ctx: Context, abbrevs: &Abbrevs
                 format!("{template}{rest}")
             };
         }
-        (raw_s.clone(), None)
+        (0..raw_s.len(), None)
     } else if written.contains("::") {
-        split_search(written)
+        let (n, anchor) = split_search(written);
+        (0..n, anchor)
     } else {
-        (written.to_owned(), None)
+        (0..written.len(), None)
     };
     let shift = |r: Range<usize>| r.start + at..r.end + at;
-    Link {
-        kind: LinkKind::Org,
-        context: ctx,
-        confidence,
-        target: LinkTarget {
-            raw: raw_s,
-            path,
-            anchor,
-            line: None,
-        },
-        label: raw.desc.clone().map(|d| line[d].to_owned()),
-        range: shift(raw.range),
-        text_range: shift(raw.desc.unwrap_or(raw.target)),
-        group: None,
-    }
+    let mut link = Link::new(LinkKind::Org, ctx, confidence, "")
+        .with_target(LinkTarget::new(&raw_s, path, anchor));
+    link.set_label(raw.desc.clone().map(|d| line[d].into()));
+    link.range = shift(raw.range);
+    link.text_range = shift(raw.desc.unwrap_or(raw.target));
+    link
 }
 
-/// `path::*Heading` / `path::#custom` / `path::text`.
-fn split_search(s: &str) -> (String, Option<Anchor>) {
+/// `path::*Heading` / `path::#custom` / `path::text`: the length of the
+/// path (a prefix of `s`) and the anchor.
+fn split_search(s: &str) -> (usize, Option<Anchor>) {
     let Some((path, search)) = s.split_once("::") else {
-        return (s.to_owned(), None);
+        return (s.len(), None);
     };
     let anchor = if let Some(h) = search.strip_prefix('*') {
         Some(Anchor::Heading(h.to_owned()))
@@ -532,7 +527,7 @@ fn split_search(s: &str) -> (String, Option<Anchor>) {
     } else {
         Some(Anchor::Search(search.to_owned()))
     };
-    (path.to_owned(), anchor)
+    (path.len(), anchor)
 }
 
 /// A link-type prefix: a letter, then letters, digits, `+`, `-`, `.`, `_`.

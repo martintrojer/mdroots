@@ -3,7 +3,7 @@
 use mdroots_resolve::{
     KeyKind, Normalized, doc_keys, normalize, normalize_str, percent_decode, scheme,
 };
-use mdroots_syntax::{Anchor, Dialect, Link, parse};
+use mdroots_syntax::{Anchor, Dialect, Link, LinkTarget, parse};
 
 fn n(raw: &str) -> Normalized {
     normalize_str(raw, true)
@@ -225,15 +225,13 @@ fn normalize_link_built_by_hand() {
     assert_eq!(got.key, "ABC");
 
     // Org links whose path syntax already split: raw keeps `file:` and `::`.
-    let mut link = Link::new(
-        LinkKind::Org,
-        Context::Prose,
-        Confidence::Explicit,
-        "file:notes/a.org",
-    )
-    .with_anchor(Anchor::Heading("Intro".into()));
-    link.target.raw = "file:notes/a.org::*Intro".into();
-    link.target.path = "notes/a.org".into();
+    let link = Link::new(LinkKind::Org, Context::Prose, Confidence::Explicit, "").with_target(
+        LinkTarget::new(
+            "file:notes/a.org::*Intro",
+            5..16,
+            Some(Anchor::Heading("Intro".into())),
+        ),
+    );
     let got = normalize(&link, true);
     assert_eq!(got.scheme.as_deref(), Some("file"));
     assert_eq!(got.key, "notes/a");

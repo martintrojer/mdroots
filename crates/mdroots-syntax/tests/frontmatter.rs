@@ -103,7 +103,7 @@ fn logseq_properties() {
     assert_eq!(links.len(), 1, "{links:#?}");
     assert_eq!(links[0].kind, LinkKind::Wiki);
     assert_eq!(links[0].context, Context::Frontmatter);
-    assert_eq!(links[0].target.raw, "y");
+    assert_eq!(links[0].target().raw(), "y");
     assert_eq!(&src[links[0].range.clone()], "[[y]]");
 }
 
@@ -186,7 +186,7 @@ fn invalid_yaml_sets_error_and_the_rest_still_parses() {
     );
     assert!(
         doc.links()
-            .any(|l| l.target.raw == "later" && l.context == Context::Prose)
+            .any(|l| l.target().raw() == "later" && l.context == Context::Prose)
     );
 }
 
@@ -411,10 +411,10 @@ fn comma_joined_paths_share_a_group() {
         assert_eq!(l.kind, LinkKind::BarePath);
         assert_eq!(l.confidence, Confidence::Implicit);
         assert_eq!(&src[l.range.clone()], want);
-        assert_eq!(l.target.raw, want);
+        assert_eq!(l.target().raw(), want);
     }
-    assert!(links[0].group.is_some());
-    assert_eq!(links[0].group, links[1].group);
+    assert!(links[0].group().is_some());
+    assert_eq!(links[0].group(), links[1].group());
 }
 
 #[test]
@@ -424,7 +424,7 @@ fn single_path_has_no_group_and_groups_differ_per_value() {
     let links = fm_links(&doc);
     let got: Vec<(&str, Option<u32>)> = links
         .iter()
-        .map(|l| (&src[l.range.clone()], l.group))
+        .map(|l| (&src[l.range.clone()], l.group()))
         .collect();
     assert_eq!(got.len(), 4, "{got:?}");
     assert_eq!(got[0], ("notes/x.md", None));
@@ -459,7 +459,7 @@ fn wiki_value_is_an_explicit_frontmatter_link() {
     let links = fm_links(&doc);
     let got: Vec<(&str, &str)> = links
         .iter()
-        .map(|l| (l.target.raw.as_str(), &src[l.range.clone()]))
+        .map(|l| (l.target().raw(), &src[l.range.clone()]))
         .collect();
     assert_eq!(got, [("foo", "[[foo]]"), ("a", "[[a|A]]"), ("b", "[[b]]")]);
     assert!(
@@ -467,7 +467,7 @@ fn wiki_value_is_an_explicit_frontmatter_link() {
             .iter()
             .all(|l| l.kind == LinkKind::Wiki && l.confidence == Confidence::Explicit)
     );
-    assert_eq!(links[1].label.as_deref(), Some("A"));
+    assert_eq!(links[1].label(), Some("A"));
     assert_eq!(&src[links[1].text_range.clone()], "A");
 }
 
@@ -601,7 +601,7 @@ See [[project-scoping-2026]].\n";
     assert_eq!(tag_names(&doc), ["ai", "verification"]);
     assert!(
         doc.links()
-            .any(|l| l.context == Context::Prose && l.target.raw == "project-scoping-2026")
+            .any(|l| l.context == Context::Prose && l.target().raw() == "project-scoping-2026")
     );
     assert_eq!(doc.headings().count(), 1);
 }
@@ -668,7 +668,7 @@ fn nested_link_ranges(src: &str) -> Vec<std::ops::Range<usize>> {
     let doc = md(src);
     let links = fm_links(&doc);
     for l in &links {
-        assert_eq!(&src[l.range.clone()], l.target.raw, "{src:?}");
+        assert_eq!(&src[l.range.clone()], l.target().raw(), "{src:?}");
     }
     links.iter().map(|l| l.range.clone()).collect()
 }
@@ -708,7 +708,7 @@ fn unlocatable_nested_value_gives_no_link() {
     let doc = md(src);
     let links = fm_links(&doc);
     for l in &links {
-        assert_eq!(&src[l.range.clone()], l.target.raw);
+        assert_eq!(&src[l.range.clone()], l.target().raw());
     }
     assert_eq!(links.len(), 1, "{links:#?}");
 }
@@ -1052,10 +1052,7 @@ fn unfenced_frontmatter_can_be_turned_off() {
     opts.unfenced_frontmatter = false;
     let off = parse_with(src, &opts);
     assert_eq!(off.frontmatter(), None);
-    let links: Vec<_> = off
-        .links()
-        .map(|l| (l.target.raw.as_str(), l.context))
-        .collect();
+    let links: Vec<_> = off.links().map(|l| (l.target().raw(), l.context)).collect();
     assert_eq!(links, [("y", Context::Prose), ("z", Context::Prose)]);
     // MultiMarkdown and JSON headers stay prose too; fenced blocks don't.
     for src in [

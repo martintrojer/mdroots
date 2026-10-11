@@ -98,10 +98,13 @@ fn file_level_property_drawer() {
 fn file_link_with_heading_search() {
     let src = "see [[file:notes/a.org::*Intro][see]] now";
     let l = one_link(src);
-    assert_eq!(l.target.raw, "file:notes/a.org::*Intro");
-    assert_eq!(l.target.path, "notes/a.org");
-    assert_eq!(l.target.anchor, Some(Anchor::Heading("Intro".into())));
-    assert_eq!(l.label.as_deref(), Some("see"));
+    assert_eq!(l.target().raw(), "file:notes/a.org::*Intro");
+    assert_eq!(l.target().path(), "notes/a.org");
+    assert_eq!(
+        l.target().anchor().cloned(),
+        Some(Anchor::Heading("Intro".into()))
+    );
+    assert_eq!(l.label(), Some("see"));
     assert_eq!(l.confidence, Confidence::Explicit);
     assert_eq!(l.context, Context::Prose);
     assert_eq!(&src[l.range.clone()], "[[file:notes/a.org::*Intro][see]]");
@@ -111,18 +114,24 @@ fn file_link_with_heading_search() {
 #[test]
 fn file_link_custom_id_and_search() {
     let l = one_link("[[file:a.org::#cid]]");
-    assert_eq!(l.target.path, "a.org");
-    assert_eq!(l.target.anchor, Some(Anchor::CustomId("cid".into())));
+    assert_eq!(l.target().path(), "a.org");
+    assert_eq!(
+        l.target().anchor().cloned(),
+        Some(Anchor::CustomId("cid".into()))
+    );
     let l = one_link("[[file:a.org::some text]]");
-    assert_eq!(l.target.anchor, Some(Anchor::Search("some text".into())));
+    assert_eq!(
+        l.target().anchor().cloned(),
+        Some(Anchor::Search("some text".into()))
+    );
 }
 
 #[test]
 fn id_link() {
     let src = "x [[id:1234]]";
     let l = one_link(src);
-    assert_eq!(l.target.raw, "id:1234");
-    assert_eq!(l.target.path, "1234");
+    assert_eq!(l.target().raw(), "id:1234");
+    assert_eq!(l.target().path(), "1234");
     assert_eq!(l.confidence, Confidence::Explicit);
     assert_eq!(&src[l.text_range.clone()], "id:1234");
 }
@@ -130,12 +139,18 @@ fn id_link() {
 #[test]
 fn in_file_heading_and_custom_id_links() {
     let l = one_link("[[*Heading]]");
-    assert_eq!(l.target.path, "");
-    assert_eq!(l.target.anchor, Some(Anchor::Heading("Heading".into())));
+    assert_eq!(l.target().path(), "");
+    assert_eq!(
+        l.target().anchor().cloned(),
+        Some(Anchor::Heading("Heading".into()))
+    );
     assert_eq!(l.confidence, Confidence::Explicit);
     let l = one_link("[[#cid]]");
-    assert_eq!(l.target.path, "");
-    assert_eq!(l.target.anchor, Some(Anchor::CustomId("cid".into())));
+    assert_eq!(l.target().path(), "");
+    assert_eq!(
+        l.target().anchor().cloned(),
+        Some(Anchor::CustomId("cid".into()))
+    );
     assert_eq!(l.confidence, Confidence::Explicit);
 }
 
@@ -143,34 +158,34 @@ fn in_file_heading_and_custom_id_links() {
 fn external_link() {
     let l = one_link("[[https://x][y]]");
     assert_eq!(l.confidence, Confidence::External);
-    assert_eq!(l.target.raw, "https://x");
-    assert_eq!(l.label.as_deref(), Some("y"));
+    assert_eq!(l.target().raw(), "https://x");
+    assert_eq!(l.label(), Some("y"));
 }
 
 #[test]
 fn link_abbreviation_expands_and_is_external() {
     let l = one_link("#+LINK: T https://tasks/?t=%s\n\n[[T:123][task]]\n");
     assert_eq!(l.confidence, Confidence::External);
-    assert_eq!(l.target.raw, "https://tasks/?t=123");
-    assert_eq!(l.target.path, "https://tasks/?t=123");
+    assert_eq!(l.target().raw(), "https://tasks/?t=123");
+    assert_eq!(l.target().path(), "https://tasks/?t=123");
     // Defined after the body text, and without %s: appended.
     let l = one_link("text\n[[D:9]]\n#+LINK: D https://d/\n");
-    assert_eq!(l.target.raw, "https://d/9");
+    assert_eq!(l.target().raw(), "https://d/9");
 }
 
 #[test]
 fn unknown_prefix_is_external() {
     let l = one_link("[[T:9]]");
     assert_eq!(l.confidence, Confidence::External);
-    assert_eq!(l.target.raw, "T:9");
+    assert_eq!(l.target().raw(), "T:9");
 }
 
 #[test]
 fn plain_target_is_internal() {
     let l = one_link("[[notes]]");
     assert_eq!(l.confidence, Confidence::Explicit);
-    assert_eq!(l.target.raw, "notes");
-    assert_eq!(l.target.path, "notes");
+    assert_eq!(l.target().raw(), "notes");
+    assert_eq!(l.target().path(), "notes");
 }
 
 #[test]
@@ -206,7 +221,7 @@ fn code_links_use_abbreviations_and_org_kind() {
     let doc = org(src);
     let got: Vec<(LinkKind, Context, Confidence, &str)> = doc
         .links()
-        .map(|l| (l.kind, l.context, l.confidence, l.target.raw.as_str()))
+        .map(|l| (l.kind, l.context, l.confidence, l.target().raw()))
         .collect();
     use Confidence::*;
     use Context::*;
@@ -225,16 +240,19 @@ fn code_links_use_abbreviations_and_org_kind() {
     );
     let l = doc
         .links()
-        .find(|l| l.target.raw == "https://t/101")
+        .find(|l| l.target().raw() == "https://t/101")
         .unwrap();
-    assert_eq!(l.label.as_deref(), Some("y"));
+    assert_eq!(l.label(), Some("y"));
     assert_eq!(&src[l.range.clone()], "[[T:101][y]]");
     assert_eq!(&src[l.text_range.clone()], "y");
     // Org search syntax applies in code too, and `!` is not an embed.
     let l = doc_link("#+begin_example\n![[file:a.org::*Sec]]\n#+end_example\n");
     assert_eq!(l.kind, LinkKind::Org);
-    assert_eq!(l.target.path, "a.org");
-    assert_eq!(l.target.anchor, Some(Anchor::Heading("Sec".into())));
+    assert_eq!(l.target().path(), "a.org");
+    assert_eq!(
+        l.target().anchor().cloned(),
+        Some(Anchor::Heading("Sec".into()))
+    );
 }
 
 fn doc_link(src: &str) -> Link {
@@ -256,7 +274,7 @@ fn blocks_close_only_on_exact_end_keyword() {
     let doc = org("#+begin_comment\n#+end_commentary\n[[still_inside]]\n#+end_comment\n");
     assert!(prose_links(&doc).is_empty(), "{:#?}", prose_links(&doc));
     let l = one_link("#+begin_src\nx\n#+END_SRC  \n[[after]]\n");
-    assert_eq!(l.target.raw, "after");
+    assert_eq!(l.target().raw(), "after");
     assert_eq!(l.context, Context::Prose);
 }
 
@@ -265,8 +283,8 @@ fn tildes_in_links_are_not_code() {
     let doc = org("[[file:~/a]] and [[file:~/b]]\n");
     let ls = org_links(&doc);
     assert_eq!(ls.len(), 2);
-    assert_eq!(ls[0].target.path, "~/a");
-    assert_eq!(ls[1].target.path, "~/b");
+    assert_eq!(ls[0].target().path(), "~/a");
+    assert_eq!(ls[1].target().path(), "~/b");
 }
 
 #[test]

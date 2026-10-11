@@ -133,7 +133,7 @@ impl DiagnosticPolicy {
             message,
             related,
         };
-        let raw = &l.target.raw;
+        let raw = l.target().raw();
         match r.status {
             _ if r.hint => None,
             LinkStatus::Broken if self.lazy && !stat_checkable(l) => Some(diag(
@@ -155,7 +155,7 @@ impl DiagnosticPolicy {
                 r.targets,
             )),
             LinkStatus::Resolved => {
-                let anchor = l.target.anchor.as_ref()?;
+                let anchor = l.target().anchor()?;
                 let [target] = r.targets.as_slice() else {
                     return None;
                 };
@@ -191,7 +191,7 @@ fn stat_checkable(l: &Link) -> bool {
     matches!(
         l.kind,
         LinkKind::Markdown | LinkKind::Reference | LinkKind::Image | LinkKind::Html | LinkKind::Org
-    ) || l.target.path.contains('/')
+    ) || l.target().path().contains('/')
 }
 
 /// Order of diagnostics that start at the same offset.

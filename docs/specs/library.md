@@ -99,7 +99,7 @@ let doc = parse(text, Dialect::detect_from_path(path));   // Markdown | Org
 for el in doc.elements() {
     match el {
         Element::Heading(h) => println!("{} {}", h.level, h.text),
-        Element::Link(l) if l.context == Context::Prose => println!("{:?} -> {}", l.kind, l.target.raw),
+        Element::Link(l) if l.context == Context::Prose => println!("{:?} -> {}", l.kind, l.target().raw()),
         Element::Link(l) => { /* in code/comment: mention, not a link */ }
         Element::Tag(t) => println!("#{}", t.name),
         _ => {}                                        // #[non_exhaustive]
@@ -110,6 +110,7 @@ fm.and_then(|f| f.title());            // standard keys normalised (title/aliase
 fm.map(|f| f.get("stage"));            // raw access for any key
 ```
 
+- **Links are read through accessors.** `Link` has public `kind`, `context`, `confidence`, `range`, `text_range`; `target()`, `label()` and `group()` are methods. `LinkTarget` exposes `raw()`, `path()` (a part of `raw`), `anchor()` and `line()`; `LinkTarget::new(raw, path_range, anchor)` and `Link::with_target` / `with_label` / `with_anchor` / `with_line` / `with_group` build them. Label, anchor, line and group share one box, absent on most links (a `LinkTarget` is 32 bytes, a `Link` 72).
 - **Positions have one owner.** Ranges are byte offsets. `LineIndex` (lazy per document) converts to UTF-8/16/32 line/column. `mdroots-lsp` has no position code and no `line-index` dependency.
 - The server negotiates `positionEncoding: "utf-8"` when offered (Neovim 0.12 lists it first); UTF-16 is the required fallback.
 - `parse` is total: never fails or panics (fuzzed). Bad frontmatter still yields a `Frontmatter` (its `range` and whatever entries parsed) with `error: Some(message)`.

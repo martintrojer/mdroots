@@ -49,14 +49,13 @@ impl Workspace {
             return Ok(None);
         }
         let heading = link
-            .target
-            .anchor
-            .as_ref()
+            .target()
+            .anchor()
             .and_then(|a| store.document(&r.targets[0]).and_then(|d| heading_of(d, a)));
         Ok(Some(Goto {
             targets: r.targets.iter().map(|t| self.abs(t)).collect(),
             heading,
-            line: link.target.line,
+            line: link.target().line(),
         }))
     }
 }

@@ -86,7 +86,7 @@ impl Workspace {
             let from_after = if is_old { new_rel.as_str() } else { from };
             let mut edits = Vec::new();
             for (link, r) in store.links(from) {
-                if !counts(&link) || r.hint || link.target.path.is_empty() {
+                if !counts(&link) || r.hint || link.target().path().is_empty() {
                     continue;
                 }
                 let Some(first) = r.targets.first() else {
@@ -207,13 +207,13 @@ fn path_span(src: &str, l: &Link) -> Option<Range<usize>> {
             (open, open + len)
         }
         _ => {
-            let at = slice.find(l.target.path.as_str())?;
-            (at, at + l.target.path.len())
+            let at = slice.find(l.target().path())?;
+            (at, at + l.target().path().len())
         }
     };
     let text = slice.get(start..end)?;
     // Unexpected syntax (escapes, a target on the right of a pipe): no edit.
-    (text == l.target.path || text.split('#').next() == Some(l.target.path.as_str())).then(|| {
+    (text == l.target().path() || text.split('#').next() == Some(l.target().path())).then(|| {
         let end = start + text.find('#').unwrap_or(text.len());
         base + start..base + end
     })

@@ -268,16 +268,16 @@ fn hrefs_normalise_like_zk_stores_them() {
     assert_eq!(zk_join("t/h.md", "https://x/y"), "https://x/y");
     assert_eq!(zk_join("t/h.md", "mailto:a@b"), "mailto:a@b");
 
-    let mut org = Link::new(
+    let org = Link::new(
         LinkKind::Org,
         Context::Prose,
         Confidence::External,
         "https://x",
-    );
-    org.label = Some("desc".into());
+    )
+    .with_label("desc");
     assert_eq!(comparable_href("a.md", &org), "https://x][desc");
-    let mut wiki = Link::new(LinkKind::Wiki, Context::Prose, Confidence::Explicit, "t");
-    wiki.label = Some("label".into());
+    let wiki =
+        Link::new(LinkKind::Wiki, Context::Prose, Confidence::Explicit, "t").with_label("label");
     assert_eq!(comparable_href("d/a.md", &wiki), "t");
     let mdl = Link::new(
         LinkKind::Markdown,

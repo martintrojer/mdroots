@@ -40,12 +40,12 @@ impl Normalized {
     }
 }
 
-/// Normalise a parsed link. Reads `link.target.path` (syntax already split
+/// Normalise a parsed link. Reads `link.target().path()` (syntax already split
 /// the anchor and org `::search`) and takes the anchor from
-/// `link.target.anchor`; the scheme comes from `link.target.raw`.
+/// `link.target().anchor()`; the scheme comes from `link.target().raw()`.
 pub fn normalize(link: &Link, case_sensitive: bool) -> Normalized {
-    let raw = link.target.raw.as_str();
-    let path = link.target.path.as_str();
+    let raw = link.target().raw();
+    let path = link.target().path();
     let mut n = Normalized::default();
     let rest = match link_scheme(raw) {
         Some(s) if s.eq_ignore_ascii_case("id") => {
@@ -63,9 +63,9 @@ pub fn normalize(link: &Link, case_sensitive: bool) -> Normalized {
         None => path,
     };
     finish_path(&mut n, rest, case_sensitive);
-    n.anchor = link.target.anchor.as_ref().map(decode_anchor);
+    n.anchor = link.target().anchor().map(decode_anchor);
     if matches!(link.kind, LinkKind::Wiki | LinkKind::WikiEmbed)
-        && let Some(label) = &link.label
+        && let Some(label) = link.label()
     {
         n.piped_alt = Some(normalize_str(label, case_sensitive).key);
     }

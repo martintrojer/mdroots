@@ -262,7 +262,7 @@ fn zkvault_matches_memstore() {
         let want: Vec<_> = explicit
             .iter()
             .filter(|(l, r)| {
-                let (Some(anchor), [target]) = (&l.target.anchor, r.targets.as_slice()) else {
+                let (Some(anchor), [target]) = (l.target().anchor(), r.targets.as_slice()) else {
                     return false;
                 };
                 r.status == LinkStatus::Resolved

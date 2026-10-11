@@ -349,10 +349,10 @@ pub fn compared(link: &Link) -> bool {
 /// destinations joined onto the source dir (Go `path.Join`), wiki targets
 /// as written (left of `|`), org-in-md `[[t][d]]` as `t][d`.
 pub fn comparable_href(source: &str, link: &Link) -> String {
-    let raw = link.target.raw.as_str();
+    let raw = link.target().raw();
     match link.kind {
         LinkKind::Markdown | LinkKind::Reference | LinkKind::Image => zk_join(source, raw),
-        LinkKind::Org => match &link.label {
+        LinkKind::Org => match link.label() {
             Some(d) => format!("{raw}][{d}"),
             None => raw.to_owned(),
         },

@@ -250,7 +250,7 @@ impl Vote {
             LinkKind::Wiki => self.wiki += 1,
             LinkKind::Markdown => {
                 self.markdown += 1;
-                if link.target.path.ends_with(".md") {
+                if link.target().path().ends_with(".md") {
                     self.md_suffix += 1;
                 }
             }
@@ -260,7 +260,7 @@ impl Vote {
         // root is still written stem-style: root-relative needs a slash.
         let step = match step {
             Some(ResolveStep::RootRelative)
-                if link.kind == LinkKind::Wiki && !link.target.path.contains('/') =>
+                if link.kind == LinkKind::Wiki && !link.target().path().contains('/') =>
             {
                 Some(ResolveStep::Stem)
             }

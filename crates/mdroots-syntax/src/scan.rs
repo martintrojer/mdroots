@@ -165,12 +165,7 @@ impl Seg<'_> {
             kind,
             LinkKind::Templating | LinkKind::BarePath | LinkKind::Html
         ) {
-            l.target = LinkTarget {
-                raw: raw.to_owned(),
-                path: raw.to_owned(),
-                anchor: None,
-                line: None,
-            };
+            *l.target_mut() = LinkTarget::new(raw, 0..raw.len(), None);
         }
         l.text_range = range.clone();
         l.range = range;
@@ -210,7 +205,7 @@ impl Seg<'_> {
                     continue;
                 }
                 let mut l = Link::new(LinkKind::Org, self.ctx, by_scheme(target), target);
-                l.label = Some(desc.to_owned());
+                l.set_label(Some(desc.into()));
                 let d0 = t0 + target.len() + 2;
                 l.text_range = d0..d0 + desc.len();
                 l.range = range;
@@ -237,7 +232,7 @@ impl Seg<'_> {
                 }
                 None => t0..t0 + target.len(),
             };
-            l.label = label.map(str::to_owned);
+            l.set_label(label.map(Box::from));
             l.range = range;
             found.push(l);
         }
@@ -284,8 +279,9 @@ impl Seg<'_> {
             return;
         }
         let mut l = self.plain(LinkKind::CodeMention, Confidence::Implicit, token, range);
-        l.target.path = path.to_owned();
-        l.target.line = line;
+        let t = l.target_mut();
+        *t = LinkTarget::new(token, 0..path.len(), None);
+        t.set_line(line);
         self.push_link(l);
     }
 
