@@ -2003,13 +2003,18 @@ mod tests {
         );
         assert_eq!(reindent("t: x"), "t: x\n");
         assert_eq!(
-            hide_flow_hashes("t: [#a, '#b', c#d] # e #f\n").as_deref(),
-            Some("t: [\u{E000}a, '#b', c#d] # e #f\n")
+            hide_flow_hashes("t: [#a, '#b', c#d] # e #f\n"),
+            Some(("t: [\u{E000}a, '#b', c#d] # e #f\n".into(), '\u{E000}'))
         );
         assert_eq!(hide_flow_hashes("t: x # c\n"), None);
         assert_eq!(
-            hide_flow_hashes("t: [\"x\\\"\", #a]\n").as_deref(),
-            Some("t: [\"x\\\"\", \u{E000}a]\n")
+            hide_flow_hashes("t: [\"x\\\"\", #a]\n"),
+            Some(("t: [\"x\\\"\", \u{E000}a]\n".into(), '\u{E000}'))
+        );
+        // The mark skips a private-use character already in the text.
+        assert_eq!(
+            hide_flow_hashes("t: [#a, '\u{E000}']\n"),
+            Some(("t: [\u{E001}a, '\u{E000}']\n".into(), '\u{E001}'))
         );
     }
 
