@@ -893,3 +893,22 @@ fn overlay_that_changes_keys_restores_disk_keys_when_cleared() {
     assert!(s.lookup(KeyKind::Stem, "o").is_empty());
     assert!(s.partial("o").is_empty());
 }
+
+#[test]
+fn a_folded_code_mention_spelling_is_not_a_backlink() {
+    // On a case-insensitive fs a code mention resolves to the spelling it
+    // was written in, not the indexed one; code mentions are inline code,
+    // which never counts as a reference, so neither spelling gets one.
+    let fs = MemFs::new()
+        .case_insensitive()
+        .with_file("/Notes/A.md", "# A\n")
+        .with_file("/b.md", "see `notes/a.md`\n")
+        .with_file("/c.md", "[[A]]\n");
+    let s = mem(fs);
+    let (l, r) = link(&s, "b.md", "notes/a.md");
+    assert_eq!(l.context, Context::InlineCode);
+    assert_eq!(r.status, LinkStatus::Resolved);
+    assert_eq!(r.targets, ["notes/a.md"]);
+    assert!(s.backlinks("notes/a.md").is_empty());
+    assert_eq!(froms(&s.backlinks("Notes/A.md")), ["c.md"]);
+}

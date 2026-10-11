@@ -2,7 +2,7 @@
 //! link queries answered through the resolve ladder. The store `default-features
 //! = false` embedders and tests use (docs/specs/library.md §2).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -103,9 +103,22 @@ pub enum AnchorStatus {
     Missing,
 }
 
-/// Target note -> the links that reach it: (source note, index of the link
-/// in the source's [`Document::links`]), sorted by source, then link order.
-type Backlinks = BTreeMap<String, Vec<(String, usize)>>;
+/// A link that reaches a note: (source note, index of the link in the
+/// source's [`Document::links`]).
+type Backlink = (NoteId, usize);
+
+/// Target note -> the links that reach it, sorted by source path, then
+/// link order. Ids are those of the store the index was built from; every
+/// content change drops it.
+struct Backlinks {
+    /// Indexed by the target's [`NoteId`].
+    by_target: Vec<Vec<Backlink>>,
+    /// Targets with no exact indexed path, by the spelling the resolver
+    /// returned. Empty today: every target of a counted Resolved or
+    /// Ambiguous link comes from the index (code mentions, which keep the
+    /// written spelling, are inline code and never count).
+    other: BTreeMap<String, Vec<Backlink>>,
+}
 
 /// Whole-root results computed on first use and dropped on every content
 /// change (`replace`, which overlays and disk entries go through), so they
@@ -397,13 +410,16 @@ impl MemStore {
     /// links, built on first use and kept until the next content change.
     pub fn backlinks(&self, root_rel: &str) -> Vec<(String, Link)> {
         let index = self.caches.backlinks.get_or_init(|| self.build_backlinks());
-        let Some(refs) = index.get(root_rel) else {
-            return Vec::new();
+        let refs = match self.paths.get(root_rel) {
+            Some(&id) => index.by_target.get(id as usize),
+            None => index.other.get(root_rel),
         };
-        refs.iter()
-            .filter_map(|(from, i)| {
-                let l = self.document(from)?.links().nth(*i)?;
-                Some((from.clone(), l.clone()))
+        refs.into_iter()
+            .flatten()
+            .filter_map(|&(from, i)| {
+                let slot = self.slot(from);
+                let l = slot.entry.current()?.links().nth(i)?;
+                Some((slot.path.to_string(), l.clone()))
             })
             .collect()
     }
@@ -434,21 +450,34 @@ impl MemStore {
             .clone()
     }
 
+    /// Iterates sources in path order, so every bucket is sorted by source
+    /// path, then link order.
     fn build_backlinks(&self) -> Backlinks {
-        let mut out = Backlinks::new();
-        for (from, e) in self.entries() {
-            let Some(doc) = e.current() else { continue };
+        let mut out = Backlinks {
+            by_target: vec![Vec::new(); self.slots.len()],
+            other: BTreeMap::new(),
+        };
+        for (from, &id) in &self.paths {
+            let Some(doc) = self.slot(id).entry.current() else {
+                continue;
+            };
             for (i, l) in doc.links().enumerate().filter(|(_, l)| counts(l)) {
                 let r = self.resolve_link(from, l, false);
                 if !matches!(r.status, LinkStatus::Resolved | LinkStatus::Ambiguous) {
                     continue;
                 }
-                let targets: BTreeSet<String> = r.targets.into_iter().collect();
+                let mut targets = r.targets;
+                targets.sort();
+                targets.dedup();
                 for t in targets {
-                    out.entry(t).or_default().push((from.to_owned(), i));
+                    match self.paths.get(t.as_str()) {
+                        Some(&to) => out.by_target[to as usize].push((id, i)),
+                        None => out.other.entry(t).or_default().push((id, i)),
+                    }
                 }
             }
         }
+        out.by_target.iter_mut().for_each(Vec::shrink_to_fit);
         out
     }
 
