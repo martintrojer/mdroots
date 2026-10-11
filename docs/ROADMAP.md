@@ -109,6 +109,10 @@ Deliberate simplifications and gaps in what the specs describe.
 - **The loose-root hysteresis** (re-climb only after 7 days or a 2× change in
   file count) is not applied
   ([roots spec §2](specs/roots.md#2-loose-roots-no-vcs-or-marker)).
+- **Memory, two known extras** (not measured as a baseline cost): the
+  facade keeps each open buffer's text a second time beside its parsed
+  overlay (`Inner.overlays`), and a full `refresh` holds the old store
+  while the new one is built, so peak memory briefly doubles.
 - **`mdroots search DIR`** scans in memory; only a file path (which opens its
   discovered root) uses the full-text index.
 
