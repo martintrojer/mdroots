@@ -111,13 +111,11 @@ type Backlink = (NoteId, usize);
 /// link order. Ids are those of the store the index was built from; every
 /// content change drops it.
 struct Backlinks {
-    /// Indexed by the target's [`NoteId`].
+    /// Indexed by the target's [`NoteId`]. Every target of a counted
+    /// Resolved or Ambiguous link is an indexed path: code mentions, the one
+    /// resolution that keeps a written spelling, are inline code and never
+    /// count (`counts`).
     by_target: Vec<Vec<Backlink>>,
-    /// Targets with no exact indexed path, by the spelling the resolver
-    /// returned. Empty today: every target of a counted Resolved or
-    /// Ambiguous link comes from the index (code mentions, which keep the
-    /// written spelling, are inline code and never count).
-    other: BTreeMap<String, Vec<Backlink>>,
 }
 
 /// Whole-root results computed on first use and dropped on every content
@@ -410,10 +408,10 @@ impl MemStore {
     /// links, built on first use and kept until the next content change.
     pub fn backlinks(&self, root_rel: &str) -> Vec<(String, Link)> {
         let index = self.caches.backlinks.get_or_init(|| self.build_backlinks());
-        let refs = match self.paths.get(root_rel) {
-            Some(&id) => index.by_target.get(id as usize),
-            None => index.other.get(root_rel),
-        };
+        let refs = self
+            .paths
+            .get(root_rel)
+            .and_then(|&id| index.by_target.get(id as usize));
         refs.into_iter()
             .flatten()
             .filter_map(|&(from, i)| {
@@ -455,7 +453,6 @@ impl MemStore {
     fn build_backlinks(&self) -> Backlinks {
         let mut out = Backlinks {
             by_target: vec![Vec::new(); self.slots.len()],
-            other: BTreeMap::new(),
         };
         for (from, &id) in &self.paths {
             let Some(doc) = self.slot(id).entry.current() else {
@@ -470,9 +467,10 @@ impl MemStore {
                 targets.sort();
                 targets.dedup();
                 for t in targets {
-                    match self.paths.get(t.as_str()) {
-                        Some(&to) => out.by_target[to as usize].push((id, i)),
-                        None => out.other.entry(t).or_default().push((id, i)),
+                    let to = self.paths.get(t.as_str());
+                    debug_assert!(to.is_some(), "backlink target {t} is not indexed");
+                    if let Some(&to) = to {
+                        out.by_target[to as usize].push((id, i));
                     }
                 }
             }
