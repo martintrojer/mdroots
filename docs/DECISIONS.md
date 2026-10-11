@@ -324,7 +324,11 @@ Context decides meaning; a link in code is a mention and never diagnosed.
   never rewritten by rename. Comments behave the same.
 - Confidence levels: *explicit* forms (md, wiki, org, ref, HTML href) may be
   diagnosed; *implicit* forms (bare paths, frontmatter plain values) become
-  links only if the target exists and are otherwise dropped silently;
+  links only if the target exists and are otherwise dropped silently. A bare
+  path in prose (`see notes/b.md`) that exists is a link like any other: a
+  backlink, a graph edge, a `notes -l`/`-L` hit. zk does not count these, so
+  mdroots finds more links than zk by design (decided 2026-10, closing
+  ROADMAP open question 2);
   *external* (URLs, `file:` outside the root, org `#+LINK` abbreviations,
   unknown `X:` prefixes) are never diagnosed.
 - An explicit link whose target is not indexed but exists on disk

@@ -156,39 +156,35 @@ Each ends as a spec change or a decision.
 
 1. **Severity thresholds** (§1, item 6): keep 98% / 80%, or derive them per
    root? Measure on more vaults first.
-2. **Bare paths in prose.** In the research vault 192 of 193 bare path-like
-   tokens that exist on disk are frontmatter values; in the zk vault 2 of
-   2,423 exist. Resolve bare paths only in frontmatter values, or also in
-   prose (gated on existence)?
-3. **Empty links.** `[t]()` reports a broken link (at the root's broken-link
+2. **Empty links.** `[t]()` reports a broken link (at the root's broken-link
    severity); zk stores nothing for it
    ([zk differential](research/zk-differential.md)). Should empty
    destinations be silent?
-4. **Org-mode depth.** In scope: links, headings, `:ID:`, `#+TITLE`, `#+LINK`.
+3. **Org-mode depth.** In scope: links, headings, `:ID:`, `#+TITLE`, `#+LINK`.
    Open: agenda, `id:` links across roots, properties beyond `:ID:`.
-5. **vcs-enumerated mode** (§1, item 4): is the listing budget right,
+4. **vcs-enumerated mode** (§1, item 4): is the listing budget right,
    should a filesystem-native glob API replace the VCS child process, and should
    [git](https://git-scm.com)'s `git ls-files` do the same for other lazy
    roots?
-6. **Memory at scale** (§1, item 3): up to which vault size must the 35 MB
+5. **Memory at scale** (§1, item 3): up to which vault size must the 35 MB
    target hold, and is that what triggers the derived tables?
-7. **FSEvents replay cost.** After a day offline, replay may degrade to
+6. **FSEvents replay cost.** After a day offline, replay may degrade to
    directories only (`MustScanSubDirs`, dropped events, `EventIdsWrapped`).
    Is it cheaper than today's re-list on open, and is it worth an FFI
    exception to `forbid(unsafe_code)`?
-8. **`.mdrootsignore` vs `.ignore` plus a key in `.mdroots`.** The dedicated
+7. **`.mdrootsignore` vs `.ignore` plus a key in `.mdroots`.** The dedicated
    file exists because `.gitignore` answers a VCS question, folders without
    VCS lack one, and an empty file means "never index here". Folding it into
    `.ignore` (shared with [ripgrep](https://github.com/BurntSushi/ripgrep) and
    [fd](https://github.com/sharkdp/fd)) would drop one magic file name, but
    would also hide those files from those tools.
-9. **Public sub-crates.** Should `mdroots-syntax` (a parser-only user) become
+8. **Public sub-crates.** Should `mdroots-syntax` (a parser-only user) become
    a public crate with its own stability promise, and does that require
    leaving lockstep versions
    ([D6](DECISIONS.md#d6-crate-graph-and-lockstep-versions))?
-10. **Short binary alias.** `mw` and `mdr` are taken on crates.io. Find a
+9. **Short binary alias.** `mw` and `mdr` are taken on crates.io. Find a
     candidate and run the
     [D1](DECISIONS.md#d1-name-mdroots) namespace checks.
-11. **Name checks for `mdroots`.** npm and trademark (USPTO/EUIPO, classes 9
+10. **Name checks for `mdroots`.** npm and trademark (USPTO/EUIPO, classes 9
     and 42) are still unchecked; crates.io, Homebrew, PyPI, Debian and
     GitHub were checked.
