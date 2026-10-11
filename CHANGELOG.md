@@ -4,6 +4,27 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
+## Unreleased
+
+Fixes from user reports against 0.2.9.
+
+- Frontmatter the parser rejects is now a **warning** (was info), so
+  `mdroots check` exits 1 on it by default. In such a block an entry counts
+  only if the parser accepts it on its own: a malformed value like
+  `tags: [a` or `title: "bad\q"` no longer becomes a junk tag, title,
+  alias, id, date or link, while valid entries next to it keep their values.
+- `notes --related` now matches zk: notes on a directed two-hop path to or
+  from the note, not linked with it either way (was any two hops, which
+  pulled in most of a notebook through hub notes).
+- `mdroots backlinks NOTE` no longer lists the note's links to itself.
+- `notes -l`, `-L` and `--related` with a path that is not an indexed note
+  are a usage error (exit 2, `not a note: ARG`) instead of an empty result.
+- A repeated `-m` combines with AND; before, the last one won.
+- The usage text and README spell out where mdroots differs from zk: `-m`
+  matches every word with the last as a prefix (no stemming, phrases,
+  OR/NOT or field filters); bare paths in prose that exist count as links
+  (by design, D7); the `check` summary goes to stderr.
+
 ## 0.2.9
 
 Fixes from a review of 0.2.8.
