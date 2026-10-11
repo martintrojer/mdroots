@@ -20,15 +20,39 @@ use crate::model::{
 };
 
 /// Parse the frontmatter block at `range` (fences included, for YAML and
-/// TOML) into its entries and the links and tags its values carry.
+/// TOML) into its entries and the links and tags its values carry. The
+/// fields are left to [`fields`], on first use.
 pub(crate) fn parse_block(
     src: &str,
     range: Range<usize>,
     format: FrontmatterFormat,
 ) -> (Frontmatter, Vec<Element>) {
+    let (fm, entries) = read_block(src, range, format, None);
+    let elements = elements(src, &fm, &entries);
+    (fm, elements)
+}
+
+/// The fields of `fm`, a block of a document whose source is `src`: the
+/// same read as [`parse_block`], keeping the fields.
+pub(crate) fn fields(src: &str, fm: &Frontmatter) -> Box<[Field]> {
+    if fm.format == FrontmatterFormat::OrgKeywords {
+        return Frontmatter::entry_fields(fm.entries(), &fm.range).collect();
+    }
+    let mut fields = Vec::new();
+    read_block(src, fm.range.clone(), fm.format, Some(&mut fields));
+    fields.into_boxed_slice()
+}
+
+/// Read the block at `range`: the frontmatter and its entries, and the
+/// fields into `fields` when given.
+fn read_block(
+    src: &str,
+    range: Range<usize>,
+    format: FrontmatterFormat,
+    fields: Option<&mut Vec<Field>>,
+) -> (Frontmatter, Vec<Entry>) {
     let range = clamp(src, range);
     let mut entries: Vec<Entry> = Vec::new();
-    let mut fields: Vec<Field> = Vec::new();
     let mut parsed_ok = true;
     let mut inner = range.clone();
     let error = match format {
@@ -41,11 +65,9 @@ pub(crate) fn parse_block(
             inner = body(src, &range);
             let parsed = parse(&src[inner.clone()], kind);
             parsed_ok = parsed.parsed;
-            fields = parsed
-                .entries
-                .iter()
-                .map(|e| to_field(e, &inner, None))
-                .collect();
+            if let Some(fields) = fields {
+                fields.extend(parsed.entries.iter().map(|e| to_field(e, &inner, None)));
+            }
             let mut ctx = Flatten {
                 src,
                 inner: inner.clone(),
@@ -60,10 +82,13 @@ pub(crate) fn parse_block(
         FrontmatterFormat::Json => {
             let error = json::entries(src, range.clone(), &mut entries);
             // JSON `null` is a scalar as written in the fields.
-            fields = entries
-                .iter()
-                .map(|e| Field::from_value(&e.key, &e.value, "null", e.src.clone()))
-                .collect();
+            if let Some(fields) = fields {
+                fields.extend(
+                    entries
+                        .iter()
+                        .map(|e| Field::from_value(&e.key, &e.value, "null", e.src.clone())),
+                );
+            }
             let content = src[range.clone()]
                 .trim()
                 .trim_start_matches('{')
@@ -72,20 +97,18 @@ pub(crate) fn parse_block(
             error
         }
         FrontmatterFormat::Logseq => {
-            line_entries(src, range.clone(), logseq_line, &mut entries, &mut fields);
+            line_entries(src, range.clone(), logseq_line, &mut entries, fields);
             None
         }
         FrontmatterFormat::MultiMarkdown => {
-            line_entries(src, range.clone(), mmd_line, &mut entries, &mut fields);
+            line_entries(src, range.clone(), mmd_line, &mut entries, fields);
             None
         }
         _ => {
-            line_entries(src, range.clone(), org_line, &mut entries, &mut fields);
+            line_entries(src, range.clone(), org_line, &mut entries, fields);
             None
         }
     };
-    // Line formats push their fields; the block lives as long as the document.
-    fields.shrink_to_fit();
     let fm = Frontmatter::from_entries(
         format,
         range,
@@ -95,9 +118,8 @@ pub(crate) fn parse_block(
             .collect(),
         error,
     )
-    .with_fields(fields, parsed_ok, inner);
-    let elements = elements(src, &fm, &entries);
-    (fm, elements)
+    .with_parsed(parsed_ok, inner);
+    (fm, entries)
 }
 
 /// A parsed entry as a public field, ranges absolute. `parent` is the
@@ -560,16 +582,18 @@ fn line_entries(
     range: Range<usize>,
     f: fn(&str) -> Option<(&str, &str)>,
     out: &mut Vec<Entry>,
-    fields: &mut Vec<Field>,
+    mut fields: Option<&mut Vec<Field>>,
 ) {
     for (at, line) in lines(&src[range.clone()]) {
         if let Some((key, value)) = f(line) {
             let start = range.start + at;
-            fields.push(Field {
-                key: key.to_owned(),
-                value: FieldValue::Scalar(value.to_owned()),
-                range: start..start + line.len(),
-            });
+            if let Some(fields) = fields.as_deref_mut() {
+                fields.push(Field {
+                    key: key.to_owned(),
+                    value: FieldValue::Scalar(value.to_owned()),
+                    range: start..start + line.len(),
+                });
+            }
             out.push(Entry {
                 key: key.to_owned(),
                 value: scalar_value(value),
@@ -2434,6 +2458,50 @@ mod tests {
         );
         assert_eq!(fm.title(), Some("T"));
         assert_eq!(fm.tags(), ["a", "b"]);
+    }
+
+    /// A parsed document keeps no fields: they are built on first use,
+    /// exact (no spare capacity), and the same on every call.
+    #[test]
+    fn fields_are_built_on_first_use() {
+        use crate::model::Dialect;
+        let header = |n: usize, sep: &str| -> String {
+            (0..n)
+                .map(|i| format!("k{i}{sep} v{i}\n"))
+                .collect::<String>()
+                + "\nbody\n"
+        };
+        for n in [1, 3, 5] {
+            for (src, format) in [
+                (header(n, "::"), FrontmatterFormat::Logseq),
+                (header(n, ":"), FrontmatterFormat::MultiMarkdown),
+                (
+                    format!("---\n{}---\n", header(n, ":")),
+                    FrontmatterFormat::Yaml,
+                ),
+            ] {
+                let doc = crate::parse(&src, Dialect::Markdown);
+                assert_eq!(doc.frontmatter().map(|f| f.format), Some(format), "{src:?}");
+                assert!(doc.frontmatter_fields.get().is_none(), "{src:?}");
+                let fields = doc.frontmatter_fields();
+                assert_eq!(fields.len(), n, "{src:?}");
+                assert!(fields.iter().all(|f| f.key.capacity() == f.key.len()));
+                assert!(std::ptr::eq(fields, doc.frontmatter_fields()));
+                assert_eq!(doc, crate::parse(&src, Dialect::Markdown));
+            }
+        }
+        let doc = crate::parse("no header\n", Dialect::Markdown);
+        assert!(doc.frontmatter_fields().is_empty());
+    }
+
+    /// 10,000 notes each hold one; fields no longer live in it.
+    #[test]
+    fn frontmatter_size() {
+        assert!(
+            size_of::<Frontmatter>() <= 88,
+            "{}",
+            size_of::<Frontmatter>()
+        );
     }
 
     #[test]

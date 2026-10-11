@@ -43,6 +43,7 @@ pub(crate) fn parse_document(mut src: String, opts: &ParseOptions) -> Document {
         elements,
         frontmatter: fm,
         line_index: OnceLock::new(),
+        frontmatter_fields: OnceLock::new(),
         lossy: false,
     }
 }

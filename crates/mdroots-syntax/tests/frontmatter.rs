@@ -192,14 +192,17 @@ fn invalid_yaml_sets_error_and_the_rest_still_parses() {
 
 #[test]
 fn a_broken_value_in_an_invalid_block_means_nothing() {
-    // `tags: [a` is no tag `[a`; the entry stays as written in fields().
+    // `tags: [a` is no tag `[a`; the entry stays as written in frontmatter_fields().
     let doc = md("---\ntags: [a\n---\nbody\n");
     let f = fm(&doc);
     assert!(f.error.is_some());
     assert!(f.tags().is_empty(), "{:?}", f.tags());
     assert!(tag_names(&doc).is_empty(), "{:?}", tag_names(&doc));
     assert_eq!(f.entries(), [("tags".into(), Value::Null)]);
-    assert_eq!(f.fields()[0].value, FieldValue::Scalar("[a".into()));
+    assert_eq!(
+        doc.frontmatter_fields()[0].value,
+        FieldValue::Scalar("[a".into())
+    );
 
     // An unclosed quote gives no title; the valid entry after it stays.
     let doc = md("---\ntitle: \"unclosed\nauthor: Ann\n---\n");
@@ -346,7 +349,7 @@ fn an_invalid_block_keeps_entries_that_parse_once_reindented() {
     // `]` on its own line belongs to the list's field.
     let src = "---\ntags: [\n  a,\n  b\n]\nbad: [x\n---\n";
     let doc = md(src);
-    let field = &fm(&doc).fields()[0];
+    let field = &doc.frontmatter_fields()[0];
     assert_eq!(&src[field.range.clone()], "tags: [\n  a,\n  b\n]");
     assert_eq!(fm(&doc).tags(), ["a", "b"]);
 }
@@ -374,7 +377,7 @@ fn an_invalid_block_drops_entries_that_do_not_parse_alone() {
         assert!(tag_names(&doc).is_empty(), "{src:?}");
         assert_eq!(f.get("tags"), Some(&Value::Null), "{src:?}");
         assert_eq!(f.id(), Some("z1"), "{src:?}");
-        let field = &f.fields()[0];
+        let field = &doc.frontmatter_fields()[0];
         assert_eq!(&src[field.range.clone()], format!("tags: {v}"), "{src:?}");
     }
 }
@@ -824,7 +827,7 @@ fn yaml_fields_in_order_with_their_lines() {
     let f = fm(&doc);
     assert!(f.parsed());
     assert_eq!(
-        shown(src, f.fields()),
+        shown(src, doc.frontmatter_fields()),
         [
             ("title", "T".into(), "title: T"),
             ("meta", "{…}".into(), "meta:\n  a: 1\n  b: x"),
@@ -834,7 +837,7 @@ fn yaml_fields_in_order_with_their_lines() {
             ("nothing", "null".into(), "nothing: null"),
         ]
     );
-    let fields = f.fields();
+    let fields = doc.frontmatter_fields();
     assert_eq!(
         fields[3].value,
         FieldValue::List(vec!["a".into(), "b".into()])
@@ -851,8 +854,8 @@ fn nested_map_children_have_their_ranges() {
     let doc = md(src);
     let f = fm(&doc);
     let inner = f.inner();
-    let [m, n] = f.fields() else {
-        panic!("{:?}", f.fields())
+    let [m, n] = doc.frontmatter_fields() else {
+        panic!("{:?}", doc.frontmatter_fields())
     };
     // A flow map: the parser alone knows the children; they take the
     // parent's range.
@@ -899,23 +902,23 @@ fn toml_fields_table_and_dotted_key() {
     let inner = f.inner();
     assert_eq!(&src[inner.clone()], "a.b = 1\n[t]\nk = 2");
     assert_eq!(
-        shown(src, f.fields()),
+        shown(src, doc.frontmatter_fields()),
         [
             ("a", "{…}".into(), &src[inner.clone()]),
             ("t", "{…}".into(), &src[inner.clone()]),
         ]
     );
-    let t = &f.fields()[1];
+    let t = &doc.frontmatter_fields()[1];
     assert_eq!(children(t)[0].key, "k");
     assert_eq!(children(t)[0].range, inner);
     // A table next to scanned keys: the scan's lines where a key matches.
     let src = "+++\ntitle = \"T\"\n[extra]\nk = 1\n+++\n";
     let doc = md(src);
     let f = fm(&doc);
-    assert_eq!(f.fields()[0].key, "title");
-    assert_eq!(f.fields()[0].range, at(src, "title = \"T\""));
-    assert_eq!(f.fields()[1].key, "extra");
-    assert_eq!(f.fields()[1].range, f.inner());
+    assert_eq!(doc.frontmatter_fields()[0].key, "title");
+    assert_eq!(doc.frontmatter_fields()[0].range, at(src, "title = \"T\""));
+    assert_eq!(doc.frontmatter_fields()[1].key, "extra");
+    assert_eq!(doc.frontmatter_fields()[1].range, f.inner());
 }
 
 #[test]
@@ -925,8 +928,8 @@ fn toml_text_as_written() {
     let src = "+++\nx = [[1, 2], 3]\ny = 1.0\n[t]\nk = 2.0\n+++\n";
     let doc = md(src);
     let f = fm(&doc);
-    let shown: Vec<_> = f
-        .fields()
+    let shown: Vec<_> = doc
+        .frontmatter_fields()
         .iter()
         .map(|f| (f.key.as_str(), f.value.clone()))
         .collect();
@@ -937,15 +940,23 @@ fn toml_text_as_written() {
             ("y", FieldValue::Scalar("1.0".into())),
         ]
     );
-    assert_eq!(children(&f.fields()[2])[0].value.display(), "2.0");
+    assert_eq!(
+        children(&doc.frontmatter_fields()[2])[0].value.display(),
+        "2.0"
+    );
     assert_eq!(f.get("x"), Some(&list(&["[1, 2]", "3"])));
     assert_eq!(f.get("t.k"), Some(&str_("2.0")));
     // Scanned path: the source text.
     let src = "+++\ny = 1.0\nx = [[1, 2]]\n+++\n";
     let doc = md(src);
-    let f = fm(&doc);
-    assert_eq!(f.fields()[0].value, FieldValue::Scalar("1.0".into()));
-    assert_eq!(f.fields()[1].value, FieldValue::List(vec!["[1, 2]".into()]));
+    assert_eq!(
+        doc.frontmatter_fields()[0].value,
+        FieldValue::Scalar("1.0".into())
+    );
+    assert_eq!(
+        doc.frontmatter_fields()[1].value,
+        FieldValue::List(vec!["[1, 2]".into()])
+    );
 }
 
 #[test]
@@ -958,13 +969,13 @@ fn unparsed_and_blank_blocks() {
         let doc = md(src);
         let f = fm(&doc);
         assert!(!f.parsed(), "{src:?}");
-        assert!(f.fields().is_empty(), "{src:?}");
+        assert!(doc.frontmatter_fields().is_empty(), "{src:?}");
     }
     for src in ["---\n---\n", "---\n\n  \n---\n", "+++\n+++\n"] {
         let doc = md(src);
         let f = fm(&doc);
         assert!(f.parsed(), "{src:?}");
-        assert!(f.fields().is_empty(), "{src:?}");
+        assert!(doc.frontmatter_fields().is_empty(), "{src:?}");
     }
 }
 
@@ -980,7 +991,7 @@ fn inner_is_between_the_fences() {
     let doc = md(src);
     let f = fm(&doc);
     assert_eq!(&src[f.inner()], "a: 1\r");
-    assert_eq!(f.fields()[0].range, at(src, "a: 1"));
+    assert_eq!(doc.frontmatter_fields()[0].range, at(src, "a: 1"));
     // Unfenced: the whole range.
     let src = "title:: X\n\nbody\n";
     let doc = md(src);
@@ -994,7 +1005,7 @@ fn logseq_fields_are_the_lines() {
     let f = fm(&doc);
     assert!(f.parsed());
     assert_eq!(
-        shown(src, f.fields()),
+        shown(src, doc.frontmatter_fields()),
         [
             ("title", "X".into(), "title:: X"),
             ("alias", "[[y]], [[z]]".into(), "alias:: [[y]], [[z]]"),
@@ -1009,8 +1020,8 @@ fn json_fields_keep_null_as_written() {
     let doc = md(src);
     let f = fm(&doc);
     assert!(f.parsed());
-    let keys: Vec<_> = f
-        .fields()
+    let keys: Vec<_> = doc
+        .frontmatter_fields()
         .iter()
         .map(|f| (f.key.as_str(), f.value.clone()))
         .collect();
@@ -1030,7 +1041,7 @@ fn org_fields_from_entries() {
     let doc = parse(src, Dialect::Org);
     let f = fm(&doc);
     assert_eq!(
-        f.fields()
+        doc.frontmatter_fields()
             .iter()
             .map(|f| (f.key.as_str(), f.value.display(), f.range.clone()))
             .collect::<Vec<_>>(),

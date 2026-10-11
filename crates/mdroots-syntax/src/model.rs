@@ -71,11 +71,13 @@ pub struct Document {
     pub(crate) elements: Vec<Element>,
     pub(crate) frontmatter: Option<Frontmatter>,
     pub(crate) line_index: OnceLock<LineIndex>,
+    /// Fields of `frontmatter`, read again from the source on first use.
+    pub(crate) frontmatter_fields: OnceLock<Box<[Field]>>,
     pub(crate) lossy: bool,
 }
 
 impl PartialEq for Document {
-    /// Ignores the lazily built line index.
+    /// Ignores the lazily built line index and frontmatter fields.
     fn eq(&self, other: &Self) -> bool {
         self.source == other.source
             && self.dialect == other.dialect
@@ -129,6 +131,24 @@ impl Document {
 
     pub fn frontmatter(&self) -> Option<&Frontmatter> {
         self.frontmatter.as_ref()
+    }
+
+    /// The frontmatter's top-level entries as written, in source order,
+    /// before nested maps are flattened: duplicate keys all show, scalars
+    /// keep their source text (`null` stays `"null"`), nested maps keep
+    /// their children. For YAML and TOML, keys the parser alone found
+    /// (TOML tables and dotted keys, flow maps) come as the parser reports
+    /// them. JSON entries are flattened to `a.b` keys; org keywords are the
+    /// entries, each with the block's range. Empty without frontmatter.
+    ///
+    /// Built from the source on first use: most readers only need
+    /// [`Frontmatter::entries`].
+    pub fn frontmatter_fields(&self) -> &[Field] {
+        self.frontmatter_fields
+            .get_or_init(|| match &self.frontmatter {
+                Some(fm) => crate::frontmatter::fields(&self.source, fm),
+                None => Box::default(),
+            })
     }
 
     /// Line index over the source, built on first use.
@@ -586,45 +606,43 @@ pub struct Frontmatter {
     pub range: Range<usize>,
     pub error: Option<String>,
     entries: Vec<(String, Value)>,
-    fields: Vec<Field>,
     parsed: bool,
     inner: Range<usize>,
 }
 
 impl Frontmatter {
-    /// A frontmatter block from flattened entries. Its [`fields`](Self::fields)
-    /// are the same entries (`Value::Null` as an empty scalar), each with
-    /// `range` as its range; [`parsed`](Self::parsed) is true and
-    /// [`inner`](Self::inner) is `range`.
+    /// A frontmatter block from flattened entries; [`parsed`](Self::parsed)
+    /// is true and [`inner`](Self::inner) is `range`. In a parsed org
+    /// document its fields are the same entries (`Value::Null` as an empty
+    /// scalar), each with `range` as its range.
     pub fn from_entries(
         format: FrontmatterFormat,
         range: Range<usize>,
         entries: Vec<(String, Value)>,
         error: Option<String>,
     ) -> Self {
-        let fields = entries
-            .iter()
-            .map(|(k, v)| Field::from_value(k, v, "", range.clone()))
-            .collect();
         Frontmatter {
             format,
             inner: range.clone(),
             range,
             error,
             entries,
-            fields,
             parsed: true,
         }
     }
 
-    /// Replace the fields, the parsed flag and the inner range.
-    pub(crate) fn with_fields(
-        mut self,
-        fields: Vec<Field>,
-        parsed: bool,
-        inner: Range<usize>,
-    ) -> Self {
-        self.fields = fields;
+    /// The fields of a block built by [`from_entries`](Self::from_entries).
+    pub(crate) fn entry_fields<'a>(
+        entries: &'a [(String, Value)],
+        range: &'a Range<usize>,
+    ) -> impl ExactSizeIterator<Item = Field> + 'a {
+        entries
+            .iter()
+            .map(|(k, v)| Field::from_value(k, v, "", range.clone()))
+    }
+
+    /// Replace the parsed flag and the inner range.
+    pub(crate) fn with_parsed(mut self, parsed: bool, inner: Range<usize>) -> Self {
         self.parsed = parsed;
         self.inner = inner;
         self
@@ -640,16 +658,6 @@ impl Frontmatter {
         self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
     }
 
-    /// The top-level entries as written, in source order, before nested
-    /// maps are flattened: duplicate keys all show, scalars keep their
-    /// source text (`null` stays `"null"`), nested maps keep their
-    /// children. For YAML and TOML, keys the parser alone found (TOML
-    /// tables and dotted keys, flow maps) come as the parser reports them.
-    /// JSON entries are flattened to `a.b` keys.
-    pub fn fields(&self) -> &[Field] {
-        &self.fields
-    }
-
     /// False when the block is not blank but no key could be read from it.
     pub fn parsed(&self) -> bool {
         self.parsed
@@ -662,7 +670,7 @@ impl Frontmatter {
     }
 }
 
-/// A frontmatter entry as written, from [`Frontmatter::fields`].
+/// A frontmatter entry as written, from [`Document::frontmatter_fields`].
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Field {
