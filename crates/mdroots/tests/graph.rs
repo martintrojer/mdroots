@@ -160,13 +160,44 @@ fn links_to_and_from_are_deduplicated_notes() {
     assert_eq!(paths(w.links_to(&v("b.md")).unwrap()), ["a.md", "c.md"]);
 }
 
+/// `name.md` linking to each of `links` (by wiki link).
+fn note(links: &str) -> String {
+    links
+        .split(',')
+        .filter(|l| !l.is_empty())
+        .map(|l| format!("[[{l}]]\n"))
+        .collect()
+}
+
+/// A root of `name:link,link` specs.
+fn graph(specs: &[&str]) -> Workspace {
+    let files: Vec<(String, String)> = specs
+        .iter()
+        .map(|s| {
+            let (name, links) = s.split_once(':').unwrap();
+            (format!("{name}.md"), note(links))
+        })
+        .collect();
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, t)| (p.as_str(), t.as_str()))
+        .collect();
+    open(&refs)
+}
+
+fn related(w: &Workspace, rel: &str) -> Vec<String> {
+    names(w.related(&v(rel)).unwrap().into_iter().map(|(n, _)| n.path))
+}
+
 /// ```text
 /// a → b, c → a, b → d, c → d, c → e, e → f, g → b, a → h, h → a, h → d
 /// ```
-/// N(a) = {b, c, h}. Two hops: via b {d, g}, via c {d, e}, via h {d}; a's
-/// own neighbours are dropped. Scores: d 3, e 1, g 1. f is three hops away.
+/// Directed two-hop paths from a: a → b → d, a → h → d. Into a: none
+/// (c → a and h → a have nothing linking to c or to h but a). e (a ← c → e)
+/// and g (a → b ← g) are two hops apart only undirected: not related, as in
+/// zk 0.15.6. d scores 2 (intermediaries b and h); c and h link with a.
 #[test]
-fn related_is_distance_two_scored_by_shared_neighbours() {
+fn related_follows_directed_two_hop_paths_scored_by_intermediaries() {
     let w = open(&[
         ("a.md", "[[b]] [[h]]\n"),
         ("b.md", "[[d]]\n"),
@@ -183,13 +214,42 @@ fn related_is_distance_two_scored_by_shared_neighbours() {
         .into_iter()
         .map(|(n, s)| (names([n.path]).remove(0), s))
         .collect();
-    assert_eq!(
-        got,
-        [("d.md".into(), 3), ("e.md".into(), 1), ("g.md".into(), 1)]
-    );
-    // A directly linked note is never related, even when it is also two
-    // hops away (c is a neighbour of a and of h).
-    assert!(got.iter().all(|(n, _)| n != "c.md"));
+    assert_eq!(got, [("d.md".into(), 2)]);
+}
+
+/// Answers checked against zk 0.15.6 `zk list --related X.md`.
+#[test]
+fn related_matches_zk_on_converging_links() {
+    // t → o ← y and t ← z: nothing two directed hops from t.
+    let w = graph(&["hub:t,x", "t:o", "x:", "y:o", "z:t", "o:"]);
+    assert_eq!(related(&w, "t.md"), Vec::<String>::new());
+    assert_eq!(related(&w, "z.md"), ["o.md"]);
+    assert_eq!(related(&w, "hub.md"), ["o.md"]);
+}
+
+#[test]
+fn related_matches_zk_on_paths_in_both_orientations() {
+    let w = graph(&["t:o,p", "o:a", "a:t", "p:s", "q:p", "r:o", "u:t", "s:"]);
+    assert_eq!(related(&w, "t.md"), ["s.md"]);
+    assert_eq!(related(&w, "o.md"), ["u.md"]);
+    assert_eq!(related(&w, "p.md"), ["a.md", "u.md"]);
+    assert_eq!(related(&w, "u.md"), ["o.md", "p.md"]);
+}
+
+#[test]
+fn related_includes_notes_two_hops_upstream() {
+    let w = graph(&["q:j", "j:n", "n:"]);
+    assert_eq!(related(&w, "n.md"), ["q.md"]);
+}
+
+#[test]
+fn related_stops_at_two_hops() {
+    // a → b → c → d: d is three hops from a, so not related.
+    let w = graph(&["a:b", "b:c", "c:d", "d:"]);
+    assert_eq!(related(&w, "a.md"), ["c.md"]);
+    assert_eq!(related(&w, "b.md"), ["d.md"]);
+    assert_eq!(related(&w, "c.md"), ["a.md"]);
+    assert_eq!(related(&w, "d.md"), ["b.md"]);
 }
 
 #[test]
@@ -253,7 +313,7 @@ fn graph_queries_stay_fast_on_3000_notes() {
     assert!(w.orphans().unwrap().is_empty());
     assert_eq!(w.missing_backlinks().unwrap().len(), 3 * N);
     let rel = w.related(&v("n0.md")).unwrap();
-    // N(n0) = n1..n3 and n2997..n2999; two hops reach n4..n6, n2994..n2996.
+    // Two directed hops reach n4..n6 forwards and n2994..n2996 backwards.
     assert_eq!(rel.len(), 6);
     let took = t.elapsed();
     eprintln!("graph queries on {N} notes: {took:?}");

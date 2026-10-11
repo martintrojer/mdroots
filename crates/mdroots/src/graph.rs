@@ -113,22 +113,27 @@ impl Workspace {
         Ok(v)
     }
 
-    /// Notes two hops from `path` in either direction that `path` does not
-    /// link to and that do not link to `path` (as `zk list --related`), with
-    /// the number of shared neighbours, highest first, then by path. Empty
-    /// for a path inside the root that is not indexed.
+    /// Notes `m` at the end of a directed two-hop path `path → k → m` or at
+    /// the start of one `m → k → path`, other than `path` and the notes
+    /// linked with `path` either way, as `zk list --related` (zk 0.15.6:
+    /// nothing further than two hops). Each comes with the number of
+    /// distinct intermediaries `k`, highest first, then by path. Empty for
+    /// a path inside the root that is not indexed.
     pub fn related(&self, path: &Path) -> Result<Vec<(NoteSummary, usize)>, Error> {
         let rel = self.rel(path)?;
         let g = self.graph()?;
         let direct = g.neighbours(&rel);
-        let mut score: BTreeMap<&str, usize> = BTreeMap::new();
-        for n in &direct {
-            for m in g.neighbours(n) {
-                if m != rel && !direct.contains(m) {
-                    *score.entry(m).or_default() += 1;
+        let mut via: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for (first, second) in [(&g.out, &g.out), (&g.inc, &g.inc)] {
+            for k in first.get(&rel).into_iter().flatten() {
+                for m in second.get(k).into_iter().flatten() {
+                    if *m != rel && !direct.contains(m.as_str()) {
+                        via.entry(m).or_default().insert(k);
+                    }
                 }
             }
         }
+        let score: BTreeMap<&str, usize> = via.iter().map(|(m, ks)| (*m, ks.len())).collect();
         let by_path: BTreeMap<PathBuf, usize> =
             score.iter().map(|(r, n)| (self.abs(r), *n)).collect();
         let mut v: Vec<(NoteSummary, usize)> = self
