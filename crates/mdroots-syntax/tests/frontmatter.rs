@@ -245,6 +245,135 @@ fn valid_entries_survive_an_unrelated_broken_line() {
 }
 
 #[test]
+fn in_an_invalid_block_an_entry_counts_only_if_it_parses_alone() {
+    // Balanced but malformed values give nothing; a valid one next to
+    // them stays.
+    let doc = md("---\ntags: [a}\ntitle: \"bad\\q\"\n---\n");
+    let f = fm(&doc);
+    assert!(f.error.is_some());
+    assert!(f.tags().is_empty(), "{:?}", f.tags());
+    assert!(tag_names(&doc).is_empty(), "{:?}", tag_names(&doc));
+    assert_eq!(f.title(), None);
+    let doc = md("+++\ntags = bad\ntitle = \"T\"\n+++\n");
+    let f = fm(&doc);
+    assert!(f.error.is_some());
+    assert!(f.tags().is_empty(), "{:?}", f.tags());
+    assert_eq!(f.title(), Some("T"));
+
+    // Values the parser takes alone keep the value they have alone.
+    for (alone, broken) in [
+        (
+            "---\ntags: [\"a\\\"[b\"]\n---\n",
+            "---\ntags: [\"a\\\"[b\"]\ntitle: \"unclosed\n---\n",
+        ),
+        (
+            "+++\ntags = [\"a\\\"[b\"]\n+++\n",
+            "+++\ntags = [\"a\\\"[b\"]\ntitle = \"unclosed\n+++\n",
+        ),
+    ] {
+        let want: Vec<String> = fm(&md(alone))
+            .tags()
+            .iter()
+            .map(|t| t.to_string())
+            .collect();
+        assert_eq!(want.len(), 1, "{alone:?}");
+        let doc = md(broken);
+        assert!(fm(&doc).error.is_some(), "{broken:?}");
+        assert_eq!(fm(&doc).tags(), want, "{broken:?}");
+    }
+    let doc = md("---\ntitle: '''quoted'\ntags: [a\n---\n");
+    let f = fm(&doc);
+    assert!(f.error.is_some());
+    assert_eq!(f.title(), Some("''quoted"));
+    assert!(f.tags().is_empty(), "{:?}", f.tags());
+
+    // A quoted list item continued on the next line is one item, in a
+    // valid block and next to a broken entry.
+    for src in [
+        "---\ntags:\n  - \"hello\n    world\"\n---\n",
+        "---\ntags:\n  - \"hello\n    world\"\ntitle: \"unclosed\n---\n",
+    ] {
+        assert_eq!(fm(&md(src)).tags(), ["hello world"], "{src:?}");
+    }
+}
+
+#[test]
+fn an_invalid_block_keeps_entries_that_parse_once_reindented() {
+    let cases: [(&str, &str, Value); 8] = [
+        (
+            "---\ntags:\n\t- a\n\t- b\nbad: [x\n---\n",
+            "tags",
+            list(&["a", "b"]),
+        ),
+        (
+            "---\ntitle: long\n\tmore\nbad: [x\n---\n",
+            "title",
+            str_("long more"),
+        ),
+        ("---\ntitle: \"a\nb\"\nbad: [x\n---\n", "title", str_("a b")),
+        (
+            "---\ntags: [\n  a,\n  b\n]\nbad: [x\n---\n",
+            "tags",
+            list(&["a", "b"]),
+        ),
+        (
+            "+++\ntags = [\n  \"a\",\n  \"b\"\n]\nbad = [x\n+++\n",
+            "tags",
+            list(&["a", "b"]),
+        ),
+        (
+            "---\ntags: [#a, #b]\nbad: [x\n---\n",
+            "tags",
+            list(&["#a", "#b"]),
+        ),
+        // A flow map takes the shape it has alone.
+        ("---\nm: {k: v}\nbad: [x\n---\n", "m.k", str_("v")),
+        ("---\nm:\n  k: [a\n  j: x\nbad: [x\n---\n", "m.j", str_("x")),
+    ];
+    for (src, key, want) in cases {
+        let doc = md(src);
+        let f = fm(&doc);
+        assert!(f.error.is_some(), "{src:?}");
+        assert_eq!(f.get(key), Some(&want), "{src:?}");
+        assert_eq!(f.get("bad"), Some(&Value::Null), "{src:?}");
+    }
+    // `]` on its own line belongs to the list's field.
+    let src = "---\ntags: [\n  a,\n  b\n]\nbad: [x\n---\n";
+    let doc = md(src);
+    let field = &fm(&doc).fields()[0];
+    assert_eq!(&src[field.range.clone()], "tags: [\n  a,\n  b\n]");
+    assert_eq!(fm(&doc).tags(), ["a", "b"]);
+}
+
+#[test]
+fn an_invalid_block_drops_entries_that_do_not_parse_alone() {
+    // The last four a human could read, but the parser rejects them alone.
+    for v in [
+        "[a",
+        "\"unclosed",
+        "[a, [b]",
+        "[\"a, b]",
+        "[a, {b]",
+        "[a}, b]",
+        "Foo: bar",
+        "[Draft] My note",
+        "[[A]], [[B]]",
+        "*x",
+    ] {
+        let src = format!("---\ntags: {v}\nid: z1\n---\n");
+        let doc = md(&src);
+        let f = fm(&doc);
+        assert!(f.error.is_some(), "{src:?}");
+        assert!(f.tags().is_empty(), "{src:?} {:?}", f.tags());
+        assert!(tag_names(&doc).is_empty(), "{src:?}");
+        assert_eq!(f.get("tags"), Some(&Value::Null), "{src:?}");
+        assert_eq!(f.id(), Some("z1"), "{src:?}");
+        let field = &f.fields()[0];
+        assert_eq!(&src[field.range.clone()], format!("tags: {v}"), "{src:?}");
+    }
+}
+
+#[test]
 fn title_collisions() {
     let doc = md("---\nTitle: Upper\ntitle: lower\n---\n");
     assert_eq!(fm(&doc).title(), Some("lower"));

@@ -794,10 +794,9 @@ struct FmEntry {
     key: String,
     value: FmValue,
     src: Range<usize>,
-    /// The value, or one of its list items, opens a quote, `[` or `{` it
-    /// never closes (`tags: [a`, `title: "x`). Set by the scan; cleared
-    /// when the parser accepts the block. Such an entry has no value for
-    /// any consumer, but stays in the fields as written.
+    /// The parser rejected the block and this entry's own lines too (see
+    /// [`judge`]). Such an entry has no value for any consumer, but stays
+    /// in the fields as written.
     broken: bool,
 }
 
@@ -861,8 +860,8 @@ fn parse_at(src: &str, kind: FmKind, depth: usize) -> Parsed {
         Err("frontmatter nesting too deep to parse".to_owned())
     } else {
         match kind {
-            FmKind::Yaml => yaml_entries(src),
-            FmKind::Toml => toml_entries(src),
+            FmKind::Yaml => yaml_entries(src, src.len()),
+            FmKind::Toml => toml_entries(src, src.len()),
         }
     };
     let (entries, error) = match real {
@@ -876,7 +875,7 @@ fn parse_at(src: &str, kind: FmKind, depth: usize) -> Parsed {
             ),
             None,
         ),
-        Err(e) => (scanned, Some(e)),
+        Err(e) => (judge(src, kind, scanned), Some(e)),
     };
     let parsed = !entries.is_empty() || src.trim().is_empty();
     Parsed {
@@ -894,6 +893,205 @@ fn unbroken(mut e: FmEntry) -> FmEntry {
         e.value = FmValue::Map(children.into_iter().map(unbroken).collect());
     }
     e
+}
+
+/// The scanned entries of a block the parser rejected, each judged on its
+/// own. An entry with block-map children keeps them (the recursive
+/// [`parse_at`] judged them). Any other entry counts only if the parser
+/// accepts its own lines as a one-entry document ([`alone`]), its range
+/// first extended over following lines that start with `]` or `}`; it
+/// then takes its shape from that parse. An entry that does not count is
+/// `broken`.
+fn judge(src: &str, kind: FmKind, scanned: Vec<FmEntry>) -> Vec<FmEntry> {
+    let starts: Vec<usize> = scanned.iter().map(|e| e.src.start).collect();
+    let mut out = Vec::with_capacity(scanned.len());
+    for (i, mut e) in scanned.into_iter().enumerate() {
+        if matches!(&e.value, FmValue::Map(c) if !c.is_empty()) {
+            out.push(e);
+            continue;
+        }
+        let limit = starts.get(i + 1).copied().unwrap_or(src.len());
+        e.src.end = extend_over_closers(src, e.src.end, limit);
+        match alone(&src[e.src.clone()], kind, src.len()) {
+            Some(real) => {
+                let own = e.src.clone();
+                // Keys the scan wrote differently (a TOML dotted key) come
+                // from the parser, on the entry's own lines.
+                out.extend(
+                    combine(real, vec![e], &[false], src, kind)
+                        .into_iter()
+                        .map(|mut c| {
+                            if c.src == (0..src.len()) {
+                                c.src = own.clone();
+                            }
+                            c
+                        }),
+                );
+            }
+            None => {
+                e.broken = true;
+                out.push(e);
+            }
+        }
+    }
+    out
+}
+
+/// `end` moved past the following lines (before `limit`) that start with
+/// `]` or `}`: a flow list or map closed at the key's indentation.
+fn extend_over_closers(src: &str, end: usize, limit: usize) -> usize {
+    let base = end;
+    let mut end = end;
+    // The first line is the (empty) rest of the entry's last line.
+    for (at, line) in lines(&src[base..limit.max(base)]).into_iter().skip(1) {
+        if !line.trim_start().starts_with([']', '}']) {
+            break;
+        }
+        end = base + at + line.len();
+    }
+    end
+}
+
+/// The parser's entries for one entry's lines `text` on their own, `None`
+/// unless it reads them as exactly one entry. The key line is moved to
+/// column 0 and the other lines keep their relative indentation, the
+/// least indented at 2 spaces (a leading tab counts as 2 spaces). YAML
+/// gets one retry with each unquoted `#` that starts a flow item hidden
+/// (Obsidian's `[#a, #b]`). `len` is the block's length (see
+/// [`yaml_shape`]).
+fn alone(text: &str, kind: FmKind, len: usize) -> Option<Vec<(String, FmValue)>> {
+    let doc = reindent(text);
+    if too_deep(&doc) {
+        return None;
+    }
+    let real = match kind {
+        FmKind::Toml => toml_entries(&doc, len).ok()?,
+        FmKind::Yaml => match yaml_entries(&doc, len) {
+            Ok(real) => real,
+            Err(_) => yaml_entries(&hide_flow_hashes(&doc)?, len)
+                .ok()?
+                .into_iter()
+                .map(|(k, v)| (k.replace(HIDDEN, "#"), unhide(v)))
+                .collect(),
+        },
+    };
+    (real.len() == 1).then(|| real.into_iter().map(|(k, v)| (k, one_line(v))).collect())
+}
+
+/// The first line trimmed; the rest shifted so the least indented is at
+/// 2 spaces, leading tabs counted as 2 spaces each.
+fn reindent(text: &str) -> String {
+    let ls = lines(text);
+    let rest: Vec<(usize, &str)> = ls
+        .iter()
+        .skip(1)
+        .map(|(_, l)| {
+            let t = l.trim_start_matches([' ', '\t']);
+            let lead = &l[..l.len() - t.len()];
+            (lead.chars().map(|c| if c == '\t' { 2 } else { 1 }).sum(), t)
+        })
+        .collect();
+    let min = rest
+        .iter()
+        .filter(|(_, t)| !t.is_empty())
+        .map(|&(n, _)| n)
+        .min()
+        .unwrap_or(0);
+    let mut out = ls.first().map_or("", |(_, l)| l.trim_start()).to_owned();
+    for (n, t) in rest {
+        out.push('\n');
+        if !t.is_empty() {
+            out.extend(std::iter::repeat_n(' ', n - min + 2));
+            out.push_str(t);
+        }
+    }
+    out.push('\n');
+    out
+}
+
+/// Stands in for a hidden `#` (a private-use character, valid in a YAML
+/// plain scalar).
+const HIDDEN: char = '\u{E000}';
+
+/// `doc` with each unquoted `#` that starts a flow item (after `[`, `{`
+/// or `,` and any whitespace) replaced by [`HIDDEN`]; `None` if there is
+/// none, or `doc` already has a [`HIDDEN`].
+fn hide_flow_hashes(doc: &str) -> Option<String> {
+    if doc.contains(HIDDEN) {
+        return None;
+    }
+    let mut out = String::with_capacity(doc.len());
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    // At the start of a value or flow item: a quote opens a string here.
+    let mut start = true;
+    let mut prev = '\n';
+    let mut hidden = false;
+    let mut chars = doc.chars().peekable();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some('"') if c == '\\' => {
+                out.push(c);
+                out.extend(chars.next());
+                continue;
+            }
+            Some('\'') if c == '\'' && chars.peek() == Some(&'\'') => {
+                out.push(c);
+                out.extend(chars.next());
+                continue;
+            }
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None => match c {
+                '#' if depth > 0 && start => {
+                    out.push(HIDDEN);
+                    hidden = true;
+                    start = false;
+                    prev = HIDDEN;
+                    continue;
+                }
+                // A comment: the rest of the line as is.
+                '#' if prev.is_whitespace() => {
+                    out.push(c);
+                    while let Some(&n) = chars.peek().filter(|&&n| n != '\n') {
+                        out.push(n);
+                        chars.next();
+                    }
+                    start = false;
+                    prev = c;
+                    continue;
+                }
+                '"' | '\'' if start => quote = Some(c),
+                '[' | '{' => depth += 1,
+                ']' | '}' => depth = depth.saturating_sub(1),
+                _ => {}
+            },
+        }
+        out.push(c);
+        start = quote.is_none()
+            && (matches!(c, '[' | '{' | ',' | ':' | '\n') || (start && c.is_whitespace()));
+        prev = c;
+    }
+    hidden.then_some(out)
+}
+
+/// `v` with [`HIDDEN`] turned back into `#`.
+fn unhide(v: FmValue) -> FmValue {
+    let back = |s: String| s.replace(HIDDEN, "#");
+    match v {
+        FmValue::Scalar(s) => FmValue::Scalar(back(s)),
+        FmValue::List(items) => FmValue::List(items.into_iter().map(back).collect()),
+        FmValue::Map(children) => FmValue::Map(
+            children
+                .into_iter()
+                .map(|mut c| {
+                    c.key = back(c.key);
+                    c.value = unhide(c.value);
+                    c
+                })
+                .collect(),
+        ),
+    }
 }
 
 fn shift_entry(mut e: FmEntry, by: usize) -> FmEntry {
@@ -1056,13 +1254,14 @@ fn pick(shape: FmValue, scanned: FmValue, nested: bool) -> FmValue {
 
 // Real parsers: top-level keys and value shapes, `Err` unless a mapping.
 
-fn yaml_entries(src: &str) -> Result<Vec<(String, FmValue)>, String> {
+/// `len` as in [`yaml_shape`].
+fn yaml_entries(src: &str, len: usize) -> Result<Vec<(String, FmValue)>, String> {
     use saphyr::{LoadableYamlNode, Yaml};
     let docs = Yaml::load_from_str(src).map_err(|e| e.to_string())?;
     match docs.first() {
         Some(Yaml::Mapping(map)) => Ok(map
             .iter()
-            .filter_map(|(k, v)| Some((yaml_scalar(k)?, yaml_shape(v, src.len()))))
+            .filter_map(|(k, v)| Some((yaml_scalar(k)?, yaml_shape(v, len))))
             .collect()),
         // Only comments or blank lines.
         None => Ok(Vec::new()),
@@ -1086,7 +1285,7 @@ fn yaml_scalar(y: &saphyr::Yaml) -> Option<String> {
     }
 }
 
-/// `len` is the parsed text's length: parser-only children cover it all.
+/// `len` is the block's length: parser-only children cover it all.
 fn yaml_shape(y: &saphyr::Yaml, len: usize) -> FmValue {
     use saphyr::Yaml;
     match y {
@@ -1113,11 +1312,12 @@ fn yaml_shape(y: &saphyr::Yaml, len: usize) -> FmValue {
     }
 }
 
-fn toml_entries(src: &str) -> Result<Vec<(String, FmValue)>, String> {
+/// `len` as in [`yaml_shape`].
+fn toml_entries(src: &str, len: usize) -> Result<Vec<(String, FmValue)>, String> {
     let table: toml::Table = src.parse().map_err(|e: toml::de::Error| e.to_string())?;
     Ok(table
         .into_iter()
-        .map(|(k, v)| (k, toml_shape(&v, src.len())))
+        .map(|(k, v)| (k, toml_shape(&v, len)))
         .collect())
 }
 
@@ -1164,17 +1364,15 @@ struct Building {
     map: bool,
     /// After a `|` / `>` header: every more-indented line is text.
     block: bool,
-    /// A list item opened a quote or bracket it never closed.
-    broken: bool,
+    /// The last list item opened a quote its line does not close: the
+    /// following lines continue it.
+    open_item: bool,
     src: Range<usize>,
 }
 
 impl Building {
     fn finish(self) -> (FmEntry, bool) {
         let nested = self.nested;
-        let broken = !self.map
-            && !self.block
-            && (self.broken || (self.items.is_empty() && unclosed(&self.parts.join(" "))));
         let value = if self.block {
             FmValue::Scalar(self.parts.join(" "))
         } else if self.map {
@@ -1195,7 +1393,7 @@ impl Building {
             key: self.key,
             value,
             src: self.src,
-            broken,
+            broken: false,
         };
         (entry, nested)
     }
@@ -1210,8 +1408,20 @@ impl Building {
         }
         self.item_block = None;
         self.nested |= is_item(raw) || split_entry(raw).is_some();
-        self.broken |= unclosed(raw);
+        self.open_item = raw.starts_with(['"', '\'']) && closing_quote(raw).is_none();
         self.items.push(unquote(raw).to_string());
+    }
+
+    /// Add a line `t` of the open quoted item, joined with a space; the
+    /// item is unquoted once its quote closes.
+    fn continue_item(&mut self, t: &str) {
+        let last = self.items.last_mut().expect("an item was pushed");
+        last.push(' ');
+        last.push_str(t);
+        if closing_quote(last) == Some(last.len()) {
+            *last = unquote(last).to_string();
+            self.open_item = false;
+        }
     }
 
     /// Add a line of the `- |` item's text, joined with a space.
@@ -1266,7 +1476,7 @@ fn scan(src: &str) -> (Vec<FmEntry>, Vec<bool>) {
             item_block: None,
             map: false,
             block,
-            broken: false,
+            open_item: false,
             src: at..at + t.len(),
         }
     };
@@ -1304,6 +1514,8 @@ fn scan(src: &str) -> (Vec<FmEntry>, Vec<bool>) {
             c.parts.push(t.to_string());
         } else if c.item_block.is_some_and(|i| ind > i) {
             c.push_item_text(t);
+        } else if c.open_item && !is_item(t) {
+            c.continue_item(t);
         } else if is_item(t) {
             c.push_item(t, ind);
         } else if let Some(kv) = split_entry(t).filter(|_| !c.parts.is_empty() && !c.map) {
@@ -1430,38 +1642,6 @@ fn comment_start(v: &str) -> Option<usize> {
         prev = c;
     }
     None
-}
-
-/// A value that opens a quote (TOML `"""` / `'''` included), `[` or `{`
-/// and never closes it. Inside brackets a quote counts only at the start
-/// of an item (`[don't]` is closed); a `#` does not start a comment there
-/// (Obsidian's `[#a, #b]`).
-fn unclosed(v: &str) -> bool {
-    if let Some(f) = ["\"\"\"", "'''"].into_iter().find(|f| v.starts_with(f)) {
-        return !v[3..].contains(f);
-    }
-    if v.starts_with(['"', '\'']) {
-        return closing_quote(v).is_none();
-    }
-    if !v.starts_with(['[', '{']) {
-        return false;
-    }
-    let mut depth = 0usize;
-    let mut quote = None;
-    let mut item_start = true;
-    for c in v.chars() {
-        match (quote, c) {
-            (Some(q), c) if c == q => quote = None,
-            (Some(_), _) => {}
-            (None, '"' | '\'') if item_start => quote = Some(c),
-            (None, '[' | '{') => depth += 1,
-            (None, ']' | '}') => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-        item_start =
-            quote.is_none() && (matches!(c, '[' | '{' | ',' | ':') || (item_start && c == ' '));
-    }
-    depth > 0 || quote.is_some()
 }
 
 /// For a value starting with a quote, the byte just past its closing
@@ -1817,38 +1997,27 @@ mod tests {
     }
 
     #[test]
-    fn unclosed_values() {
-        for v in [
-            "[a",
-            "[a, [b]",
-            "{a: 1",
-            "\"x",
-            "'x",
-            "[\"a]",
-            "\"\"\"x",
-            "['a', 'b]",
-        ] {
-            assert!(unclosed(v), "{v}");
-        }
-        for v in [
-            "",
-            "a",
-            "don't",
-            "[a]",
-            "[don't]",
-            "[#a, #b]",
-            "{k: v}",
-            "\"x\"",
-            "'it''s'",
-            "[\"a, b\", c]",
-            "\"\"\"x\"\"\"",
-            "a [b",
-            "[a: 'b']",
-        ] {
-            assert!(!unclosed(v), "{v}");
-        }
-        // Only when the parser rejected the block: an unclosed item whose
-        // block parses (none can) or a valid block clears the flag.
+    fn reindent_and_hidden_hashes() {
+        assert_eq!(
+            reindent("  t: [\n\ta,\n\t  b\n]"),
+            "t: [\n    a,\n      b\n  ]\n"
+        );
+        assert_eq!(reindent("t: x"), "t: x\n");
+        assert_eq!(
+            hide_flow_hashes("t: [#a, '#b', c#d] # e #f\n").as_deref(),
+            Some("t: [\u{E000}a, '#b', c#d] # e #f\n")
+        );
+        assert_eq!(hide_flow_hashes("t: x # c\n"), None);
+        assert_eq!(
+            hide_flow_hashes("t: [\"x\\\"\", #a]\n").as_deref(),
+            Some("t: [\"x\\\"\", \u{E000}a]\n")
+        );
+    }
+
+    #[test]
+    fn broken_flags() {
+        // Only when the parser rejected the block, for the entries it
+        // rejects alone; a valid block clears the flag.
         let fm = parse("tags: [a\nt: x\n", FmKind::Yaml);
         assert!(fm.error.is_some());
         let broken: Vec<bool> = fm.entries.iter().map(|e| e.broken).collect();
