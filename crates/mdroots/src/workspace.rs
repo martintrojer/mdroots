@@ -1245,7 +1245,7 @@ pub(crate) fn title(rel: &str, doc: &Document) -> String {
         .or_else(|| {
             doc.headings()
                 .find(|h| h.level == 1)
-                .map(|h| h.text.clone())
+                .map(|h| h.text.to_string())
         })
         .unwrap_or_else(|| {
             Path::new(rel)

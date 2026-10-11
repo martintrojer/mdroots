@@ -102,9 +102,9 @@ pub(crate) fn parse_org(src: &str) -> (Vec<Element>, Regions, Option<Frontmatter
         if let Some(stars) = heading_stars(t) {
             regions.push(l.start..l.end, Context::Heading);
             scan_lines.push((l.start..l.text_end, Context::Heading));
-            let (mut heading, tags) = heading(src, &t[stars + 1..], stars);
-            heading.range = l.start..l.end;
-            heading.slug = slug::unique(&slug::github(&heading.text), &mut used_slugs);
+            let (level, title, tags) = heading(src, &t[stars + 1..], stars);
+            let slug = slug::unique(&slug::github(&title), &mut used_slugs);
+            let mut heading = Heading::new(level, title, slug, l.start..l.end);
             i += 1;
             // An optional planning line, then a property drawer.
             if i < lines.len() && is_planning(text(&lines[i])) {
@@ -117,9 +117,9 @@ pub(crate) fn parse_org(src: &str) -> (Vec<Element>, Regions, Option<Frontmatter
             {
                 for (key, value) in properties(src, &lines[i + 1..end]) {
                     if key.eq_ignore_ascii_case("ID") {
-                        heading.id = Some(value.to_owned());
+                        heading.set_id(value);
                     } else if key.eq_ignore_ascii_case("CUSTOM_ID") {
-                        heading.custom_id = Some(value.to_owned());
+                        heading.set_custom_id(value);
                     }
                 }
                 regions.push(lines[i].start..lines[end].end, Context::Comment);
@@ -300,8 +300,8 @@ fn is_planning(t: &str) -> bool {
 }
 
 /// Heading from the text after `* `: TODO keyword and priority stripped,
-/// trailing `:tags:` split off. Range and slug are filled by the caller.
-fn heading(src: &str, title: &str, stars: usize) -> (Heading, Vec<Tag>) {
+/// trailing `:tags:` split off: (level, text, tags).
+fn heading(src: &str, title: &str, stars: usize) -> (u8, String, Vec<Tag>) {
     let mut rest = title.trim_start();
     for kw in TODO_KEYWORDS {
         if let Some(r) = rest.strip_prefix(kw)
@@ -344,15 +344,7 @@ fn heading(src: &str, title: &str, stars: usize) -> (Heading, Vec<Tag>) {
             title = rest[..k].trim_end();
         }
     }
-    let heading = Heading {
-        level: stars.min(u8::MAX as usize) as u8,
-        text: render_links(title),
-        slug: String::new(),
-        range: 0..0,
-        id: None,
-        custom_id: None,
-    };
-    (heading, tags)
+    (stars.min(u8::MAX as usize) as u8, render_links(title), tags)
 }
 
 /// `title` with each `[[t][d]]` replaced by `d` and `[[t]]` by `t`.

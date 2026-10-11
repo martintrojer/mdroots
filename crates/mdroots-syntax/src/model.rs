@@ -163,20 +163,70 @@ impl Element {
     }
 }
 
-/// A heading. An anchor `#x` may name it by `slug`, `id` or `custom_id`.
+/// A heading. An anchor `#x` may name it by `slug`, `id()` or
+/// `custom_id()`. The ids are rare and sit behind one box, so a plain
+/// heading costs 64 bytes plus its text.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Heading {
     pub level: u8,
-    pub text: String,
+    pub text: Box<str>,
     /// GitHub slug of `text`, deduplicated per document (`-1`, `-2`, …).
-    pub slug: String,
+    pub slug: Box<str>,
     pub range: Range<usize>,
+    ids: Option<Box<HeadingIds>>,
+}
+
+#[derive(Clone, Default, PartialEq, Eq, Hash)]
+struct HeadingIds {
+    id: Option<Box<str>>,
+    custom_id: Option<Box<str>>,
+}
+
+impl Heading {
+    /// A heading without ids. Boxing drops spare capacity.
+    pub(crate) fn new(level: u8, text: String, slug: String, range: Range<usize>) -> Heading {
+        let (text, slug) = (text.into_boxed_str(), slug.into_boxed_str());
+        Heading {
+            level,
+            text,
+            slug,
+            range,
+            ids: None,
+        }
+    }
+
     /// Markdown `{#id}` attribute as written (not slugged or deduplicated),
     /// or org `:ID:`.
-    pub id: Option<String>,
+    pub fn id(&self) -> Option<&str> {
+        self.ids.as_ref()?.id.as_deref()
+    }
+
     /// Org `:CUSTOM_ID:`.
-    pub custom_id: Option<String>,
+    pub fn custom_id(&self) -> Option<&str> {
+        self.ids.as_ref()?.custom_id.as_deref()
+    }
+
+    pub(crate) fn set_id(&mut self, id: &str) {
+        self.ids.get_or_insert_default().id = Some(id.into());
+    }
+
+    pub(crate) fn set_custom_id(&mut self, id: &str) {
+        self.ids.get_or_insert_default().custom_id = Some(id.into());
+    }
+}
+
+impl fmt::Debug for Heading {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Heading")
+            .field("level", &self.level)
+            .field("text", &self.text)
+            .field("slug", &self.slug)
+            .field("range", &self.range)
+            .field("id", &self.id())
+            .field("custom_id", &self.custom_id())
+            .finish()
+    }
 }
 
 #[non_exhaustive]
@@ -692,6 +742,15 @@ mod tests {
     fn link_sizes() {
         assert!(size_of::<LinkTarget>() <= 32, "{}", size_of::<LinkTarget>());
         assert!(size_of::<Link>() <= 72, "{}", size_of::<Link>());
+    }
+
+    /// 30,000 headings at 10,000 notes, and Element is as large as its
+    /// largest variant. Heading ids are rare (org `:ID:`, markdown `{#id}`)
+    /// and sit behind one box.
+    #[test]
+    fn heading_sizes() {
+        assert!(size_of::<Heading>() <= 64, "{}", size_of::<Heading>());
+        assert!(size_of::<Element>() <= 72, "{}", size_of::<Element>());
     }
 
     fn link(raw: &str) -> Link {

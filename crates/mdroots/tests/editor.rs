@@ -48,11 +48,11 @@ fn outline_in_source_order() {
         "/v/a.md",
     );
     let h = ws.outline(Path::new("/v/a.md")).unwrap();
-    let got: Vec<(u8, &str)> = h.iter().map(|h| (h.level, h.text.as_str())).collect();
+    let got: Vec<(u8, &str)> = h.iter().map(|h| (h.level, &*h.text)).collect();
     assert_eq!(got, [(1, "One"), (2, "Two"), (1, "Three")]);
     assert!(ws.outline(Path::new("/v/none.md")).unwrap().is_empty());
     ws.set_overlay(Path::new("/v/a.md"), "## Only\n").unwrap();
-    assert_eq!(ws.outline(Path::new("/v/a.md")).unwrap()[0].text, "Only");
+    assert_eq!(&*ws.outline(Path::new("/v/a.md")).unwrap()[0].text, "Only");
 }
 
 #[test]

@@ -11,7 +11,7 @@ fn heading_slugs() {
     let doc = parse(src, Dialect::Markdown);
     let got: Vec<(u8, &str, &str)> = doc
         .headings()
-        .map(|h| (h.level, h.text.as_str(), h.slug.as_str()))
+        .map(|h| (h.level, &*h.text, &*h.slug))
         .collect();
     assert_eq!(
         got,
@@ -27,7 +27,7 @@ fn heading_slugs() {
         ]
     );
     let custom = doc.headings().nth(6).unwrap();
-    assert_eq!(custom.id.as_deref(), Some("my-id"));
+    assert_eq!(custom.id(), Some("my-id"));
 }
 
 #[test]
@@ -36,7 +36,7 @@ fn heading_slugs_keep_combining_marks() {
         "## हिन्दी\n\n## e\u{301}te!\n\n## \u{20DD}x 😀\n",
         Dialect::Markdown,
     );
-    let slugs: Vec<&str> = doc.headings().map(|h| h.slug.as_str()).collect();
+    let slugs: Vec<&str> = doc.headings().map(|h| &*h.slug).collect();
     // Mn (virama U+094D, acute U+0301) and Me (U+20DD) are kept like
     // github-slugger; punctuation and emoji are still dropped.
     assert_eq!(slugs, ["हिन्दी", "e\u{301}te", "\u{20DD}x-"]);

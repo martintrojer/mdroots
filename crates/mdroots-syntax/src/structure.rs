@@ -87,7 +87,7 @@ fn markdown_with(src: &str, unfenced: bool) -> MarkdownPass {
     let mut elements = Vec::new();
     let mut links: Vec<Link> = Vec::new();
     let mut open: Vec<Open> = Vec::new();
-    let mut heading: Option<Heading> = None;
+    let mut heading: Option<OpenHeading> = None;
     let mut used_slugs = HashSet::new();
     let mut html_block: Option<usize> = None;
     let mut fm_block: Option<(Range<usize>, FrontmatterFormat)> = None;
@@ -113,20 +113,21 @@ fn markdown_with(src: &str, unfenced: bool) -> MarkdownPass {
             }
             Event::Start(Tag::Heading { level, id, .. }) => {
                 regions.push(range.clone(), Context::Heading);
-                heading = Some(Heading {
+                heading = Some(OpenHeading {
                     level: level as u8,
                     text: String::new(),
-                    slug: String::new(),
                     range,
-                    id: id.map(|s| s.to_string()),
-                    custom_id: None,
+                    id,
                 });
             }
             Event::End(TagEnd::Heading(_)) => {
-                if let Some(mut h) = heading.take() {
+                if let Some(o) = heading.take() {
                     // Always from the text; an explicit `{#id}` stays in `id`.
-                    h.slug = slug::unique(&slug::github(&h.text), &mut used_slugs);
-                    h.text.shrink_to_fit();
+                    let slug = slug::unique(&slug::github(&o.text), &mut used_slugs);
+                    let mut h = Heading::new(o.level, o.text, slug, o.range);
+                    if let Some(id) = o.id {
+                        h.set_id(&id);
+                    }
                     elements.push(Element::Heading(h));
                 }
             }
@@ -278,7 +279,15 @@ fn html_context(text: &str) -> Context {
     }
 }
 
-fn add_heading_text(heading: &mut Option<Heading>, t: &str) {
+/// A heading whose text is still being collected.
+struct OpenHeading<'a> {
+    level: u8,
+    text: String,
+    range: Range<usize>,
+    id: Option<pulldown_cmark::CowStr<'a>>,
+}
+
+fn add_heading_text(heading: &mut Option<OpenHeading>, t: &str) {
     if let Some(h) = heading {
         h.text.push_str(t);
     }
@@ -430,7 +439,6 @@ mod tests {
         let mut labels = 0;
         for e in &doc.elements {
             match e {
-                Element::Heading(h) => assert_eq!(h.text.capacity(), h.text.len(), "{h:?}"),
                 Element::Link(l) if l.label().is_some() => labels += 1,
                 _ => {}
             }

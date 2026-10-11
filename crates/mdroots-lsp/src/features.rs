@@ -197,7 +197,7 @@ pub(crate) fn backlinks(c: &Ctx) -> Result<Vec<Location>, Fail> {
 /// `mdroots.anchorLinks`: links from other notes to the heading of this
 /// note whose slug is `slug`.
 pub(crate) fn anchor_links(c: &Ctx, slug: &str) -> Result<Vec<Location>, Fail> {
-    let Some(i) = c.ws.outline(&c.path)?.iter().position(|h| h.slug == slug) else {
+    let Some(i) = c.ws.outline(&c.path)?.iter().position(|h| &*h.slug == slug) else {
         return Ok(Vec::new());
     };
     let mut texts = Texts::new(c.ws, c.enc);
@@ -363,7 +363,7 @@ fn nest(c: &Ctx, hs: &[Heading], i: &mut usize, parent: u8) -> Vec<DocumentSymbo
         let children = nest(c, hs, i, h.level);
         let name = match h.text.trim().is_empty() {
             true => "#".repeat(h.level as usize),
-            false => h.text.clone(),
+            false => h.text.to_string(),
         };
         #[allow(deprecated)] // `deprecated` is a required field in lsp-types 0.97
         out.push(DocumentSymbol {
@@ -511,7 +511,7 @@ pub(crate) fn completion(c: &Ctx, pos: Position) -> Result<CompletionList, Fail>
                 .enumerate()
                 .filter(|(i, _)| Some(*i) != title)
                 .map(|(_, h)| {
-                    let t = h.text.clone();
+                    let t = h.text.into_string();
                     item(t.clone(), t, CompletionItemKind::REFERENCE, None)
                 })
                 .collect()

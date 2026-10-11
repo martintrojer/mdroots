@@ -28,7 +28,7 @@ fn headings_with_todo_priority_tags() {
     let doc = org(src);
     let got: Vec<(u8, &str, &str)> = doc
         .headings()
-        .map(|h| (h.level, h.text.as_str(), h.slug.as_str()))
+        .map(|h| (h.level, &*h.text, &*h.slug))
         .collect();
     assert_eq!(
         got,
@@ -61,9 +61,9 @@ fn heading_property_drawer() {
     let src = "* Intro\n:PROPERTIES:\n:ID: 1234-abcd\n:CUSTOM_ID: intro\n:END:\ntext\n";
     let doc = org(src);
     let h = doc.headings().next().unwrap();
-    assert_eq!(h.text, "Intro");
-    assert_eq!(h.id.as_deref(), Some("1234-abcd"));
-    assert_eq!(h.custom_id.as_deref(), Some("intro"));
+    assert_eq!(&*h.text, "Intro");
+    assert_eq!(h.id(), Some("1234-abcd"));
+    assert_eq!(h.custom_id(), Some("intro"));
 }
 
 #[test]
@@ -194,7 +194,7 @@ fn heading_link() {
     let doc = org(src);
     let l = org_links(&doc)[0];
     assert_eq!(l.context, Context::Heading);
-    assert_eq!(doc.headings().next().unwrap().text, "See b");
+    assert_eq!(&*doc.headings().next().unwrap().text, "See b");
 }
 
 #[test]

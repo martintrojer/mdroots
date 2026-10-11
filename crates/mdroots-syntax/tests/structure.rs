@@ -24,7 +24,7 @@ fn headings_levels_text_slugs() {
     let doc = md("# Hello World\n\n## Hello World\n\n### A `code` $m$ bit\n\n# Custom {#my-id}\n");
     let got: Vec<(u8, &str, &str, Option<&str>)> = doc
         .headings()
-        .map(|h| (h.level, h.text.as_str(), h.slug.as_str(), h.id.as_deref()))
+        .map(|h| (h.level, &*h.text, &*h.slug, h.id()))
         .collect();
     assert_eq!(
         got,
@@ -286,10 +286,7 @@ fn empty_frontmatter_blocks() {
     }
     // The body after an empty block still parses: no rule eats the heading.
     let doc = md("---\n\n---\n# H\n");
-    assert_eq!(
-        doc.headings().map(|h| h.text.as_str()).collect::<Vec<_>>(),
-        ["H"]
-    );
+    assert_eq!(doc.headings().map(|h| &*h.text).collect::<Vec<_>>(), ["H"]);
 }
 
 #[test]
@@ -343,10 +340,7 @@ mod drawn_text {
 #[test]
 fn explicit_id_keeps_text_slug() {
     let doc = md("# Visible {#custom}\n\n## Visible\n\n## Other {#custom}\n");
-    let got: Vec<(&str, Option<&str>)> = doc
-        .headings()
-        .map(|h| (h.slug.as_str(), h.id.as_deref()))
-        .collect();
+    let got: Vec<(&str, Option<&str>)> = doc.headings().map(|h| (&*h.slug, h.id())).collect();
     // ids are kept as written, even when repeated; slugs come from the text.
     assert_eq!(
         got,

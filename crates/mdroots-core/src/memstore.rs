@@ -658,9 +658,9 @@ pub fn heading_index(doc: &Document, anchor: &Anchor) -> Option<usize> {
     };
     doc.headings().position(|h| {
         forms.iter().any(|s| {
-            (by_slug && (h.slug == *s || slug::github(s) == h.slug))
-                || h.id.as_deref() == Some(s)
-                || h.custom_id.as_deref() == Some(s)
+            (by_slug && (*h.slug == **s || slug::github(s) == *h.slug))
+                || h.id() == Some(*s)
+                || h.custom_id() == Some(*s)
         })
     })
 }

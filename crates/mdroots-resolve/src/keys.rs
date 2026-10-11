@@ -63,14 +63,11 @@ pub fn doc_keys(
         id: fm.and_then(|f| f.id()),
         // Markdown `{#id}` attributes are anchors, not document ids.
         heading_ids: match doc.dialect() {
-            Dialect::Org => doc.headings().filter_map(|h| h.id.as_deref()).collect(),
+            Dialect::Org => doc.headings().filter_map(|h| h.id()).collect(),
             _ => Vec::new(),
         },
         title: fm.and_then(|f| f.title()),
-        h1: doc
-            .headings()
-            .find(|h| h.level == 1)
-            .map(|h| h.text.as_str()),
+        h1: doc.headings().find(|h| h.level == 1).map(|h| &*h.text),
         aliases: fm.map(|f| f.aliases()).unwrap_or_default(),
         site_path: fm.and_then(|f| f.site_path()),
     };

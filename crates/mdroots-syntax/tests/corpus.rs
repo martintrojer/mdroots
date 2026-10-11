@@ -79,10 +79,10 @@ fn summarize(doc: &Document) -> Summary {
             .headings()
             .map(|h| HeadingSummary {
                 level: h.level,
-                text: h.text.clone(),
-                slug: h.slug.clone(),
-                id: h.id.clone(),
-                custom_id: h.custom_id.clone(),
+                text: h.text.to_string(),
+                slug: h.slug.to_string(),
+                id: h.id().map(str::to_owned),
+                custom_id: h.custom_id().map(str::to_owned),
             })
             .collect(),
         links: doc

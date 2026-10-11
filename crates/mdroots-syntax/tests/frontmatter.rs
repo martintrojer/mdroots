@@ -181,7 +181,7 @@ fn invalid_yaml_sets_error_and_the_rest_still_parses() {
     assert!(f.error.is_some());
     assert_eq!(f.id(), Some("z1"));
     assert_eq!(
-        doc.headings().map(|h| h.text.as_str()).collect::<Vec<_>>(),
+        doc.headings().map(|h| &*h.text).collect::<Vec<_>>(),
         ["After"]
     );
     assert!(
