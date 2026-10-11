@@ -299,7 +299,7 @@ fn in_an_invalid_block_an_entry_counts_only_if_it_parses_alone() {
 
 #[test]
 fn an_invalid_block_keeps_entries_that_parse_once_reindented() {
-    let cases: [(&str, &str, Value); 8] = [
+    let cases: [(&str, &str, Value); 9] = [
         (
             "---\ntags:\n\t- a\n\t- b\nbad: [x\n---\n",
             "tags",
@@ -325,6 +325,12 @@ fn an_invalid_block_keeps_entries_that_parse_once_reindented() {
             "---\ntags: [#a, #b]\nbad: [x\n---\n",
             "tags",
             list(&["#a", "#b"]),
+        ),
+        // A private-use character in the value does not block the `#` retry.
+        (
+            "---\ntags: [#a, '\u{e000}b']\nbad: [x\n---\n",
+            "tags",
+            list(&["#a", "\u{e000}b"]),
         ),
         // A flow map takes the shape it has alone.
         ("---\nm: {k: v}\nbad: [x\n---\n", "m.k", str_("v")),

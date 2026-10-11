@@ -968,11 +968,14 @@ fn alone(text: &str, kind: FmKind, len: usize) -> Option<Vec<(String, FmValue)>>
         FmKind::Toml => toml_entries(&doc, len).ok()?,
         FmKind::Yaml => match yaml_entries(&doc, len) {
             Ok(real) => real,
-            Err(_) => yaml_entries(&hide_flow_hashes(&doc)?, len)
-                .ok()?
-                .into_iter()
-                .map(|(k, v)| (k.replace(HIDDEN, "#"), unhide(v)))
-                .collect(),
+            Err(_) => {
+                let (hid, mark) = hide_flow_hashes(&doc)?;
+                yaml_entries(&hid, len)
+                    .ok()?
+                    .into_iter()
+                    .map(|(k, v)| (k.replace(mark, "#"), unhide(v, mark)))
+                    .collect()
+            }
         },
     };
     (real.len() == 1).then(|| real.into_iter().map(|(k, v)| (k, one_line(v))).collect())
@@ -1009,17 +1012,13 @@ fn reindent(text: &str) -> String {
     out
 }
 
-/// Stands in for a hidden `#` (a private-use character, valid in a YAML
-/// plain scalar).
-const HIDDEN: char = '\u{E000}';
-
 /// `doc` with each unquoted `#` that starts a flow item (after `[`, `{`
-/// or `,` and any whitespace) replaced by [`HIDDEN`]; `None` if there is
-/// none, or `doc` already has a [`HIDDEN`].
-fn hide_flow_hashes(doc: &str) -> Option<String> {
-    if doc.contains(HIDDEN) {
-        return None;
-    }
+/// or `,` and any whitespace) replaced by a mark, with the mark: the first
+/// private-use character (valid in a YAML plain scalar) that `doc` does not
+/// contain. `None` if there is no such `#`, or `doc` holds every
+/// private-use character.
+fn hide_flow_hashes(doc: &str) -> Option<(String, char)> {
+    let mark = ('\u{E000}'..='\u{F8FF}').find(|&m| !doc.contains(m))?;
     let mut out = String::with_capacity(doc.len());
     let mut depth = 0usize;
     let mut quote: Option<char> = None;
@@ -1044,10 +1043,10 @@ fn hide_flow_hashes(doc: &str) -> Option<String> {
             Some(_) => {}
             None => match c {
                 '#' if depth > 0 && start => {
-                    out.push(HIDDEN);
+                    out.push(mark);
                     hidden = true;
                     start = false;
-                    prev = HIDDEN;
+                    prev = mark;
                     continue;
                 }
                 // A comment: the rest of the line as is.
@@ -1072,12 +1071,12 @@ fn hide_flow_hashes(doc: &str) -> Option<String> {
             && (matches!(c, '[' | '{' | ',' | ':' | '\n') || (start && c.is_whitespace()));
         prev = c;
     }
-    hidden.then_some(out)
+    hidden.then_some((out, mark))
 }
 
-/// `v` with [`HIDDEN`] turned back into `#`.
-fn unhide(v: FmValue) -> FmValue {
-    let back = |s: String| s.replace(HIDDEN, "#");
+/// `v` with `mark` turned back into `#`.
+fn unhide(v: FmValue, mark: char) -> FmValue {
+    let back = |s: String| s.replace(mark, "#");
     match v {
         FmValue::Scalar(s) => FmValue::Scalar(back(s)),
         FmValue::List(items) => FmValue::List(items.into_iter().map(back).collect()),
@@ -1086,7 +1085,7 @@ fn unhide(v: FmValue) -> FmValue {
                 .into_iter()
                 .map(|mut c| {
                     c.key = back(c.key);
-                    c.value = unhide(c.value);
+                    c.value = unhide(c.value, mark);
                     c
                 })
                 .collect(),
