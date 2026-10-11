@@ -6,7 +6,7 @@
 
 mod lsp;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -36,7 +36,10 @@ commands:
                               `a|b` or, `NOT a` / `-a` not, `( )`
                               groups, `*` and `?` globs (repeatable: and)
     --tagless                 notes without tags
-    -m, --match QUERY         notes containing every word of QUERY
+    -m, --match QUERY         notes containing every word of QUERY, the
+                              last also as a prefix (repeatable: and); no
+                              stemming, phrases, OR/NOT or field filters
+                              (unlike zk)
     -x, --exclude PATH        not under PATH (repeatable)
     --created DATE, --modified DATE
                               on that day (UTC)
@@ -49,8 +52,9 @@ commands:
     --missing-backlink        notes linked from a note they don't link to
     -l, --link-to NOTE        notes linking to NOTE (repeatable: and)
     -L, --linked-by NOTE      notes NOTE links to (repeatable: and)
-    --related NOTE            notes sharing a linked note with NOTE but
-                              not linked with it (repeatable: and)
+    --related NOTE            notes on a directed two-hop path to or from
+                              NOTE, not linked with it either way, as zk
+                              (repeatable: and)
     -s, --sort KEY[+|-]       title, path, created or modified (t, p, c,
                               m); + ascending, - descending (default
                               title+)
@@ -66,11 +70,14 @@ commands:
                               report diagnostics of notes under each PATH
                               (a file or a directory; default .); exit 1
                               on any error or warning (--fail-on error:
-                              errors only; never: exit 0)
+                              errors only; never: exit 0); diagnostics on
+                              stdout, the summary line on stderr
+                              (--quiet drops it)
   roots PATH                  show the root chosen for PATH, why, and its
                               settings with where each came from
   resolve FROM LINK           resolve LINK as written in the note FROM
-  backlinks NOTE              list the notes linking to NOTE
+  backlinks NOTE              list the other notes linking to NOTE (not
+                              NOTE's links to itself)
   search [--paths] [--] QUERY [PATH]
                               notes containing every word of QUERY (the
                               last also as a prefix): a file searches its
@@ -82,6 +89,11 @@ commands:
                               line per message to FILE
 
 notes and tags exit 0 with or without results; 2 on a usage error.
+The NOTE of -l, -L and --related is the path of an indexed note, as given
+(no extension guessing; zk also takes partial paths), else exit 2. Links
+(for -l, -L, --orphan, --missing-backlink, --related and backlinks)
+include a bare path in prose to an existing note (`b.md`), which zk does
+not count; a bare path to a missing file is plain text, not a broken link.
 
 environment:
   MDROOTS_CACHE_DIR           cache dir to use instead of the user's (for
@@ -486,10 +498,12 @@ fn resolve(out: &Out, from: &str, link: &str) -> Result<Outcome, Error> {
     })
 }
 
+/// The notes linking to `note`, without its own links (`[[self]]`,
+/// `[x](#sec)`), which `Workspace::backlinks` keeps for LSP references.
 fn backlinks(out: &Out, note: &str) -> Result<Outcome, Error> {
-    let note = Path::new(note);
-    let ws = Workspace::open_for(note, options())?;
-    for b in ws.backlinks(note)? {
+    let note = canonical(Path::new(note))?;
+    let ws = Workspace::open_for(&note, options())?;
+    for b in ws.backlinks(&note)?.into_iter().filter(|b| b.from != note) {
         println!("{}:{}: {}", out.show(&b.from), b.line + 1, b.from_title);
     }
     Ok(Outcome::Ok)
@@ -602,6 +616,8 @@ fn notes(out: &Out, args: &[String]) -> Result<Outcome, Error> {
     let mut format = Format::Path;
     let mut nul = false;
     let mut paths = Vec::new();
+    // Every -m after the first: each must match too.
+    let mut more_matching: Vec<&str> = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let flag = a.as_str();
@@ -629,7 +645,8 @@ fn notes(out: &Out, args: &[String]) -> Result<Outcome, Error> {
                 };
                 match flag {
                     "-t" | "--tag" => q.tag.push(TagExpr::parse(v).map_err(|e| bad(flag, e))?),
-                    "-m" | "--match" => q.matching = Some(v.clone()),
+                    "-m" | "--match" if q.matching.is_none() => q.matching = Some(v.clone()),
+                    "-m" | "--match" => more_matching.push(v),
                     "-x" | "--exclude" => q.exclude.push(PathBuf::from(v)),
                     "--created" => (q.created_after, q.created_before) = day(v).map(split)?,
                     "--modified" => (q.modified_after, q.modified_before) = day(v).map(split)?,
@@ -661,7 +678,37 @@ fn notes(out: &Out, args: &[String]) -> Result<Outcome, Error> {
     }
     let (ws, paths) = notebook_for(&paths)?;
     q.paths = paths;
-    let found = ws.query(&q)?;
+    let files: BTreeSet<PathBuf> = ws.files().into_iter().collect();
+    for (flag, notes) in [
+        ("--link-to", &q.link_to),
+        ("--linked-by", &q.linked_by),
+        ("--related", &q.related),
+    ] {
+        // As given: no extension guessing (zk also matches partial paths).
+        if let Some(n) = notes
+            .iter()
+            .find(|n| !canonical(n).is_ok_and(|c| files.contains(&c)))
+        {
+            return Err(bad(flag, format!("not a note: {}", n.display())));
+        }
+    }
+    // With more -m filters, limit after them.
+    let limit = match more_matching.is_empty() {
+        true => None,
+        false => q.limit.take(),
+    };
+    let mut found = ws.query(&q)?;
+    for m in more_matching {
+        let hits: BTreeSet<PathBuf> = ws
+            .full_text(m, usize::MAX, &Cancel::new())?
+            .into_iter()
+            .map(|h| h.path)
+            .collect();
+        found.retain(|n| hits.contains(&n.path));
+    }
+    if let Some(l) = limit {
+        found.truncate(l);
+    }
 
     let end = if nul { '\0' } else { '\n' };
     let mut s = String::new();

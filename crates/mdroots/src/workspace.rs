@@ -1082,7 +1082,9 @@ impl Workspace {
             .collect())
     }
 
-    /// Links to the note from indexed notes, sorted by source path. Empty
+    /// Links to the note from indexed notes, sorted by source path,
+    /// including the note's own links to itself (`[[self]]`, `[x](#sec)`:
+    /// LSP references want them; `mdroots backlinks` drops them). Empty
     /// for a path inside the root that is not indexed.
     pub fn backlinks(&self, path: &Path) -> Result<Vec<Backlink>, Error> {
         let rel = self.rel(path)?;

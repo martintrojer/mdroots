@@ -20,7 +20,7 @@
 //!   sort, notes come by title A–Z, as zk's always-appended `title ASC`.
 //!
 //! Where mdroots differs from zk: `--related` is a filter here as in zk, so
-//! the shared-neighbour score of [`Workspace::related`] is not the order;
+//! the intermediary score of [`Workspace::related`] is not the order;
 //! titles sort case-insensitively (zk compares bytes).
 
 use std::cmp::Ordering;

@@ -16,7 +16,10 @@ commands:
                               `a|b` or, `NOT a` / `-a` not, `( )`
                               groups, `*` and `?` globs (repeatable: and)
     --tagless                 notes without tags
-    -m, --match QUERY         notes containing every word of QUERY
+    -m, --match QUERY         notes containing every word of QUERY, the
+                              last also as a prefix (repeatable: and); no
+                              stemming, phrases, OR/NOT or field filters
+                              (unlike zk)
     -x, --exclude PATH        not under PATH (repeatable)
     --created DATE, --modified DATE
                               on that day (UTC)
@@ -29,8 +32,9 @@ commands:
     --missing-backlink        notes linked from a note they don't link to
     -l, --link-to NOTE        notes linking to NOTE (repeatable: and)
     -L, --linked-by NOTE      notes NOTE links to (repeatable: and)
-    --related NOTE            notes sharing a linked note with NOTE but
-                              not linked with it (repeatable: and)
+    --related NOTE            notes on a directed two-hop path to or from
+                              NOTE, not linked with it either way, as zk
+                              (repeatable: and)
     -s, --sort KEY[+|-]       title, path, created or modified (t, p, c,
                               m); + ascending, - descending (default
                               title+)
@@ -46,11 +50,14 @@ commands:
                               report diagnostics of notes under each PATH
                               (a file or a directory; default .); exit 1
                               on any error or warning (--fail-on error:
-                              errors only; never: exit 0)
+                              errors only; never: exit 0); diagnostics on
+                              stdout, the summary line on stderr
+                              (--quiet drops it)
   roots PATH                  show the root chosen for PATH, why, and its
                               settings with where each came from
   resolve FROM LINK           resolve LINK as written in the note FROM
-  backlinks NOTE              list the notes linking to NOTE
+  backlinks NOTE              list the other notes linking to NOTE (not
+                              NOTE's links to itself)
   search [--paths] [--] QUERY [PATH]
                               notes containing every word of QUERY (the
                               last also as a prefix): a file searches its
@@ -62,6 +69,11 @@ commands:
                               line per message to FILE
 
 notes and tags exit 0 with or without results; 2 on a usage error.
+The NOTE of -l, -L and --related is the path of an indexed note, as given
+(no extension guessing; zk also takes partial paths), else exit 2. Links
+(for -l, -L, --orphan, --missing-backlink, --related and backlinks)
+include a bare path in prose to an existing note (`b.md`), which zk does
+not count; a bare path to a missing file is plain text, not a broken link.
 
 environment:
   MDROOTS_CACHE_DIR           cache dir to use instead of the user's (for

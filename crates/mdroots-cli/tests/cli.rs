@@ -1012,3 +1012,68 @@ fn notes_tag_expressions_take_and_and_parentheses() {
     assert_eq!(r.code, 2);
     assert_eq!(r.stderr, "mdroots: -t: column 6: expected )\n");
 }
+
+#[test]
+fn backlinks_lists_only_other_notes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let canon = fs::canonicalize(tmp.path()).unwrap();
+    let v = Vault { tmp, canon };
+    v.write(".mdroots", "");
+    v.write(
+        "self.md",
+        "# Self\n\n## Sec\n\n[[self]] [x](#sec) [me](self.md)\n",
+    );
+    v.write("other.md", "# Other\n\n[S](self.md)\n");
+    let r = run_cached(&v, &v.dir(), &["backlinks", "self.md"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.stdout, "other.md:3: Other\n");
+}
+
+#[test]
+fn notes_graph_filters_reject_a_note_that_is_not_indexed() {
+    let v = graph_vault();
+    for (args, msg) in [
+        (
+            &["notes", "-l", "nothere.md"][..],
+            "--link-to: not a note: nothere.md",
+        ),
+        (&["notes", "--link-to", "hub"], "--link-to: not a note: hub"),
+        (&["notes", "-L", "hub"], "--linked-by: not a note: hub"),
+        (
+            &["notes", "--related", "nothere.md"],
+            "--related: not a note: nothere.md",
+        ),
+        (&["notes", "-l", "sub"], "--link-to: not a note: sub"),
+    ] {
+        let r = run_cached(&v, &v.dir(), args);
+        assert_eq!(
+            (r.code, r.stdout.as_str(), r.stderr.as_str()),
+            (2, "", format!("mdroots: {msg}\n").as_str()),
+            "{args:?}"
+        );
+    }
+    // A note given from a subdirectory still counts.
+    assert_eq!(
+        notes_in(&v, &v.dir().join("sub"), &["-l", "../b.md"]),
+        ["<TMP>/vault/c.md", "<TMP>/vault/hub.md"]
+    );
+}
+
+#[test]
+fn notes_repeated_match_all_apply() {
+    let v = graph_vault();
+    // Alpha (a.md) holds `project` and `hub`; Beta and Sub S only `project`.
+    assert_eq!(notes(&v, &["-m", "project"]), ["a.md", "b.md", "sub/s.md"]);
+    assert_eq!(notes(&v, &["-m", "project", "-m", "hub"]), ["a.md"]);
+    assert_eq!(notes(&v, &["-m", "hub", "-m", "project"]), ["a.md"]);
+    // Each QUERY keeps its last word as a prefix.
+    assert_eq!(notes(&v, &["-m", "proj", "-m", "hu"]), ["a.md"]);
+    // The limit applies after every -m (Sub S sorts first by title-).
+    assert_eq!(
+        notes(
+            &v,
+            &["-m", "project", "-m", "hub", "-s", "title-", "-n", "1"]
+        ),
+        ["a.md"]
+    );
+}
