@@ -217,6 +217,33 @@ fn related_follows_directed_two_hop_paths_scored_by_intermediaries() {
     assert_eq!(got, [("d.md".into(), 2)]);
 }
 
+fn scored(w: &Workspace, rel: &str) -> Vec<(String, usize)> {
+    w.related(&v(rel))
+        .unwrap()
+        .into_iter()
+        .map(|(n, s)| (names([n.path]).remove(0), s))
+        .collect()
+}
+
+/// One intermediary on paths both ways (n → k → m and m → k → n) is one
+/// intermediary: m scores 1, not 2.
+#[test]
+fn related_counts_an_intermediary_once_across_both_directions() {
+    let w = graph(&["n:k", "k:n,m", "m:k"]);
+    assert_eq!(scored(&w, "n.md"), [("m.md".into(), 1)]);
+}
+
+/// Higher scores first, then by path among equal scores.
+#[test]
+fn related_orders_by_score_then_path() {
+    // m via j and k (2); y and z via j only (1 each).
+    let w = graph(&["n:j,k", "j:m,y,z", "k:m", "m:", "y:", "z:"]);
+    assert_eq!(
+        scored(&w, "n.md"),
+        [("m.md".into(), 2), ("y.md".into(), 1), ("z.md".into(), 1)]
+    );
+}
+
 /// Answers checked against zk 0.15.6 `zk list --related X.md`.
 #[test]
 fn related_matches_zk_on_converging_links() {
