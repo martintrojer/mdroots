@@ -2,7 +2,7 @@
 //! link queries answered through the resolve ladder. The store `default-features
 //! = false` embedders and tests use (docs/specs/library.md §2).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -23,23 +23,33 @@ use crate::fs::FileSystem;
 /// Config files larger than this are ignored by dialect detection.
 const MAX_CONFIG: usize = 256 * 1024;
 
-/// One parse of a note and the keys it is found by.
-struct Parsed {
-    doc: Document,
-    keys: Vec<(KeyKind, String)>,
-}
-
-/// A note's disk parse and editor overlay; the overlay wins.
+/// A note's disk parse and editor overlay; the overlay wins. Its keys are
+/// not stored: [`doc_keys`] recomputes them from the current parse when the
+/// note changes.
+#[derive(Default)]
 struct Entry {
-    disk: Option<Parsed>,
-    overlay: Option<Parsed>,
+    disk: Option<Document>,
+    overlay: Option<Document>,
 }
 
 impl Entry {
-    fn current(&self) -> Option<&Parsed> {
+    fn current(&self) -> Option<&Document> {
         self.overlay.as_ref().or(self.disk.as_ref())
     }
 }
+
+/// A note's index in [`MemStore::slots`]: stable while the note is indexed,
+/// reused after it is dropped, so ids say nothing about path order.
+type NoteId = u32;
+
+/// An indexed note: its path (shared with [`MemStore::paths`]) and entry.
+struct Slot {
+    path: Arc<str>,
+    entry: Box<Entry>,
+}
+
+/// Key -> the notes found by it, unsorted and without duplicates.
+type Postings = HashMap<Box<str>, Vec<NoteId>>;
 
 /// [`ResolveEnv`] over a [`FileSystem`] and a root.
 struct FsEnv {
@@ -114,8 +124,14 @@ struct Caches {
 pub struct MemStore {
     env: FsEnv,
     conventions: RootConventions,
-    entries: BTreeMap<String, Entry>,
-    index: BTreeMap<(KeyKind, String), BTreeSet<String>>,
+    /// Every indexed note's path -> its slot, sorted by path: the order of
+    /// every path-sorted answer (files, lookups, backlinks, the vote).
+    paths: BTreeMap<Arc<str>, NoteId>,
+    /// Indexed by [`NoteId`]; `None` slots are listed in `free_ids`.
+    slots: Vec<Option<Slot>>,
+    free_ids: Vec<NoteId>,
+    /// Each kind's keys and the notes they find.
+    index: HashMap<KeyKind, Postings>,
     skipped: Vec<(String, Error)>,
     caches: Caches,
     /// Extra code-mention dirs, root-relative (see
@@ -213,14 +229,14 @@ impl MemStore {
         let mut changed = Vec::new();
         for (rel, bytes) in changes {
             self.skipped.retain(|(p, _)| *p != rel);
-            let disk = self.entries.get(&rel).and_then(|e| e.disk.as_ref());
+            let disk = self.entry(&rel).and_then(|e| e.disk.as_ref());
             let had_disk = disk.is_some();
             let parsed = match bytes {
                 None if !had_disk => continue,
                 None => None,
                 Some(b) => {
                     let same = disk.is_some_and(|d| {
-                        !d.doc.is_lossy() && std::str::from_utf8(&b) == Ok(d.doc.source())
+                        !d.is_lossy() && std::str::from_utf8(&b) == Ok(d.source())
                     });
                     if same {
                         continue;
@@ -262,8 +278,10 @@ impl MemStore {
         MemStore {
             env,
             conventions,
-            entries: BTreeMap::new(),
-            index: BTreeMap::new(),
+            paths: BTreeMap::new(),
+            slots: Vec::new(),
+            free_ids: Vec::new(),
+            index: HashMap::new(),
             skipped: Vec::new(),
             caches: Caches::default(),
             code_dirs: Vec::new(),
@@ -280,7 +298,24 @@ impl MemStore {
 
     /// Indexed notes (disk and overlay-only), sorted.
     pub fn files(&self) -> impl Iterator<Item = &str> {
-        self.entries.keys().map(String::as_str)
+        self.paths.keys().map(|p| &**p)
+    }
+
+    fn entry(&self, root_rel: &str) -> Option<&Entry> {
+        self.paths.get(root_rel).map(|&id| &*self.slot(id).entry)
+    }
+
+    fn slot(&self, id: NoteId) -> &Slot {
+        self.slots[id as usize]
+            .as_ref()
+            .expect("an indexed note has a slot")
+    }
+
+    /// Indexed notes with their entries, sorted by path.
+    fn entries(&self) -> impl Iterator<Item = (&str, &Entry)> {
+        self.paths
+            .iter()
+            .map(|(p, &id)| (&**p, &*self.slot(id).entry))
     }
 
     /// Files that were not indexed, sorted by path: read errors (`Io`) and
@@ -291,10 +326,7 @@ impl MemStore {
 
     /// The current parse of a note (overlay wins).
     pub fn document(&self, root_rel: &str) -> Option<&Document> {
-        self.entries
-            .get(root_rel)
-            .and_then(Entry::current)
-            .map(|p| &p.doc)
+        self.entry(root_rel).and_then(Entry::current)
     }
 
     /// Replace a note's content with unsaved editor text; adds the note if
@@ -302,8 +334,7 @@ impl MemStore {
     /// [`policy`](Self::policy) and backlink index.
     pub fn set_overlay(&mut self, root_rel: &str, text: &str) {
         let doc = parse_with(text, &self.options(root_rel));
-        let parsed = self.parsed(root_rel, doc);
-        self.replace(root_rel, |e| e.overlay = Some(parsed));
+        self.replace(root_rel, |e| e.overlay = Some(doc));
     }
 
     /// Drop the overlay: back to the disk parse, or gone if there is none.
@@ -388,10 +419,10 @@ impl MemStore {
             .vote
             .get_or_init(|| {
                 let mut vote = Vote::new();
-                for (rel, e) in &self.entries {
-                    let Some(p) = e.current() else { continue };
-                    vote.record_doc(&p.doc);
-                    for l in p.doc.links().filter(|l| counts(l)) {
+                for (rel, e) in self.entries() {
+                    let Some(doc) = e.current() else { continue };
+                    vote.record_doc(doc);
+                    for l in doc.links().filter(|l| counts(l)) {
                         let r = self.resolve_link(rel, l, false);
                         if r.status != LinkStatus::External {
                             vote.record_link(l, r.step);
@@ -405,16 +436,16 @@ impl MemStore {
 
     fn build_backlinks(&self) -> Backlinks {
         let mut out = Backlinks::new();
-        for (from, e) in &self.entries {
-            let Some(p) = e.current() else { continue };
-            for (i, l) in p.doc.links().enumerate().filter(|(_, l)| counts(l)) {
+        for (from, e) in self.entries() {
+            let Some(doc) = e.current() else { continue };
+            for (i, l) in doc.links().enumerate().filter(|(_, l)| counts(l)) {
                 let r = self.resolve_link(from, l, false);
                 if !matches!(r.status, LinkStatus::Resolved | LinkStatus::Ambiguous) {
                     continue;
                 }
                 let targets: BTreeSet<String> = r.targets.into_iter().collect();
                 for t in targets {
-                    out.entry(t).or_default().push((from.clone(), i));
+                    out.entry(t).or_default().push((from.to_owned(), i));
                 }
             }
         }
@@ -450,13 +481,8 @@ impl MemStore {
         o
     }
 
-    fn parsed(&self, root_rel: &str, doc: Document) -> Parsed {
-        let keys = doc_keys(root_rel, &doc, self.env.case_sensitive);
-        Parsed { doc, keys }
-    }
-
     /// Validate, stat and (unless dataless and not forced) read a listed file.
-    fn read_listed(&self, rel: &str, force: bool) -> Result<Parsed, Error> {
+    fn read_listed(&self, rel: &str, force: bool) -> Result<Document, Error> {
         if !valid_rel(rel) {
             return Err(invalid_path(rel));
         }
@@ -474,7 +500,7 @@ impl MemStore {
         self.read_disk(rel)
     }
 
-    fn read_disk(&self, rel: &str) -> Result<Parsed, Error> {
+    fn read_disk(&self, rel: &str) -> Result<Document, Error> {
         let (bytes, _) = self
             .env
             .fs
@@ -484,39 +510,97 @@ impl MemStore {
     }
 
     /// Parse a note's disk bytes; binary files are `Unsupported`.
-    fn parse_disk(&self, rel: &str, bytes: &[u8]) -> Result<Parsed, Error> {
-        let doc = parse_bytes(bytes, &self.options(rel))
-            .ok_or_else(|| Error::new(ErrorKind::Unsupported, format!("{rel}: binary file")))?;
-        Ok(self.parsed(rel, doc))
+    fn parse_disk(&self, rel: &str, bytes: &[u8]) -> Result<Document, Error> {
+        parse_bytes(bytes, &self.options(rel))
+            .ok_or_else(|| Error::new(ErrorKind::Unsupported, format!("{rel}: binary file")))
     }
 
     /// Apply `f` to the note's entry, re-index its keys and drop the
-    /// whole-root caches.
+    /// whole-root caches. A note that ends with neither a disk parse nor
+    /// an overlay is dropped and its slot freed for reuse.
     fn replace(&mut self, rel: &str, f: impl FnOnce(&mut Entry)) {
         self.caches = Caches::default();
-        let entry = self.entries.entry(rel.to_owned()).or_insert(Entry {
-            disk: None,
-            overlay: None,
-        });
-        let old: Vec<(KeyKind, String)> =
-            entry.current().map(|p| p.keys.clone()).unwrap_or_default();
+        let cs = self.env.case_sensitive;
+        let found = self.paths.get(rel).copied();
+        let mut fresh = Entry::default();
+        let entry = match found {
+            Some(id) => {
+                let slot = self.slots[id as usize].as_mut();
+                &mut *slot.expect("an indexed note has a slot").entry
+            }
+            None => &mut fresh,
+        };
+        let keys = |e: &Entry| e.current().map(|d| doc_keys(rel, d, cs));
+        let old = keys(entry).unwrap_or_default();
         f(entry);
-        let new: Vec<(KeyKind, String)> =
-            entry.current().map(|p| p.keys.clone()).unwrap_or_default();
-        if entry.current().is_none() {
-            self.entries.remove(rel);
-        }
-        for k in old {
-            if let Some(set) = self.index.get_mut(&k) {
-                set.remove(rel);
-                if set.is_empty() {
-                    self.index.remove(&k);
+        let new = keys(entry).unwrap_or_default();
+        let indexed = entry.current().is_some();
+        let id = match (found, indexed) {
+            (Some(id), true) => id,
+            (Some(id), false) => {
+                self.paths.remove(rel);
+                self.slots[id as usize] = None;
+                self.free_ids.push(id);
+                id
+            }
+            (None, true) => self.add_slot(rel, fresh),
+            (None, false) => return,
+        };
+        for (kind, key) in old {
+            let Some(postings) = self.index.get_mut(&kind) else {
+                continue;
+            };
+            if let Some(ids) = postings.get_mut(key.as_str()) {
+                ids.retain(|&n| n != id);
+                if ids.is_empty() {
+                    postings.remove(key.as_str());
                 }
             }
         }
-        for k in new {
-            self.index.entry(k).or_default().insert(rel.to_owned());
+        // `doc_keys` lists each key once and the old ones are gone, so the
+        // id is new to every bucket it joins.
+        for (kind, key) in new {
+            let postings = self.index.entry(kind).or_default();
+            match postings.get_mut(key.as_str()) {
+                Some(ids) => ids.push(id),
+                None => {
+                    postings.insert(key.into_boxed_str(), vec![id]);
+                }
+            }
         }
+    }
+
+    /// Index a new note in a free slot, or a new one.
+    fn add_slot(&mut self, rel: &str, entry: Entry) -> NoteId {
+        let path: Arc<str> = Arc::from(rel);
+        let slot = Some(Slot {
+            path: path.clone(),
+            entry: Box::new(entry),
+        });
+        let id = match self.free_ids.pop() {
+            Some(id) => {
+                self.slots[id as usize] = slot;
+                id
+            }
+            None => {
+                let id = NoteId::try_from(self.slots.len()).expect("at most u32::MAX notes");
+                self.slots.push(slot);
+                id
+            }
+        };
+        self.paths.insert(path, id);
+        id
+    }
+
+    /// The paths of `ids`, sorted.
+    fn sorted_paths(&self, ids: impl IntoIterator<Item = NoteId>) -> Vec<String> {
+        let mut out: Vec<String> = ids
+            .into_iter()
+            .map(|id| self.slot(id).path.to_string())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
     }
 }
 
@@ -567,25 +651,20 @@ fn has_block_id(src: &str, id: &str) -> bool {
 
 impl KeyLookup for MemStore {
     fn lookup(&self, kind: KeyKind, key: &str) -> Vec<String> {
-        self.index
-            .get(&(kind, key.to_owned()))
-            .map(|s| s.iter().cloned().collect())
-            .unwrap_or_default()
+        let ids = self.index.get(&kind).and_then(|p| p.get(key));
+        self.sorted_paths(ids.into_iter().flatten().copied())
     }
 
     /// zk-style: notes whose stem contains `needle`; failing that, notes
     /// whose path contains it.
     fn partial(&self, needle: &str) -> Vec<String> {
         let having = |kind: KeyKind| -> Vec<String> {
-            self.entries
-                .iter()
-                .filter(|(_, e)| {
-                    e.current().is_some_and(|p| {
-                        p.keys.iter().any(|(k, v)| *k == kind && v.contains(needle))
-                    })
-                })
-                .map(|(rel, _)| rel.clone())
-                .collect()
+            let ids = self.index.get(&kind).into_iter().flat_map(|p| {
+                p.iter()
+                    .filter(|(k, _)| k.contains(needle))
+                    .flat_map(|(_, ids)| ids.iter().copied())
+            });
+            self.sorted_paths(ids)
         };
         let by_name = having(KeyKind::Stem);
         match by_name.is_empty() {

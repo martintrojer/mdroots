@@ -796,3 +796,100 @@ fn code_dirs_extend_code_mention_lookup() {
     let (_, r) = link(&s, "docs/a.md", "src/main.rs:12");
     assert_eq!(r.status, LinkStatus::Unchecked);
 }
+
+// --- ordering under note-id reuse ---------------------------------------
+
+/// A store whose later notes reuse the slots of deleted ones: every
+/// path-sorted answer must stay path-sorted, whatever the slot order.
+fn store_with_reused_slots() -> MemStore {
+    let note = "---\naliases: [shared]\n---\n# T\n[[target]] #tag\n";
+    let mut fs = MemFs::new().with_file("/target.md", "# Target\n");
+    for n in ["a", "b", "c", "m", "n"] {
+        fs = fs.with_file(&format!("/{n}-note.md"), note);
+    }
+    let mut s = mem(fs);
+    // Free the first slots, then add notes that sort before and after
+    // the survivors, from disk and as overlays.
+    s.apply_contents(vec![change("a-note.md", None), change("b-note.md", None)]);
+    s.apply_contents(vec![
+        change("z-note.md", Some(note.as_bytes())),
+        change("d-note.md", Some(note.as_bytes())),
+    ]);
+    s.set_overlay("0-note.md", note);
+    s.set_overlay("y-note.md", note);
+    s
+}
+
+const REUSED: [&str; 7] = [
+    "0-note.md",
+    "c-note.md",
+    "d-note.md",
+    "m-note.md",
+    "n-note.md",
+    "y-note.md",
+    "z-note.md",
+];
+
+#[test]
+fn files_stay_path_sorted_after_slot_reuse() {
+    let s = store_with_reused_slots();
+    let mut want: Vec<&str> = REUSED.to_vec();
+    want.push("target.md");
+    want.sort();
+    assert_eq!(s.files().collect::<Vec<_>>(), want);
+}
+
+#[test]
+fn lookup_and_partial_stay_path_sorted_after_slot_reuse() {
+    let s = store_with_reused_slots();
+    assert_eq!(s.lookup(KeyKind::TitleSlug, "t"), REUSED);
+    assert_eq!(s.lookup(KeyKind::Alias, "shared"), REUSED);
+    // Stem matches first ...
+    assert_eq!(s.partial("-note"), REUSED);
+    // ... and paths only when no stem matches.
+    let mut s = s;
+    s.set_overlay("dir/x.md", "x\n");
+    s.set_overlay("dir/w.md", "w\n");
+    assert_eq!(s.partial("dir/"), ["dir/w.md", "dir/x.md"]);
+    assert_eq!(s.partial("x"), ["dir/x.md"]);
+}
+
+#[test]
+fn backlinks_stay_path_sorted_after_slot_reuse() {
+    let s = store_with_reused_slots();
+    assert_eq!(froms(&s.backlinks("target.md")), REUSED);
+    assert_eq!(s.backlinks("target.md").len(), REUSED.len());
+}
+
+#[test]
+fn overlay_that_changes_keys_restores_disk_keys_when_cleared() {
+    let mut s = mem(MemFs::new().with_file(
+        "/n.md",
+        "---\nid: disk-id\naliases: [old]\n---\n# Disk Title\n",
+    ));
+    s.set_overlay("n.md", "---\nid: new-id\naliases: [new]\n---\n# Over\n");
+    assert!(s.lookup(KeyKind::Alias, "old").is_empty());
+    assert!(s.lookup(KeyKind::Id, "disk-id").is_empty());
+    assert_eq!(s.lookup(KeyKind::Alias, "new"), ["n.md"]);
+    assert_eq!(s.lookup(KeyKind::Id, "new-id"), ["n.md"]);
+    // Disk changes under the overlay do not show until it is cleared.
+    s.apply_contents(vec![change(
+        "n.md",
+        Some(b"---\naliases: [disk2]\n---\n# Disk Title\n"),
+    )]);
+    assert!(s.lookup(KeyKind::Alias, "disk2").is_empty());
+    assert_eq!(s.lookup(KeyKind::Alias, "new"), ["n.md"]);
+    s.clear_overlay("n.md");
+    assert!(s.lookup(KeyKind::Alias, "new").is_empty());
+    assert!(s.lookup(KeyKind::Id, "new-id").is_empty());
+    assert_eq!(s.lookup(KeyKind::Alias, "disk2"), ["n.md"]);
+    assert_eq!(s.lookup(KeyKind::TitleSlug, "disk-title"), ["n.md"]);
+    assert_eq!(s.lookup(KeyKind::Stem, "n"), ["n.md"]);
+    // An overlay-only note leaves no keys behind.
+    s.set_overlay("o.md", "---\naliases: [gone]\n---\n");
+    assert_eq!(s.lookup(KeyKind::Alias, "gone"), ["o.md"]);
+    s.clear_overlay("o.md");
+    assert!(s.lookup(KeyKind::Alias, "gone").is_empty());
+    assert!(s.lookup(KeyKind::Stem, "o").is_empty());
+    assert!(s.partial("o").is_empty());
+}
