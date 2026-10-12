@@ -6,6 +6,7 @@ library.
 
 ```sh
 cargo install mdroots-cli        # installs the `mdroots` binary
+mise use -g github:martintrojer/mdroots   # or a prebuilt binary (macOS arm64, Linux x86_64)
 
 mdroots check notes/             # broken links etc.; exit 1 on errors or warnings (CI-friendly)
 mdroots roots notes/garden.md    # which root was picked, and why

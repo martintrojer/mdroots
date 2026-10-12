@@ -67,7 +67,16 @@ cargo add mdroots             # the library
 ```
 
 Prebuilt binaries for macOS (Apple silicon) and Linux (x86_64) are on the
-[releases page](https://github.com/martintrojer/mdroots/releases).
+[releases page](https://github.com/martintrojer/mdroots/releases). With
+[mise](https://mise.jdx.dev), which picks the right one for the machine:
+
+```sh
+mise use -g github:martintrojer/mdroots   # latest release
+mise up github:martintrojer/mdroots       # update later
+```
+
+mise caches the release list for an hour, so a release published within the
+last hour may need `mise install github:martintrojer/mdroots@<version>`.
 
 **Neovim 0.12+:** copy [`editors/nvim/lsp/mdroots.lua`](editors/nvim/lsp/mdroots.lua)
 and [`plugin/mdroots.lua`](editors/nvim/plugin/mdroots.lua) into
