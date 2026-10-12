@@ -75,8 +75,9 @@ mise use -g github:martintrojer/mdroots   # latest release
 mise up github:martintrojer/mdroots       # update later
 ```
 
-mise caches the release list for an hour, so a release published within the
-last hour may need `mise install github:martintrojer/mdroots@<version>`.
+mise holds back releases younger than 24 hours by default
+(`minimum_release_age`), so within a day of a release name the version:
+`mise use -g github:martintrojer/mdroots@<version>`.
 
 **Neovim 0.12+:** copy [`editors/nvim/lsp/mdroots.lua`](editors/nvim/lsp/mdroots.lua)
 and [`plugin/mdroots.lua`](editors/nvim/plugin/mdroots.lua) into
