@@ -1,20 +1,17 @@
 # Language server benchmark: mdroots vs zk vs marksman
 
 mdroots, [zk](https://github.com/zk-org/zk) and
-[marksman](https://github.com/artempyanykh/marksman) were timed as language
-servers on two generated notebooks, 1,000 and 10,000 notes. The scripts are
-in [bench/compare](../../bench/compare/README.md).
+[marksman](https://github.com/artempyanykh/marksman) timed as language
+servers on generated notebooks of 1,000 and 10,000 notes.
 
 ## Reproduce
-
-From the repo root, with `zk` and `marksman` on `PATH`:
 
 ```
 cargo build --release -p mdroots-cli && python3 bench/compare/run.py --mdroots target/release/mdroots
 ```
 
-It works in a fresh temp dir and prints the tables below. On another
-machine, or at another load, the numbers will differ.
+Requirements, options and isolation: [bench/compare](../../bench/compare/README.md).
+Numbers differ on another machine or load.
 
 ## Versions and machine
 
@@ -28,7 +25,7 @@ machine, or at another load, the numbers will differ.
 
 ## Notebooks
 
-`bench/compare/gen.py N DIR` is deterministic. It uses the generator of
+`bench/compare/gen.py N DIR` is deterministic: the generator of
 `crates/mdroots/examples/bench_root.rs` (same LCG, seed 42, same words).
 Each note has:
 
@@ -36,36 +33,33 @@ Each note has:
 * four 60-word paragraphs, two `##` headings and two inline `#topicN` tags;
 * five `[[note-NNNNN]]` links, of which 1 in 50 is a broken `[[missing-k]]`.
 
-The notebook also gets a `.zk/config.toml` (wiki links,
-`dead-link = "error"`) and an empty `.marksman.toml`. The 1k notebook has
-112 broken links (3.9 MB); the 10k notebook has 1,049 (39 MB).
+Plus a `.zk/config.toml` (wiki links, `dead-link = "error"`) and an empty
+`.marksman.toml`. The 1k notebook has 112 broken links (3.9 MB); the 10k
+one has 1,049 (39 MB).
 
-The probe page is `note-00000.md`. It has four valid links, one
-`[[missing-probe]]` on line 23, and a trailing bare `[[` on line 25, where
-completion is requested.
+The probe page `note-00000.md` has four valid links, `[[missing-probe]]`
+on line 23, and a bare `[[` on line 25, where completion is requested.
 
 ## Method
 
 `bench/lspbench.py` is a stdio LSP client that times one server process:
 
-* All times are **ms since the server process was spawned**: the time an
-  editor user would wait. The client opens the probe page right after
-  `initialized`.
-* Methods missing from the server's `initialize` result are reported "not
-  supported" and never sent.
-* A result counts once it is useful. Definition must point at
-  `note-00001.md`. Completion needs at least 10 items. documentSymbol and
-  workspaceSymbol need at least one item. Pending methods are retried
-  round-robin every 20 ms. "First non-empty completion" is the first answer
-  with at least one item.
-* Peak RSS of the process and its children is sampled with `ps` every
-  20 ms. `phys_footprint` and `phys_footprint_peak` come from
-  `footprint -j`, taken just before shutdown.
+* Times are **ms since the server process was spawned**, what an editor
+  user waits. The probe page is opened right after `initialized`.
+* Methods missing from the `initialize` result are "not supported" and
+  never sent.
+* A result counts once useful: definition points at `note-00001.md`,
+  completion has ≥ 10 items, documentSymbol and workspaceSymbol ≥ 1.
+  Pending methods are retried round-robin every 20 ms. "First non-empty
+  completion" is the first answer with ≥ 1 item.
+* Peak RSS of the process and its children: `ps` every 20 ms.
+  `phys_footprint` and `phys_footprint_peak`: `footprint -j` just before
+  shutdown.
 * Each run ends with a clean `shutdown`/`exit`, so mdroots persists its
   cache.
 
 `bench/compare/run.py` runs 5 rounds per size. Each round runs every config
-once, interleaved, after the page cache was warmed by reading every note:
+once, interleaved, after warming the page cache by reading every note:
 
 * **mdroots cold**: `mdroots lsp` on a fresh, empty `MDROOTS_CACHE_DIR`.
 * **mdroots warm**: a second process on the same cache dir.
@@ -74,8 +68,7 @@ once, interleaved, after the page cache was warmed by reading every note:
 * **`zk index` from scratch / no-op**: db deleted, then
   `zk index --no-input -q` timed twice.
 * **zk (indexed)**: `zk lsp` on that index.
-* **marksman**: `marksman server`. It has no persistent state, so it is
-  always cold.
+* **marksman**: `marksman server`; no persistent state, always cold.
 
 `bench/compare/report.py` turns `results.jsonl` into the tables.
 
@@ -120,69 +113,55 @@ once, interleaved, after the page cache was warmed by reading every note:
 | `zk index` no-op | | | 213 ms [209–234] | | |
 
 **Capabilities.** mdroots and marksman advertise all four methods. zk
-0.15.6 has no documentSymbol or workspace/symbol: they are missing from its
-capabilities, and workspace/symbol returns -32601.
+0.15.6 lacks documentSymbol and workspace/symbol in its capabilities;
+workspace/symbol returns -32601.
 
-**Diagnostics.** All three servers publish exactly one diagnostic on the
-probe page, on line 23 (`[[missing-probe]]`), at error severity:
+**Diagnostics.** All three publish exactly one diagnostic on the probe
+page, line 23 (`[[missing-probe]]`), at error severity:
 
 * mdroots: "broken link: missing-probe"
 * zk: "not found"
 * marksman: "Link to non-existent document 'missing-probe'"
 
-marksman also publishes diagnostics for every file with a broken link: 112
-files at 1k and 1,015 at 10k (the 1,049 broken links sit in 1,015 notes,
-because some notes have two). At 10k two of the five runs shut down before
-it had published them all (1,005 and 1,013 files), hence
-"1005/1013/1015" in the table. mdroots and zk publish only for open
-documents. All three see the same notebook and agree on the probe page.
+marksman also publishes for every file with a broken link: 112 files at 1k,
+1,015 at 10k (the 1,049 broken links sit in 1,015 notes). At 10k two of
+five runs shut down before it finished (1,005 and 1,013 files), hence
+"1005/1013/1015". mdroots and zk publish for open documents only.
 
 ## Reading the numbers
 
-* **Warm is mdroots' design point, and there it is fast.**
-  * At 10k it answers `initialize`, definition and documentSymbol in about
-    9 ms.
-  * At 10k it returns a full completion list in about 0.42 s,
-    workspaceSymbol in about 0.50 s and the broken-link diagnostic in about
-    0.38 s, at a steady 92 MB phys_footprint.
-* **An already-indexed zk beats mdroots at 10k on the index-dependent
-  measures.**
-  * zk is faster on full completion (287 vs 422 ms) and on the broken-link
-    diagnostic (215 vs 379 ms).
-  * zk uses less memory: 67 MB vs 92 MB phys_footprint, and 85 vs 118 MB
-    RSS.
-  * At 1k, indexed zk is also faster on completion (40 vs 63 ms) and on the
-    diagnostic (33 vs 58 ms). mdroots uses less memory there (17 vs 25 MB).
-  * mdroots wins on time to `initialize`, definition and documentSymbol. It
-    answers those from the open file and the cache before the root is
-    loaded.
-* **mdroots misses its own memory target at 10k.** The target is
-  < 35 MB phys_footprint ([ROADMAP §1.3](../ROADMAP.md)); it was set from a
-  3,000-note measurement. At 10k mdroots 0.2.10 holds 92 MB. At 1k it holds
-  17 MB. The memory work after 0.2.10 brings that to 60 MB and 14 MB
-  ([Memory](#memory)).
-* **Cold mdroots vs zk with no index:**
-  * mdroots' notebook-wide results take 2.3 s cold at 10k (median) and
-    about 0.32 s at 1k.
-  * `zk index` from scratch took 97 s at 10k and 1.5 s at 1k: it grows
-    faster than the notebook.
-  * `zk lsp` with no index blocks `initialize` until indexing is done:
-    125 s at 10k.
-* **marksman:**
-  * It is the slowest to a first useful answer: about 1.0 s at 1k and 4.6 s
-    at 10k. It holds every request until the workspace is loaded.
-  * It uses the most memory: 105 MB at 1k and 317 MB at 10k phys_footprint.
-  * Once loaded, its per-request latency is low (5–20 ms).
-* **Against the earlier run** (mdroots 0.2.6, load average 13–34): on the
-  quieter machine zk and marksman got faster (`zk index` 112 → 97 s,
-  `zk lsp` with no index 144 → 125 s, marksman about 5%) and their ranges
-  tightened. mdroots' medians barely moved. The conclusions are the same.
+* **Warm mdroots (its design point):** at 10k, `initialize`, definition
+  and documentSymbol in about 9 ms; full completion 0.42 s,
+  workspaceSymbol 0.50 s, broken-link diagnostic 0.38 s; steady 92 MB
+  phys_footprint.
+* **Indexed zk beats it on index-dependent measures:** at 10k, full
+  completion 287 vs 422 ms, diagnostic 215 vs 379 ms, and less memory
+  (67 vs 92 MB phys_footprint, 85 vs 118 MB RSS). At 1k, completion 40 vs
+  63 ms and diagnostic 33 vs 58 ms, but mdroots uses less memory (17 vs
+  25 MB). mdroots wins `initialize`, definition and documentSymbol,
+  answered from the open file and the cache before the root loads.
+* **mdroots misses its memory target at 10k:** < 35 MB phys_footprint
+  ([ROADMAP §1.3](../ROADMAP.md#1-built-but-not-validated)), set from a
+  3,000-note measurement. 0.2.10 holds 92 MB at 10k and 17 MB at 1k; the
+  later memory work brings that to 60 MB and 14 MB ([Memory](#memory)).
+* **Cold mdroots vs unindexed zk:** mdroots' notebook-wide results take
+  2.3 s at 10k (median), about 0.32 s at 1k. `zk index` from scratch takes
+  97 s at 10k and 1.5 s at 1k, growing faster than the notebook; `zk lsp`
+  with no index blocks `initialize` until done (125 s at 10k).
+* **marksman:** slowest to a first useful answer (about 1.0 s at 1k,
+  4.6 s at 10k), since it holds every request until the workspace loads;
+  most memory (105 MB at 1k, 317 MB at 10k phys_footprint); low
+  per-request latency once loaded (5–20 ms).
+* **Against the earlier run** (mdroots 0.2.6, load average 13–34): zk and
+  marksman got faster on the quieter machine (`zk index` 112 → 97 s,
+  `zk lsp` with no index 144 → 125 s, marksman about 5%) with tighter
+  ranges. mdroots' medians barely moved. Same conclusions.
 
 ## Memory
 
-After 0.2.10 the in-memory index was made smaller without changing what it
-holds (the note text stays in memory, D9). Measured on the same 10k and 1k
-notebooks, release build of local main e86c74a:
+A smaller in-memory index after 0.2.10, holding the same data (note text
+stays in memory, D9). Same 10k and 1k notebooks, release build of local
+main e86c74a:
 
 | | 0.2.10 | after | change |
 |---|---|---|---|
@@ -195,9 +174,12 @@ notebooks, release build of local main e86c74a:
 
 Speed, `run.py --runs 3 10k`, medians (0.2.10 in brackets): warm full
 completion 411 ms (422), warm broken-link diagnostic 368 ms (379), cold full
-completion 2.33 s (2.30), cold diagnostic 2.29 s (2.26). Within the run's
-noise; the first cold run of a fresh notebook was again the slow outlier
-(30.8 s).
+completion 2.33 s (2.30), cold diagnostic 2.29 s (2.26). Within noise;
+the first cold run on a fresh notebook was again the slow outlier (30.8 s).
+mdroots first definition: 11 ms warm and cold. zk (indexed) in the same run:
+first definition 207 ms, full completion 290 ms, broken-link diagnostic
+218 ms, phys_footprint 56 MB; `zk index` from scratch 109 s. These are the
+figures in the [README](../../README.md#compared-with-zk-and-marksman).
 
 **Where the live heap went at 10k** (a counting global allocator over the
 public API; the probe is not in the repo):
@@ -211,65 +193,52 @@ public API; the probe is not in the repo):
 | frontmatter | 4.0 MB | 1.8 MB | `fields()` built on demand (`Document::frontmatter_fields`) |
 | backlink index | 3.6 MB | 1.0 MB | note ids instead of path strings |
 
-The rest of the gap to phys_footprint (38 MB live, 60 MB footprint) is the
-allocator, SQLite, thread stacks and the runtime.
+The rest of the gap (38 MB live, 60 MB footprint) is the allocator, SQLite,
+thread stacks and the runtime.
 
-**What is left above the 35 MB target at 10k:** the note text (17.8 MB) is
-the largest single part. Dropping it means answering from the DB instead of
-memory: derived tables, D9 ([ROADMAP §3](../ROADMAP.md#3-deferred-work)).
-At 1k notes the target holds with room to spare.
+**What is left above the 35 MB target at 10k:** note text (17.8 MB) is the
+largest part. Dropping it means answering from the DB: derived tables, D9
+([ROADMAP §3](../ROADMAP.md#3-deferred-work)). At 1k the target holds
+easily.
 
 ## Caveats
 
-* **The machine was quiet, not idle.**
-  * The 1-minute load average was 5.3–11.9 (mean 7.4) during the run on
-    16 cores, from background monitoring and security daemons. Nothing else
-    was building. The earlier run had 13–34.
-  * The medians are the figures to quote. The maxima are noisy.
-* **The first cold mdroots run is an outlier.** In round 1 of each size,
-  the first launch after the notebook was generated, mdroots cold took
-  3.4 s at 1k (vs about 0.3 s in rounds 2–5) and 30.9 s at 10k (vs about
-  2.3 s) to its notebook-wide results. Rounds 2–5 agree with each other,
-  and the medians use all five. The cause was not measured; security
-  daemons scanning the fresh notes and the new cache DB are a likely one.
-  A rerun with `--work` on an existing work dir reuses the notebooks.
-* **Synthetic notebook.** Notes are uniform and flat (one directory), link
-  to random targets, and have no attachments or nested folders. Real
-  notebooks differ.
-* **"First result" depends on retries.** The client polls every 20 ms, so
-  values carry about ±20 ms of retry granularity, plus the time spent
-  serving the other pending methods in the round.
-* **`initialize` time is not "ready" time.**
-  * mdroots answers at once and loads the root in the background. Its early
-    answers are partial: completion has only the current note,
-    workspaceSymbol is empty, and the probe page gets a "not in indexed
-    set" hint, which is not counted as a broken-link error.
-  * zk (no index) and marksman block `initialize` until loaded.
-  * Compare readiness on the full completion, workspaceSymbol and
-    diagnostic rows.
+* **Quiet, not idle.** 1-minute load average 5.3–11.9 (mean 7.4) on 16
+  cores, from background monitoring and security daemons; nothing else
+  building. Quote medians; maxima are noisy.
+* **The first cold mdroots run is an outlier.** Round 1 of each size (first
+  launch after generating the notebook) took 3.4 s at 1k (about 0.3 s in
+  rounds 2–5) and 30.9 s at 10k (about 2.3 s) to notebook-wide results.
+  Rounds 2–5 agree; medians use all five. Cause not measured; security
+  daemons scanning the fresh notes and new cache DB are likely. `--work` on
+  an existing work dir reuses the notebooks.
+* **Synthetic notebook.** Uniform, flat (one directory), random link
+  targets, no attachments or nested folders. Real notebooks differ.
+* **"First result" depends on retries:** about ±20 ms of polling
+  granularity, plus time serving the other pending methods in the round.
+* **`initialize` time is not "ready" time.** mdroots answers at once and
+  loads the root in the background; early answers are partial (completion
+  has only the current note, workspaceSymbol is empty, the probe page gets
+  a "not in indexed set" hint, not counted as a broken-link error). zk (no
+  index) and marksman block `initialize` until loaded. Compare readiness on
+  the full completion, workspaceSymbol and diagnostic rows.
 * **Completion sizes differ.** mdroots and marksman cap the list at 50
-  items with `isIncomplete: true`. zk returns all 999 or 9,999 notes, and
-  the extra JSON is part of its latency.
-* **Feature coverage differs.**
-  * zk has no documentSymbol or workspaceSymbol.
-  * marksman computes diagnostics for the whole workspace up front (more
-    work, more memory). mdroots and zk diagnose open files only.
-* **Persistence differs.**
-  * mdroots warm uses its [SQLite](https://sqlite.org) cache: 9.5 MB for
-    1k notes and 50 MB for 10k, in the work dir.
-  * zk indexed uses `.zk/notebook.db`, which it writes into the notebook.
-  * marksman keeps nothing on disk.
-  * zk (indexed) and mdroots warm are the like-for-like pair. zk (no index)
-    or `zk index` is the counterpart of mdroots cold. marksman is always
-    cold.
-* **Memory accounting.** RSS includes shared pages. phys_footprint is what
-  macOS charges the process, and is the better comparison. marksman is a
-  .NET process, so its numbers include the GC heap and runtime.
-  phys_footprint is a snapshot taken after all requests; phys_footprint_peak
-  is the kernel's lifetime peak.
-* **Isolation.** HOME, XDG dirs and TMPDIR were redirected into the work
-  dir. marksman still looked up its user config under the macOS
-  application-support dir, because .NET resolves that path without
-  `$HOME`; none existed, and it created none. Nothing else was written
-  outside the work dir. zk's `.zk/notebook.db` lives in the generated
-  notebooks, inside it.
+  with `isIncomplete: true`; zk returns all 999 or 9,999 notes, and the
+  extra JSON is part of its latency.
+* **Feature coverage differs.** zk has no documentSymbol or
+  workspaceSymbol. marksman diagnoses the whole workspace up front (more
+  work, more memory); mdroots and zk only open files.
+* **Persistence differs.** mdroots warm uses its
+  [SQLite](https://sqlite.org) cache (9.5 MB at 1k, 50 MB at 10k, in the
+  work dir); zk indexed uses `.zk/notebook.db` in the notebook; marksman
+  keeps nothing. Like-for-like: zk (indexed) vs mdroots warm; zk (no index)
+  or `zk index` vs mdroots cold; marksman is always cold.
+* **Memory accounting.** RSS includes shared pages; phys_footprint is what
+  macOS charges the process, the better comparison. marksman is .NET, so
+  its numbers include the GC heap and runtime. phys_footprint is a snapshot
+  after all requests; phys_footprint_peak is the kernel's lifetime peak.
+* **Isolation** ([how](../../bench/compare/README.md#isolation)). In this
+  run marksman looked up its user config under the macOS
+  application-support dir; none existed and it created none. Nothing else
+  was written outside the work dir; zk's `.zk/notebook.db` is in the
+  generated notebooks inside it.

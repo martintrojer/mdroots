@@ -1,18 +1,17 @@
 # ramble: code ported into mdroots, and how ramble embeds it
 
-[ramble](https://github.com/martintrojer/ramble), a separate TUI markdown
-reader by the same author (Rust,
+[ramble](https://github.com/martintrojer/ramble), a TUI markdown reader by
+the same author (Rust,
 [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) 0.13, no
-[tokio](https://tokio.rs)), embeds the
-`mdroots` library (0.2.3 or later) in process. Both projects are MIT
-licensed with the same author; ported code records the ramble commit it
-comes from in a source comment or the commit message (tables below).
+[tokio](https://tokio.rs)), embeds the `mdroots` library (0.2.3 or later)
+in process. Both are MIT licensed; ported code records its ramble commit in
+a source comment or the commit message (tables below).
 
 ## How ramble uses mdroots
 
-- **Syntax.** ramble's `src/doc.rs` takes links, headings (with slugs
-  from `mdroots::syntax::slug`) and front matter from
-  `mdroots::syntax::parse_with`, with `markdown_options()` for both parses
+- **Syntax.** `src/doc.rs` takes links, headings (slugs from
+  `mdroots::syntax::slug`) and front matter from
+  `mdroots::syntax::parse_with`, using `markdown_options()` for both parses
   so ranges line up. Its front matter fold reads
   `mdroots::syntax::Frontmatter`.
 - **Backend.** `src/app/mdroots_glue.rs` runs one worker thread that owns
@@ -27,10 +26,10 @@ comes from in a source comment or the commit message (tables below).
   `backlinks` feed the notes, search, tags and backlinks pickers; the notes
   picker sorts by `NoteSummary.modified`.
 - **Live updates.** Workspaces open with `Options::watch(true)`; the worker
-  subscribes to each root it answers from and re-answers the page when a
-  change lands under that root. A page reload calls `refresh_paths`.
-- **Config.** The default config has no language servers: every page uses
-  mdroots unless the user configures an `[[lsp.server]]`.
+  subscribes to each root it answers from and re-answers the page on a
+  change under that root. A page reload calls `refresh_paths`.
+- **Config.** No language servers by default: every page uses mdroots
+  unless the user configures an `[[lsp.server]]`.
 
 ## What ramble deleted, and what it keeps
 
@@ -45,8 +44,8 @@ Kept, by design:
 - the layout parse in `src/doc.rs` (blocks, inlines, code spans for
   rendering), which mdroots does not model;
 - code-path links and their follow (`src/app/codepath.rs`), with its own
-  search dirs (page dir, VCS root, tree root); `Options::code_dirs` covers
-  the same ground but ramble does not use it yet;
+  search dirs (page dir, VCS root, tree root); ramble does not use
+  `Options::code_dirs`, which covers the same ground, yet;
 - its own file watcher (`src/app/watch.rs`) to re-render the page, and
   local dispatch for URLs, same-page anchors and links mdroots does not
   report;
@@ -88,14 +87,15 @@ Kept, by design:
 Each is in [ROADMAP §3](../ROADMAP.md#3-deferred-work); the API is in
 [library spec §3](../specs/library.md#3-public-api-sketch).
 
-- **`subscribe` sends changed paths only.** ramble needs only "something
-  under this root changed" and re-answers the page; it cannot tell a
-  created, removed or renamed note apart.
+- **`subscribe` sends changed paths only.** ramble re-answers the page on
+  any change under the root; it cannot tell a created, removed or renamed
+  note apart.
 - **`Preview` has no `summary`.** ramble's `K` popup shows the title, the
   front matter lines and the excerpt.
 - **Unfenced front matter is a `ParseOptions` switch, not a workspace
   option.** ramble parses with `unfenced_frontmatter` off (a
-  [Logseq](https://logseq.com), [MultiMarkdown](https://fletcherpenney.net/multimarkdown/) or JSON header is prose to
-  it); a workspace always parses with the default (on), so ramble gets no
-  matching `DocLink` for a link inside such a header and resolves it
+  [Logseq](https://logseq.com),
+  [MultiMarkdown](https://fletcherpenney.net/multimarkdown/) or JSON header
+  is prose to it); a workspace always uses the default (on), so a link
+  inside such a header has no matching `DocLink` and ramble resolves it
   locally.

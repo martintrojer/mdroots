@@ -5,10 +5,10 @@ Source: [gopls](https://go.dev/gopls) v0.20.0 source (paths relative to
 [daemon docs](https://go.dev/gopls/daemon) and the
 [scalability post](https://go.dev/blog/gopls-scalability).
 
-gopls's speed comes from its cache and scheduling design, not its daemon.
-The daemon (`-remote=auto`) is off by default, documented as new, not
-enabled by [vscode-go](https://github.com/golang/vscode-go), and a maintainer called making it the default "too
-early" (golang/go#81721).
+gopls is fast because of its cache and scheduling, not its daemon. The
+daemon (`-remote=auto`) is off by default, documented as new, not enabled
+by [vscode-go](https://github.com/golang/vscode-go); a maintainer called
+making it the default "too early" (golang/go#81721).
 
 ## Speed practices
 
@@ -36,38 +36,38 @@ early" (golang/go#81721).
 Built in `mdroots lsp` ([library spec §4](../specs/library.md#4-scheduling)):
 
 1. Requests run in order, so `didChange` → query ordering holds without locks.
-2. `$/cancelRequest` marks a queued request cancelled (a running request
-   is not interrupted); a `didChange` also cancels the queued requests on
-   that document.
+2. `$/cancelRequest` marks a queued request cancelled (a running one is not
+   interrupted); a `didChange` also cancels queued requests on that document.
 3. Diagnostics are debounced: one pass, 500 ms after the last edit.
 4. Root-per-URI is memoized (`Workspaces` caches a workspace per root).
-   Requests never open a root: a file reached outside any open root is
-   served in single-file mode, and an opened document stays single-file
-   until its root has opened in the background.
+   Requests never open a root: a file outside any open root is served
+   single-file, and an opened document stays single-file until its root
+   has opened in the background.
 5. Cache files are version-namespaced; any process may GC old versions
    under a size and age budget, and stamps a root's last-seen at most
    hourly. A cache dir or registry that does not open falls back to an
-   in-memory index, and a corrupt per-root DB is rebuilt.
+   in-memory index; a corrupt per-root DB is rebuilt.
 6. `workDoneProgress` with a `showMessage` fallback, for opens over 1 s.
 
-Adopted as target, not built ([ROADMAP](../ROADMAP.md)):
+Adopted as target, not built (status and reasons:
+[ROADMAP §2](../ROADMAP.md#2-known-limitations),
+[§3](../ROADMAP.md#3-deferred-work)):
 
 1. A new snapshot (edit or `change_log` seq) cancels the previous view's
    work, including the pending diagnostics pass.
-2. Two-phase diagnostics: the edited document at once, the cross-file pass
-   after ~500 ms, plus a save-only trigger.
-3. Slow requests (workspace symbols, full text, pull diagnostics) run
-   concurrently on a small worker pool; everything else stays in order.
+2. Two-phase diagnostics: edited document at once, cross-file pass after
+   ~500 ms, plus a save-only trigger.
+3. Slow requests (workspace symbols, full text, pull diagnostics) on a
+   small worker pool; the rest stays in order.
 4. The cheap mtime scan treats files modified < 2 s ago as maybe changed.
 5. A global read semaphore, for NFS and virtual filesystems such as
    [EdenFS](https://github.com/facebook/sapling) from the
    [Sapling](https://sapling-scm.com/) project.
-6. The DB opens concurrently with the LSP handshake (the server starts
-   opening a root on the first `didOpen` of a file in it).
+6. The DB opens during the LSP handshake (today: on the first `didOpen` of
+   a file in the root).
 7. Any cache read error after open is a miss.
-8. Where client watchers are re-registered, the new ones are registered
-   first and the old ones unregistered after (the server registers its watchers
-   once and never unregisters them).
+8. Re-registered client watchers: new ones first, old ones unregistered
+   after (today the server registers once and never unregisters).
 
 ## Skipped
 
@@ -81,7 +81,7 @@ Adopted as target, not built ([ROADMAP](../ROADMAP.md)):
 
 ## The daemon's flaws (why D3 has no daemon)
 
-Observed in the source and by experiment; any future daemon would have to fix them:
+Seen in the source and by experiment; a future daemon would have to fix them:
 
 - **Start-up race:** probe, `os.Remove(socket)` and bind have no lock (the source has a "TODO: there is probably a race here"). 8 cold forwarders at once started 8 daemons; 7 died on bind, and remove-then-bind can orphan a live daemon.
 - **Crash takes everyone down:** forwarders exit with `remote disconnected`; no reconnect, no fallback.
