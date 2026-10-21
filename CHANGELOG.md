@@ -4,6 +4,11 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
+## 0.3.1
+
+- Release binaries for Linux aarch64 (built on GitHub's arm64 runner),
+  beside macOS (Apple silicon) and Linux x86_64. No code changes.
+
 ## 0.3.0
 
 - **Memory:** the in-memory index is about half the size. At 10,000 notes a
