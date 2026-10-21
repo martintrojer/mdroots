@@ -66,9 +66,9 @@ cargo install mdroots-cli     # the `mdroots` binary (server + CLI)
 cargo add mdroots             # the library
 ```
 
-Prebuilt binaries for macOS (Apple silicon) and Linux (x86_64) are on the
-[releases page](https://github.com/martintrojer/mdroots/releases). With
-[mise](https://mise.jdx.dev), which picks the right one for the machine:
+Prebuilt binaries for macOS (Apple silicon) and Linux (x86_64, aarch64)
+are on the [releases page](https://github.com/martintrojer/mdroots/releases).
+With [mise](https://mise.jdx.dev), which picks the right one for the machine:
 
 ```sh
 mise use -g github:martintrojer/mdroots   # latest release
