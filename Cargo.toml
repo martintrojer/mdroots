@@ -26,3 +26,22 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# Property tests spend most of their time in proptest's RNG (ChaCha via
+# rand_chacha/ppv-lite86), which is very slow unoptimised: opt-level 1 for
+# that stack takes the slowest mdroots-syntax proptests from ~6 s to ~0.4 s.
+# Only these test dependencies change; workspace crates keep the plain dev
+# profile (no optimisation, overflow checks and debug assertions on).
+# Optimising mdroots-syntax itself was measured and made no difference.
+[profile.dev.package.proptest]
+opt-level = 1
+[profile.dev.package.rand]
+opt-level = 1
+[profile.dev.package.rand_core]
+opt-level = 1
+[profile.dev.package.rand_chacha]
+opt-level = 1
+[profile.dev.package.rand_xorshift]
+opt-level = 1
+[profile.dev.package.ppv-lite86]
+opt-level = 1

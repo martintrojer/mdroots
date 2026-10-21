@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
-use mdroots_core::{Cancel, ErrorKind, FileSystem, FsKind, Meta, StdFs};
+use mdroots_core::{Cancel, ErrorKind, FileSystem, FsKind, MemFs, Meta, StdFs};
 use mdroots_index::db::{FileRow, IndexDb};
 use mdroots_index::reconcile::{ReconcileStats, reconcile};
 
@@ -249,24 +249,28 @@ fn peer_never_writes_but_sees_fresh_content() {
     assert!(f.row("b.md").is_some());
 }
 
-fn many(n: usize) -> (Fixture, Vec<String>) {
+/// `n` notes on a [`MemFs`] rooted at `/`, with a real temp DB: these tests
+/// are about DB-side batching and resume, so they skip the 1000 real file
+/// writes (StdFs is covered by the [`fixture`] tests).
+fn many(n: usize) -> (Fixture, MemFs, Vec<String>) {
     let f = fixture(&[]);
+    let fs = MemFs::new();
     let names: Vec<String> = (0..n).map(|i| format!("n/{i:04}.md")).collect();
     for (i, p) in names.iter().enumerate() {
-        write(&f.root, p, &format!("note {i}"));
+        fs.write(p, format!("note {i}").as_bytes());
     }
-    (f, names)
+    (f, fs, names)
 }
 
 #[test]
 fn thousand_files_commit_in_batches() {
-    let (mut f, names) = many(1000);
+    let (mut f, mem, names) = many(1000);
     let rows = f.db.rows().unwrap();
     let (c, s) = reconcile(
         Some(&mut f.db),
         &rows,
-        &StdFs,
-        &f.root,
+        &mem,
+        Path::new("/"),
         Some(&names),
         &[],
         &Cancel::new(),
@@ -278,42 +282,44 @@ fn thousand_files_commit_in_batches() {
     assert_eq!(f.db.rows().unwrap().len(), 1000);
 }
 
-/// StdFs that cancels on its `cancel_at`-th read and counts reads.
-struct CancelOnRead {
+/// MemFs that cancels on its `cancel_at`-th read and counts reads.
+struct CancelOnRead<'a> {
+    inner: &'a MemFs,
     cancel: Cancel,
     cancel_at: usize,
     reads: AtomicUsize,
 }
 
-impl FileSystem for CancelOnRead {
+impl FileSystem for CancelOnRead<'_> {
     fn read(&self, p: &Path) -> io::Result<(Arc<[u8]>, Meta)> {
         if self.reads.fetch_add(1, Ordering::SeqCst) + 1 == self.cancel_at {
             self.cancel.cancel();
         }
-        StdFs.read(p)
+        self.inner.read(p)
     }
     fn stat(&self, p: &Path) -> io::Result<Meta> {
-        StdFs.stat(p)
+        self.inner.stat(p)
     }
     fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, Meta)>> {
-        StdFs.read_dir(p)
+        self.inner.read_dir(p)
     }
     fn canonicalize(&self, p: &Path) -> io::Result<PathBuf> {
-        StdFs.canonicalize(p)
+        self.inner.canonicalize(p)
     }
     fn case_sensitive(&self, dir: &Path) -> bool {
-        StdFs.case_sensitive(dir)
+        self.inner.case_sensitive(dir)
     }
     fn fs_kind(&self, dir: &Path) -> FsKind {
-        StdFs.fs_kind(dir)
+        self.inner.fs_kind(dir)
     }
 }
 
 #[test]
 fn cancel_midway_keeps_only_committed_batches() {
-    let (mut f, names) = many(1000);
+    let (mut f, mem, names) = many(1000);
     let cancel = Cancel::new();
     let fs = CancelOnRead {
+        inner: &mem,
         cancel: cancel.clone(),
         cancel_at: 450,
         reads: AtomicUsize::new(0),
@@ -322,7 +328,7 @@ fn cancel_midway_keeps_only_committed_batches() {
         Some(&mut f.db),
         &[],
         &fs,
-        &f.root,
+        Path::new("/"),
         Some(&names),
         &[],
         &cancel,
@@ -343,8 +349,8 @@ fn cancel_midway_keeps_only_committed_batches() {
     let (_, s) = reconcile(
         Some(&mut f.db),
         &rows,
-        &StdFs,
-        &f.root,
+        &mem,
+        Path::new("/"),
         Some(&names),
         &[],
         &Cancel::new(),
@@ -358,7 +364,6 @@ fn cancel_midway_keeps_only_committed_batches() {
 
 #[test]
 fn dataless_is_left_alone_unless_forced() {
-    use mdroots_core::MemFs;
     let fs = MemFs::new()
         .with_file("a.md", "A")
         .with_file("cloud.md", "remote")

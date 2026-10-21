@@ -107,24 +107,20 @@ struct Fx {
 impl Fx {
     /// A fixture whose probe clock is frozen.
     fn new() -> Fx {
-        Fx::ticking(Duration::ZERO)
-    }
-
-    /// A fixture whose probe clock advances `tick` per `read_dir`.
-    fn ticking(tick: Duration) -> Fx {
         let tmp = tempfile::tempdir().expect("tempdir");
         let home = tmp.path().canonicalize().expect("canonicalize tempdir");
-        let probe = Counting::new(HomeProbe {
-            inner: StdProbe,
-            home: home.clone(),
-            tick,
-            now: Mutex::new(Duration::ZERO),
-        });
+        let probe = home_probe(&home, Duration::ZERO);
         Fx {
             _tmp: tmp,
             home,
             probe,
         }
+    }
+
+    /// A fresh probe over this fixture's home, its own clock advancing
+    /// `tick` per `read_dir` and its own counters.
+    fn ticking_probe(&self, tick: Duration) -> Counting<HomeProbe> {
+        home_probe(&self.home, tick)
     }
 
     fn path(&self, rel: &str) -> PathBuf {
@@ -149,16 +145,30 @@ impl Fx {
     /// Discover `rel`, timing only the call and checking that every
     /// `read_dir` stayed inside the temp dir.
     fn run(&self, name: &str, reg: &mut MemRegistry, rel: &str) -> Decision {
-        let home = [self.home.clone()];
-        timed(
-            name,
-            &self.probe,
-            &home,
-            reg,
-            &NoEnumerator,
-            &self.path(rel),
-        )
+        self.run_with(&self.probe, name, reg, rel)
     }
+
+    /// [`Fx::run`] over another probe.
+    fn run_with(
+        &self,
+        probe: &Counting<HomeProbe>,
+        name: &str,
+        reg: &mut MemRegistry,
+        rel: &str,
+    ) -> Decision {
+        let home = [self.home.clone()];
+        timed(name, probe, &home, reg, &NoEnumerator, &self.path(rel))
+    }
+}
+
+/// A [`HomeProbe`] at `home` whose clock advances `tick` per `read_dir`.
+fn home_probe(home: &Path, tick: Duration) -> Counting<HomeProbe> {
+    Counting::new(HomeProbe {
+        inner: StdProbe,
+        home: home.to_path_buf(),
+        tick,
+        now: Mutex::new(Duration::ZERO),
+    })
 }
 
 /// Run [`discover`] for `file` with `read_dir` allowed only under `allowed`;
@@ -231,25 +241,28 @@ fn row(reg: &MemRegistry, path: &Path) -> Option<RootRecord> {
 
 // --- real temp dirs ---------------------------------------------------------
 
-/// A projects folder: 40 small repos (`git init` only, 6 of them inside
-/// `scratch/`), `scratch/` (10 files, 2 md), 6 loose files (1 md) and,
-/// unless `tarball` is false, an unpacked tarball (490 files, 1 md).
-fn projects(fx: &Fx, tarball: bool) {
+/// A projects folder: 40 small repos (6 of them inside `scratch/`),
+/// `scratch/` (10 files, 2 md), 6 loose files (1 md) and an unpacked
+/// tarball `lib-1.0/` (490 files, 1 md). Only the repos in `opened` get a
+/// real `git init`; the rest get a bare `.git` dir, which is all marker
+/// detection checks (they are only seen as nested roots, never opened).
+fn projects(fx: &Fx, opened: &[&str]) {
     for i in 0..40 {
         let repo = match i < 6 {
             true => format!("projects/scratch/repo{i:02}"),
             false => format!("projects/repo{i:02}"),
         };
-        git_init(&fx.path(&repo));
+        match opened.contains(&repo.as_str()) {
+            true => git_init(&fx.path(&repo)),
+            false => std::fs::create_dir_all(fx.path(&repo).join(".git")).expect("mkdir"),
+        }
         fx.write(&format!("{repo}/README.md"), "# repo\n");
         fx.write(&format!("{repo}/main.c"), "int main(void) { return 0; }\n");
     }
     fx.files("projects/scratch", 10, 2);
     fx.files("projects", 6, 1);
-    if tarball {
-        for d in 0..7 {
-            fx.files(&format!("projects/lib-1.0/src{d}"), 70, usize::from(d == 0));
-        }
+    for d in 0..7 {
+        fx.files(&format!("projects/lib-1.0/src{d}"), 70, usize::from(d == 0));
     }
 }
 
@@ -259,6 +272,10 @@ fn fixture_01_scratch_dir_in_projects_folder_is_its_own_loose_root() {
     if !have_git("1") {
         return;
     }
+    const OPENED: [&str; 2] = ["projects/repo07", "projects/scratch/repo03"];
+    // One tree; the second case removes the tarball.
+    let fx = Fx::new();
+    projects(&fx, &OPENED);
     for (tarball, rejected) in [
         (
             true,
@@ -269,8 +286,9 @@ fn fixture_01_scratch_dir_in_projects_folder_is_its_own_loose_root() {
             "loose root rejected at ~/projects: 3 md (< 20), adds 1 md (<= 2 in child)",
         ),
     ] {
-        let fx = Fx::new();
-        projects(&fx, tarball);
+        if !tarball {
+            std::fs::remove_dir_all(fx.path("projects/lib-1.0")).expect("rm tarball");
+        }
         let mut reg = MemRegistry::new();
         let d = fx.run("1", &mut reg, "projects/scratch/f0000.md");
         assert_eq!(d.mode, RootMode::Loose);
@@ -284,7 +302,7 @@ fn fixture_01_scratch_dir_in_projects_folder_is_its_own_loose_root() {
         assert_eq!(fx.probe.read_dir_count(&fx.home), 0);
 
         // A file inside any repo gets that repo (no index: budgeted walk).
-        for repo in ["projects/repo07", "projects/scratch/repo03"] {
+        for repo in OPENED {
             let mut reg = MemRegistry::new();
             let d = fx.run("1", &mut reg, &format!("{repo}/README.md"));
             assert_eq!(d.mode, RootMode::Vcs);
@@ -338,6 +356,8 @@ fn fixture_03_dense_notes_folder_is_accepted_as_a_loose_root() {
     for d in 0..40 {
         fx.files(&format!("notes/d{d:02}"), 150, 100);
     }
+
+    // --- dense: accepted as a loose root ---
     let mut reg = MemRegistry::new();
     let d = fx.run("3", &mut reg, "notes/d00/f0000.md");
     assert_eq!(d.mode, RootMode::Loose);
@@ -352,6 +372,25 @@ fn fixture_03_dense_notes_folder_is_accepted_as_a_loose_root() {
     assert!(s.md >= 20 && s.md * 10 >= s.files * 3);
     assert_eq!(d.md.len(), 4000);
     assert_eq!(fx.probe.read_dir_count(&fx.home), 0);
+
+    // --- slow listings: the loose walk aborts on wall time ---
+    // The same tree, but every listing takes 20 ms of probe time: 41 dirs
+    // need 820 ms, over the 300 ms loose wall budget. (Under 50 dirs, so
+    // the rate check never runs.) A fresh registry, so nothing answers from
+    // the ~/notes row above, and a fresh probe, so its clock and counters
+    // start from zero.
+    let slow = fx.ticking_probe(Duration::from_millis(20));
+    let mut reg = MemRegistry::new();
+    let d = fx.run_with(&slow, "3 (slow)", &mut reg, "notes/d00/f0000.md");
+    // The start dir's own walk fits; growing to notes/ runs out of wall time,
+    // so the start dir stays the root.
+    assert_eq!(d.mode, RootMode::Loose);
+    assert_eq!(d.root, Some(fx.path("notes/d00")));
+    assert_eq!(
+        explain(&d),
+        "loose root rejected at ~/notes: walk aborted (wall)"
+    );
+    assert_eq!(d.md.len(), 100);
 }
 
 #[test]
@@ -375,29 +414,6 @@ fn fixture_03_notes_folder_over_the_loose_md_budget_is_lazy() {
     let r = row(&reg, &fx.path("notes")).expect("registered");
     assert_eq!(r.verdict_source, VerdictSource::Budget);
     assert_eq!(r.mode, RootMode::Lazy);
-}
-
-#[test]
-fn fixture_03_slow_listings_abort_the_loose_walk_on_wall_time() {
-    let _l = FS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // The dense folder of the first fixture 3, but every listing takes 20 ms
-    // of probe time: 41 dirs need 820 ms, over the 300 ms loose wall budget.
-    // (Under 50 dirs, so the rate check never runs.)
-    let fx = Fx::ticking(Duration::from_millis(20));
-    for d in 0..40 {
-        fx.files(&format!("notes/d{d:02}"), 150, 100);
-    }
-    let mut reg = MemRegistry::new();
-    let d = fx.run("3 (slow)", &mut reg, "notes/d00/f0000.md");
-    // The start dir's own walk fits; growing to notes/ runs out of wall time,
-    // so the start dir stays the root.
-    assert_eq!(d.mode, RootMode::Loose);
-    assert_eq!(d.root, Some(fx.path("notes/d00")));
-    assert_eq!(
-        explain(&d),
-        "loose root rejected at ~/notes: walk aborted (wall)"
-    );
-    assert_eq!(d.md.len(), 100);
 }
 
 #[test]
@@ -446,9 +462,11 @@ fn fixture_09_dotfiles_repo_at_home_is_tracked_only() {
     fx.write("notes.md", "# notes\n");
     fx.write("docs/setup.md", "# setup\n");
     git(&fx.home, &["add", ".bashrc", "notes.md", "docs/setup.md"]);
-    // A large untracked tree that must not be walked.
-    for d in 0..20 {
-        fx.files(&format!("big/d{d:02}"), 100, 50);
+    // An untracked tree that must not be walked. Its size does not matter:
+    // the zero walk is asserted by read_dir_total() == 0 below, and its md
+    // files would show up in d.md if any leaked in.
+    for d in 0..4 {
+        fx.files(&format!("big/d{d:02}"), 25, 10);
     }
     for file in ["notes.md", "docs/setup.md"] {
         let mut reg = MemRegistry::new();

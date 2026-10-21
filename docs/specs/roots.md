@@ -294,7 +294,7 @@ Each many-process item gives the target, then what is **Built** (as stated) or *
 6. A file in a build-output mount inside that checkout: lazy or single-file, zero readdir outside the file's dir, no registry row at the mount.
 7. A small notes repo on EdenFS: `vcs-enumerated` within 500 ms, zero readdir outside opened dirs (the facade indexing the enumerated files: `crates/mdroots/tests/workspace.rs`; a `[[stem]]` resolving across them is not tested separately).
 8. A dataless cloud file (iCloud after `brctl evict`, or Drive online-only) in a loose root: recorded as dataless, not read during discovery, still `SF_DATALESS` afterwards; link existence by `stat`. Opening a dataless file reads it (`crates/mdroots/tests/workspace.rs`, on a lazy root).
-9. A dotfiles repo at a temp `HOME` with a large untracked tree: `tracked-only`, zero walk.
+9. A dotfiles repo at a temp `HOME` with an untracked tree: `tracked-only`, zero walk of it.
 10. `git clone` into an existing lazy root, open a file in it: the stage 1 probe registers a nested root.
 11. `mv notes notes2` between sessions: row re-keyed by marker inode + volume id, no cold rebuild.
 
