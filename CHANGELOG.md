@@ -4,6 +4,11 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
+## 0.3.2
+
+- Faster test suite (nextest 34 s to 10 s on macOS); `AGENTS.md` gates and a
+  dated test-health report. No library or CLI changes.
+
 ## 0.3.1
 
 - Release binaries for Linux aarch64 (built on GitHub's arm64 runner),
