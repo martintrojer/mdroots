@@ -6,6 +6,7 @@
 - **Slow** (before closing work, and once per merged batch): `bash scripts/check.sh` — fmt, clippy `-D warnings`, `cargo test --workspace`, `cargo doc` `-D warnings`. ~25–40 s warm on macOS. CI runs it on Linux and macOS, plus check and test on MSRV 1.89.
 - **Targeted slow**: `cargo nextest run -p mdroots-roots --test fixtures` (real-filesystem discovery fixtures, spec `docs/specs/roots.md` §7) and `cargo nextest run -p mdroots-cli --test many_process`.
 - **Budget**: slow gate 5 min. Over budget is a trigger for test upkeep, not a stop.
+- **History**: read the latest `docs/test-health/` report before test upkeep; it holds what was measured, merged and refuted. End an upkeep pass with a new dated report.
 
 Record each gate run in the task note (`GATE: commit tree command scope`, `RESULT: exit duration counts skips`, `CONDITIONS: host, git, load, cache`).
 
