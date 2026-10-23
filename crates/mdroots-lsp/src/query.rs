@@ -1,7 +1,7 @@
 //! `mdroots.query`: the `notes` flags as a JSON object (docs/specs/library.md
 //! §3.6), run as a [`NoteQuery`].
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
 use lsp_types::Uri;
@@ -44,6 +44,22 @@ fn uris(field: &str, v: &Value) -> Result<Vec<PathBuf>, Fail> {
                 .ok_or_else(|| bad(field, format!("not a file: URI: {s}")))
         })
         .collect()
+}
+
+/// `p` with `.` dropped and each `..` removing the component before it
+/// (a `..` at the root stays there). Purely lexical.
+fn fold_dots(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The date bounds of one timestamp. The bounds of all its fields hold
@@ -134,13 +150,18 @@ pub(crate) fn run(c: &Ctx, req: Request) -> Result<Value, Fail> {
     let mut q = req.q;
     let ws = c.ws;
     let root = ws.root().path;
-    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_owned());
-    for (field, paths) in [("paths", &q.paths), ("exclude", &q.exclude)] {
-        if let Some(p) = paths.iter().find(|p| !canon(p).starts_with(&root)) {
-            return Err(bad(
-                field,
-                format!("not under the root: {}", p.to_string_lossy()),
-            ));
+    // A path that does not exist has `.` and `..` folded lexically, so
+    // `root/../x` does not pass for a path under the root.
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| fold_dots(p));
+    for (field, paths) in [("paths", &mut q.paths), ("exclude", &mut q.exclude)] {
+        for p in paths.iter_mut() {
+            *p = canon(p);
+            if !p.starts_with(&root) {
+                return Err(bad(
+                    field,
+                    format!("not under the root: {}", p.to_string_lossy()),
+                ));
+            }
         }
     }
     for (field, notes) in [

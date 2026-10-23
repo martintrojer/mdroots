@@ -2514,3 +2514,37 @@ fn query_graph_filter_on_a_lazy_root_fails() {
     assert!(r.is_array(), "{r}");
     c.shutdown().unwrap();
 }
+
+/// `..` does not lead out of the root, whether or not the destination exists.
+#[test]
+fn query_paths_and_exclude_fold_dot_dot_before_the_root_check() {
+    let v = query_vault();
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let uri = v.uri("a.md");
+    let dir = v.uri("");
+    let dir = dir.trim_end_matches('/');
+    for field in ["paths", "exclude"] {
+        for to in [
+            "/../never-created-outside.md",
+            "/sub/../../never-created.md",
+        ] {
+            let q = json!({ field: [format!("{dir}{to}")] });
+            let msg = query_error(&mut c, &uri, q.clone());
+            assert!(msg.contains(field), "{q}: {msg}");
+        }
+    }
+    // Staying inside through `..` is fine, existing or not.
+    let r = found(
+        &mut c,
+        &uri,
+        json!({ "paths": [format!("{dir}/sub/../c.md")] }),
+    );
+    assert_eq!(names(&r), ["c.md"]);
+    let r = found(
+        &mut c,
+        &uri,
+        json!({ "tag": ["x"], "exclude": [format!("{dir}/sub/../d.md"), format!("{dir}/x/../gone.md")] }),
+    );
+    assert_eq!(names(&r), ["e.md", "c.md"]);
+    c.shutdown().unwrap();
+}
