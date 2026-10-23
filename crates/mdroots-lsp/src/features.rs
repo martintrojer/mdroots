@@ -785,42 +785,137 @@ pub(crate) fn rename_file(
     cancel: &Cancel,
 ) -> Result<lsp_types::WorkspaceEdit, Fail> {
     let e = ws.rename_note(old, new, cancel)?;
+    lsp_edit(ws, enc, &e)
+        .ok_or_else(|| Fail::Failed("a path in the edit is not a valid file URI".to_owned()))
+}
+
+/// `e` as an LSP `WorkspaceEdit` of `documentChanges`, in the library's
+/// order: per created file a `CreateFile` (`overwrite: false`,
+/// `ignoreIfExists: false`) and a `TextDocumentEdit` inserting its content,
+/// then a `TextDocumentEdit` per edited file (unversioned; ranges from the
+/// text `ws` holds), then the `RenameFile`. `None` when a path has no URI.
+pub(crate) fn lsp_edit(
+    ws: &Workspace,
+    enc: PositionEncoding,
+    e: &mdroots::WorkspaceEdit,
+) -> Option<lsp_types::WorkspaceEdit> {
     let mut texts = Texts::new(ws, enc);
     let mut ops = Vec::new();
-    for (file, edits) in &e.edits {
-        let Some(uri) = uri::from_path(file) else {
-            continue;
-        };
+    let unversioned = |uri| OptionalVersionedTextDocumentIdentifier { uri, version: None };
+    for (path, content) in &e.create {
+        let uri = uri::from_path(path)?;
+        ops.push(DocumentChangeOperation::Op(ResourceOp::Create(
+            CreateFile {
+                uri: uri.clone(),
+                options: Some(CreateFileOptions {
+                    overwrite: Some(false),
+                    ignore_if_exists: Some(false),
+                }),
+                annotation_id: None,
+            },
+        )));
+        ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
+            text_document: unversioned(uri),
+            edits: vec![OneOf::Left(lsp_types::TextEdit {
+                range: lsp_types::Range::default(),
+                new_text: content.clone(),
+            })],
+        }));
+    }
+    for (path, edits) in &e.edits {
+        let uri = uri::from_path(path)?;
         let edits = edits
             .iter()
             .map(|t| {
                 OneOf::Left(lsp_types::TextEdit {
-                    range: texts.range(file, t.range.clone()),
+                    range: texts.range(path, t.range.clone()),
                     new_text: t.new_text.clone(),
                 })
             })
             .collect();
         ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
-            text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
+            text_document: unversioned(uri),
             edits,
         }));
     }
-    if let Some((from, to)) = &e.rename
-        && let (Some(old_uri), Some(new_uri)) = (uri::from_path(from), uri::from_path(to))
-    {
+    if let Some((from, to)) = &e.rename {
         ops.push(DocumentChangeOperation::Op(ResourceOp::Rename(
             RenameFile {
-                old_uri,
-                new_uri,
+                old_uri: uri::from_path(from)?,
+                new_uri: uri::from_path(to)?,
                 options: None,
                 annotation_id: None,
             },
         )));
     }
-    Ok(lsp_types::WorkspaceEdit {
+    Some(lsp_types::WorkspaceEdit {
         document_changes: Some(DocumentChanges::Operations(ops)),
         ..Default::default()
     })
+}
+
+/// `path` made canonical as far as it exists: the longest existing
+/// ancestor canonicalized, the rest appended (a rename's new path does not
+/// exist yet).
+fn canonical(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut cur = path;
+    loop {
+        if let Ok(c) = std::fs::canonicalize(cur) {
+            return rest.iter().rev().fold(c, |p, n| p.join(n));
+        }
+        match (cur.parent(), cur.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                cur = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+/// `workspace/willRenameFiles`: the link edits for the moves `files`
+/// (`(old, new)` paths, not yet moved). Each open workspace in `wss` whose
+/// root contains an old path, or, for a folder, lies under it, gets that
+/// pair; one `Workspace::rename_notes` call per workspace plans its pairs
+/// together (a pair that lands outside its root is skipped by the library).
+/// Never opens a root. `None` when no edit results; no `RenameFile` ops.
+pub(crate) fn will_rename_files(
+    wss: &[Workspace],
+    files: &[(PathBuf, PathBuf)],
+    enc: PositionEncoding,
+    cancel: &Cancel,
+) -> Result<Option<lsp_types::WorkspaceEdit>, Fail> {
+    let files: Vec<(PathBuf, PathBuf, bool)> = files
+        .iter()
+        .map(|(o, n)| {
+            let old = canonical(o);
+            let dir = old.is_dir();
+            (old, canonical(n), dir)
+        })
+        .collect();
+    let mut ops = Vec::new();
+    for ws in wss {
+        let root = ws.root().path;
+        let pairs: Vec<(PathBuf, PathBuf)> = files
+            .iter()
+            .filter(|(old, _, dir)| old.starts_with(&root) || (*dir && root.starts_with(old)))
+            .map(|(o, n, _)| (o.clone(), n.clone()))
+            .collect();
+        if pairs.is_empty() {
+            continue;
+        }
+        let e = ws.rename_notes(&pairs, cancel)?;
+        if let Some(we) = lsp_edit(ws, enc, &e)
+            && let Some(DocumentChanges::Operations(o)) = we.document_changes
+        {
+            ops.extend(o);
+        }
+    }
+    Ok((!ops.is_empty()).then(|| lsp_types::WorkspaceEdit {
+        document_changes: Some(DocumentChanges::Operations(ops)),
+        ..Default::default()
+    }))
 }
 
 /// The code action kind of extract-note.
@@ -846,59 +941,19 @@ pub(crate) fn code_actions(
         Err(e) if e.kind() == ErrorKind::Unsupported => return Ok(Vec::new()),
         Err(e) => return Err(e.into()),
     };
-    let mut ops = Vec::new();
-    let mut name = String::new();
-    for (path, content) in &e.create {
-        let Some(uri) = uri::from_path(path) else {
-            return Ok(Vec::new());
-        };
-        name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        ops.push(DocumentChangeOperation::Op(ResourceOp::Create(
-            CreateFile {
-                uri: uri.clone(),
-                options: Some(CreateFileOptions {
-                    overwrite: Some(false),
-                    ignore_if_exists: Some(false),
-                }),
-                annotation_id: None,
-            },
-        )));
-        ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
-            text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
-            edits: vec![OneOf::Left(lsp_types::TextEdit {
-                range: lsp_types::Range::default(),
-                new_text: content.clone(),
-            })],
-        }));
-    }
-    for (path, edits) in &e.edits {
-        let Some(uri) = uri::from_path(path) else {
-            return Ok(Vec::new());
-        };
-        let edits = edits
-            .iter()
-            .map(|t| {
-                OneOf::Left(lsp_types::TextEdit {
-                    range: c.range(t.range.clone()),
-                    new_text: t.new_text.clone(),
-                })
-            })
-            .collect();
-        ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
-            text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
-            edits,
-        }));
-    }
+    let name = e
+        .create
+        .first()
+        .and_then(|(p, _)| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let Some(edit) = lsp_edit(c.ws, c.enc, &e) else {
+        return Ok(Vec::new());
+    };
     Ok(vec![CodeAction {
         title: format!("Extract to new note: {name}"),
         kind: Some(EXTRACT_KIND),
-        edit: Some(lsp_types::WorkspaceEdit {
-            document_changes: Some(DocumentChanges::Operations(ops)),
-            ..Default::default()
-        }),
+        edit: Some(edit),
         ..Default::default()
     }])
 }

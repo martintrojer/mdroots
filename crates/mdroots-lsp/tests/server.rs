@@ -303,6 +303,14 @@ fn falls_back_to_utf16() {
             "mdroots.tags"
         ])
     );
+    let filters = &caps["workspace"]["fileOperations"]["willRename"]["filters"];
+    assert_eq!(
+        filters,
+        &json!([
+            { "scheme": "file", "pattern": { "glob": "**/*.{md,markdown,org}", "matches": "file" } },
+            { "scheme": "file", "pattern": { "glob": "**", "matches": "folder" } }
+        ])
+    );
     assert_eq!(caps["foldingRangeProvider"], true);
     assert_eq!(caps["codeLensProvider"]["resolveProvider"], false);
     assert_eq!(
@@ -1272,6 +1280,121 @@ fn rename_file_command_sends_apply_edit() {
     let resp = Response::new_ok(apply.id, json!({ "applied": false }));
     c.conn.sender.send(resp.into()).unwrap();
     assert_eq!(snapshot(&v), before);
+    c.shutdown().unwrap();
+}
+
+// ---- workspace/willRenameFiles ----
+
+/// A temp vault (a `.git` root) at `<tmp>/vault` holding `files`.
+fn mini(files: &[(&str, &str)]) -> Vault {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = fs::canonicalize(tmp.path()).unwrap().join("vault");
+    fs::create_dir_all(dir.join(".git")).unwrap();
+    for (rel, text) in files {
+        let path = dir.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    Vault { _tmp: tmp, dir }
+}
+
+/// `workspace/willRenameFiles` for `(old, new)` URIs.
+fn will_rename(c: &mut Client, moves: &[(String, String)]) -> Value {
+    let files: Vec<Value> = moves
+        .iter()
+        .map(|(o, n)| json!({ "oldUri": o, "newUri": n }))
+        .collect();
+    ok(c.request("workspace/willRenameFiles", json!({ "files": files })))
+}
+
+#[test]
+fn will_rename_files_fixes_the_links_to_a_moved_note() {
+    let v = mini(&[
+        ("a.md", "# A\n"),
+        ("n.md", "# N\n\nSee [a](a.md).\n"),
+        ("other.md", "# O\n"),
+    ]);
+    let before = snapshot(&v);
+    let mut c = session(&v, UTF8, &["n.md"]);
+    let r = will_rename(&mut c, &[(v.uri("a.md"), v.uri("b.md"))]);
+    let (files, rename) = edits(&r);
+    assert_eq!(rename, None);
+    assert_eq!(
+        files,
+        [("n.md".to_owned(), vec![(2, 8, "b.md".to_owned())])]
+    );
+    // Nothing for a file no workspace serves or that nothing links to.
+    assert_eq!(
+        will_rename(&mut c, &[(v.uri("other.md"), v.uri("o2.md"))]),
+        Value::Null
+    );
+    let elsewhere = (
+        "file:///nonexistent/x.md".to_owned(),
+        "file:///nonexistent/y.md".to_owned(),
+    );
+    assert_eq!(will_rename(&mut c, &[elsewhere]), Value::Null);
+    assert_eq!(snapshot(&v), before, "willRenameFiles wrote files");
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn will_rename_files_for_a_folder_fixes_links_from_outside() {
+    let v = mini(&[
+        ("notes/x.md", "# X\n"),
+        ("notes/deep/y.md", "# Y\n"),
+        ("top.md", "# T\n\n[x](notes/x.md) [y](notes/deep/y.md)\n"),
+    ]);
+    let mut c = session(&v, UTF8, &["top.md"]);
+    let r = will_rename(&mut c, &[(v.uri("notes"), v.uri("archive"))]);
+    let (files, rename) = edits(&r);
+    assert_eq!(rename, None);
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!(files[0].0, "top.md");
+    let new: Vec<&str> = files[0].1.iter().map(|e| e.2.as_str()).collect();
+    assert_eq!(new, ["archive/x.md", "archive/deep/y.md"]);
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn will_rename_files_leaves_links_between_notes_that_move_together() {
+    let v = mini(&[
+        ("a.md", "# A\n\n[b](b.md)\n"),
+        ("b.md", "# B\n\n[a](a.md)\n"),
+    ]);
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let moves = [
+        (v.uri("a.md"), v.uri("new/a.md")),
+        (v.uri("b.md"), v.uri("new/b.md")),
+    ];
+    assert_eq!(will_rename(&mut c, &moves), Value::Null);
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn will_rename_files_reaches_a_nested_open_root() {
+    let v = mini(&[
+        ("notes/x.md", "# X\n"),
+        ("notes/inner/.git/HEAD", ""),
+        ("notes/inner/y.md", "# Y\n"),
+        ("notes/inner/w.md", "# W\n\n[y](y.md)\n"),
+        ("top.md", "# T\n\n[x](notes/x.md)\n"),
+    ]);
+    let mut c = session(&v, UTF8, &["top.md", "notes/inner/w.md"]);
+    // The folder holding the nested root moves, and a note inside the
+    // nested root moves with it in the same request.
+    let moves = [
+        (v.uri("notes"), v.uri("archive")),
+        (v.uri("notes/inner/y.md"), v.uri("notes/inner/z.md")),
+    ];
+    let (files, rename) = edits(&will_rename(&mut c, &moves));
+    assert_eq!(rename, None);
+    let by_file: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(f, es)| (f.as_str(), es[0].2.as_str()))
+        .collect();
+    // Moving the whole nested root yields nothing from it (its links are
+    // relative to it); the outer root's link to the moved folder follows.
+    assert_eq!(by_file, [("top.md", "archive/x.md"), ("w.md", "z.md")]);
     c.shutdown().unwrap();
 }
 

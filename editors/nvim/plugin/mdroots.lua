@@ -235,6 +235,7 @@ vim.api.nvim_create_autocmd('LspAttach', {
     -- Rename (move) the current note and fix every link to it. Neovim 0.12
     -- never sends workspace/willRenameFiles, so this goes through a command;
     -- the server replies with workspace/applyEdit (link edits + RenameFile).
+    -- Plugins that send willRenameFiles (oil.nvim, file trees) get link fixes without it.
     map('<leader>nr', function()
       local old = vim.api.nvim_buf_get_name(buf)
       local new = vim.fn.input('rename note to> ', old, 'file')

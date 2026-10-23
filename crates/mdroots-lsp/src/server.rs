@@ -11,12 +11,14 @@ use lsp_types::{
     CompletionOptions, DidChangeConfigurationParams, DidChangeTextDocumentParams,
     DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-    DocumentLinkOptions, ExecuteCommandOptions, ExecuteCommandParams, FileSystemWatcher,
-    FoldingRangeProviderCapability, GlobPattern, MessageType, NumberOrString, OneOf, Position,
-    PositionEncodingKind, PublishDiagnosticsParams, Registration, RegistrationParams,
-    RenameOptions, SaveOptions, ServerCapabilities, ShowMessageParams, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Uri,
-    WorkDoneProgressOptions,
+    DocumentLinkOptions, ExecuteCommandOptions, ExecuteCommandParams, FileOperationFilter,
+    FileOperationPattern, FileOperationPatternKind, FileOperationRegistrationOptions,
+    FileSystemWatcher, FoldingRangeProviderCapability, GlobPattern, MessageType, NumberOrString,
+    OneOf, Position, PositionEncodingKind, PublishDiagnosticsParams, Registration,
+    RegistrationParams, RenameFilesParams, RenameOptions, SaveOptions, ServerCapabilities,
+    ShowMessageParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextDocumentSyncSaveOptions, Uri, WorkDoneProgressOptions,
+    WorkspaceFileOperationsServerCapabilities, WorkspaceServerCapabilities,
 };
 use mdroots::syntax::{LineIndex, PositionEncoding};
 use mdroots::{Cancel, ErrorKind, Options, Workspace, Workspaces, names};
@@ -520,6 +522,7 @@ impl Server {
                     .map(|()| json!(features::workspace_symbols(&self.workspaces.all(), q)))
             }
             "workspace/executeCommand" => self.command(p, cancel),
+            "workspace/willRenameFiles" => self.will_rename_files(p, cancel),
             _ => return None,
         })
     }
@@ -595,6 +598,21 @@ impl Server {
             None => Workspace::open_single(&path, self.workspaces.options()).ok()?,
         };
         Some((ws, path))
+    }
+
+    /// `workspace/willRenameFiles`: the link edits for the moves, from the
+    /// open workspaces (never opens a root); `null` when there are none.
+    fn will_rename_files(&self, p: &Value, cancel: &Cancel) -> Result<Value, Fail> {
+        let params: RenameFilesParams = serde_json::from_value(p.clone())
+            .map_err(|_| Fail::Params("bad willRenameFiles params".to_owned()))?;
+        let path = |u: &str| u.parse::<Uri>().ok().and_then(|u| uri::to_path(&u));
+        let files: Vec<(PathBuf, PathBuf)> = params
+            .files
+            .iter()
+            .filter_map(|f| Some((path(&f.old_uri)?, path(&f.new_uri)?)))
+            .collect();
+        let edit = features::will_rename_files(&self.workspaces.all(), &files, self.enc, cancel)?;
+        Ok(json!(edit))
     }
 
     /// `workspace/executeCommand`: the commands in [`COMMANDS`].
@@ -1260,6 +1278,29 @@ fn capabilities(enc: PositionEncoding) -> ServerCapabilities {
             commands: COMMANDS.map(str::to_owned).to_vec(),
             work_done_progress_options: WorkDoneProgressOptions::default(),
         }),
+        workspace: Some(WorkspaceServerCapabilities {
+            workspace_folders: None,
+            file_operations: Some(WorkspaceFileOperationsServerCapabilities {
+                will_rename: Some(FileOperationRegistrationOptions {
+                    filters: vec![
+                        rename_filter("**/*.{md,markdown,org}", FileOperationPatternKind::File),
+                        rename_filter("**", FileOperationPatternKind::Folder),
+                    ],
+                }),
+                ..Default::default()
+            }),
+        }),
         ..Default::default()
+    }
+}
+
+fn rename_filter(glob: &str, matches: FileOperationPatternKind) -> FileOperationFilter {
+    FileOperationFilter {
+        scheme: Some("file".to_owned()),
+        pattern: FileOperationPattern {
+            glob: glob.to_owned(),
+            matches: Some(matches),
+            options: None,
+        },
     }
 }
