@@ -88,10 +88,13 @@ check('position encoding utf-8', c.offset_encoding == 'utf-8', c.offset_encoding
 -- 2. Buffer-local setup from plugin/mdroots.lua.
 local m = maps_of(b_b)
 local names = vim.tbl_keys(m); table.sort(names)
-check('maps installed', m['gd'] and m['gO'] and m['\\nb'] and m['\\ns'] and m['\\nr'] and m['x:\\nn'] and true or false,
+check('maps installed', m['gd'] and m['gO'] and m['\\nb'] and m['\\ns'] and m['\\nr'] and m['x:\\nn']
+  and m['\\no'] and m['\\nm'] and m['\\nR'] and m['\\n/'] and m['\\nt'] and true or false,
   table.concat(names, ','))
 check('gO overrides ftplugin', (vim.fn.maparg('gO', 'n', false, true).desc or '') == 'mdroots: document symbols')
-check(':MdrootsInfo', vim.api.nvim_buf_get_commands(b_b, {}).MdrootsInfo ~= nil)
+local cmds = vim.api.nvim_buf_get_commands(b_b, {})
+check(':MdrootsInfo', cmds.MdrootsInfo ~= nil)
+check(':MdrootsCheck/:MdrootsReindex', cmds.MdrootsCheck ~= nil and cmds.MdrootsReindex ~= nil)
 check('omnifunc', vim.bo[b].omnifunc == 'v:lua.vim.lsp.omnifunc', vim.bo[b].omnifunc)
 
 -- 3. Wait for the server to finish indexing the loose note: poll goto on
@@ -144,6 +147,42 @@ local ll_name = ll[1] and vim.api.nvim_buf_get_name(ll[1].bufnr) or ''
 check('backlinks -> loclist', #ll == 1 and ll_name:match('/linker%.md$') ~= nil and ll[1].lnum == 3,
   #ll .. ' entries' .. (#ll > 0 and (', ' .. vim.fn.fnamemodify(ll_name, ':t') .. ':' .. ll[1].lnum) or ''))
 vim.cmd('lclose')
+
+-- 6b. A command result reaches the quickfix list in server order, with the
+--     server's message as the text: <leader>nR on vault A's composting note
+--     (notes two links away, most intermediaries first). The root opens in
+--     the background, so poll the command until it answers.
+local comp = vim.fn.fnamemodify(vault_a, ':p') .. 'reference/composting.md'
+vim.cmd('edit ' .. comp)
+local b_c = vim.api.nvim_get_current_buf()
+vim.wait(5000, function() local cl = client_of(b_c); return cl ~= nil and cl.initialized end, 20)
+local rel_res
+vim.wait(15000, function()
+  local r = c:request_sync('workspace/executeCommand',
+    { command = 'mdroots.related', arguments = { vim.uri_from_bufnr(b_c) } }, 2000, b_c)
+  rel_res = r and r.result
+  return rel_res ~= nil and #rel_res > 0
+end, 100)
+rel_res = rel_res or {}
+local notify6b = vim.notify
+vim.notify = function() end
+vim.fn.setqflist({}, 'r', { items = {} })
+maps_of(b_c)['\\nR'].callback()
+vim.wait(5000, function() return #vim.fn.getqflist() > 0 end, 20)
+vim.notify = notify6b
+local qf = vim.fn.getqflist()
+local same = #qf == #rel_res and #qf > 0
+for i, item in ipairs(qf) do
+  local loc = rel_res[i]
+  if not loc or vim.api.nvim_buf_get_name(item.bufnr) ~= vim.uri_to_fname(loc.uri)
+    or item.text ~= loc.message or not item.text:match('^%d+ via$') then
+    same = false
+  end
+end
+check('related -> quickfix in server order', same,
+  #qf .. ' items' .. (qf[1] and (', first "' .. qf[1].text .. '"') or ''))
+vim.cmd('cclose')
+vim.api.nvim_buf_delete(b_c, {})
 
 -- 7. Completion after [[# (heading completion in the same document).
 vim.api.nvim_buf_set_lines(b, -1, -1, false, { '[[#' })

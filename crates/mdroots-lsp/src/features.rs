@@ -19,6 +19,8 @@ use lsp_types::{
 use mdroots::syntax::{Heading, LineIndex, PositionEncoding};
 use mdroots::{Cancel, ErrorKind, LinkStatus, Workspace, markdown_destination, relative_path};
 
+use serde_json::{Value, json};
+
 use crate::{position, uri};
 
 /// Notes offered after `[[` (and the cap on `](` paths).
@@ -33,6 +35,8 @@ pub(crate) enum Fail {
     Lib(mdroots::Error),
     /// Bad arguments from the client (`InvalidParams`).
     Params(String),
+    /// A well-formed request the server cannot serve (`RequestFailed`).
+    Failed(String),
 }
 
 impl From<mdroots::Error> for Fail {
@@ -207,6 +211,86 @@ pub(crate) fn anchor_links(c: &Ctx, slug: &str) -> Result<Vec<Location>, Fail> {
         out.extend(location(&b.from, range));
     }
     Ok(out)
+}
+
+/// Locations of notes, `(path, 0-based line, message)` each, as the
+/// `mdroots.*` list commands answer them: `[{uri, range, message?}]` in
+/// input order (the client must not re-sort). An item whose path has no
+/// `file:` URI is left out.
+pub(crate) fn note_locations(
+    items: impl IntoIterator<Item = (PathBuf, u32, Option<String>)>,
+) -> Value {
+    Value::Array(
+        items
+            .into_iter()
+            .filter_map(|(path, line, message)| {
+                let mut v = json!({ "uri": uri::from_path(&path)?, "range": at_line(line) });
+                if let Some(m) = message {
+                    v["message"] = Value::String(m);
+                }
+                Some(v)
+            })
+            .collect(),
+    )
+}
+
+/// A link-graph command's library error: the client shows it and the
+/// request fails.
+fn graph_fail(e: mdroots::Error) -> Fail {
+    match e.kind() {
+        ErrorKind::Cancelled => Fail::Lib(e),
+        _ => Fail::Failed(e.message().to_owned()),
+    }
+}
+
+/// `mdroots.orphans`: notes nothing links to, by path.
+pub(crate) fn orphans(c: &Ctx) -> Result<Value, Fail> {
+    let v = c.ws.orphans().map_err(graph_fail)?;
+    Ok(note_locations(v.into_iter().map(|n| (n.path, 0, None))))
+}
+
+/// `mdroots.missingBacklinks`: one entry per `from → to` where `to` does
+/// not link back.
+pub(crate) fn missing_backlinks(c: &Ctx) -> Result<Value, Fail> {
+    let root = c.ws.root().path;
+    let v = c.ws.missing_backlinks().map_err(graph_fail)?;
+    Ok(note_locations(v.into_iter().map(|(from, to)| {
+        let to = to.strip_prefix(&root).unwrap_or(&to);
+        let msg = format!("→ {}", to.to_string_lossy().replace('\\', "/"));
+        (from, 0, Some(msg))
+    })))
+}
+
+/// `mdroots.related`: notes two links away, most intermediaries first.
+pub(crate) fn related(c: &Ctx) -> Result<Value, Fail> {
+    let v = c.ws.related(&c.path).map_err(graph_fail)?;
+    Ok(note_locations(
+        v.into_iter()
+            .map(|(n, k)| (n.path, 0, Some(format!("{k} via")))),
+    ))
+}
+
+/// `mdroots.search`: full-text hits at their line, the snippet as message.
+pub(crate) fn search(c: &Ctx, query: &str, limit: usize, cancel: &Cancel) -> Result<Value, Fail> {
+    let v = c.ws.full_text(query, limit, cancel)?;
+    Ok(note_locations(
+        v.into_iter().map(|h| (h.path, h.line, Some(h.snippet))),
+    ))
+}
+
+/// `mdroots.tags`: `[{name, count}]`.
+pub(crate) fn tags(c: &Ctx) -> Value {
+    Value::Array(
+        c.ws.tags()
+            .into_iter()
+            .map(|(name, count)| json!({ "name": name, "count": count }))
+            .collect(),
+    )
+}
+
+/// `mdroots.linkTo`: the link text to `target` written in this note.
+pub(crate) fn link_to(c: &Ctx, target: &Path, label: Option<&str>) -> Result<Value, Fail> {
+    Ok(Value::String(c.ws.link_to(&c.path, target, label)?))
 }
 
 /// One range per heading section (to the line before the next heading of

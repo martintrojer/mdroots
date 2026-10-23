@@ -290,8 +290,16 @@ fn falls_back_to_utf16() {
         json!([
             "mdroots.anchorLinks",
             "mdroots.backlinks",
+            "mdroots.check",
             "mdroots.info",
-            "mdroots.renameFile"
+            "mdroots.linkTo",
+            "mdroots.missingBacklinks",
+            "mdroots.orphans",
+            "mdroots.reindex",
+            "mdroots.related",
+            "mdroots.renameFile",
+            "mdroots.search",
+            "mdroots.tags"
         ])
     );
     assert_eq!(caps["foldingRangeProvider"], true);
@@ -1205,7 +1213,7 @@ fn info_command_shows_and_returns_the_root() {
     let text = ok(r);
     let text = text.as_str().unwrap();
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 4, "{text}");
+    assert!(lines.len() > 4, "{text}");
     assert_eq!(lines[0], format!("root: {}", v.dir.display()));
     assert_eq!(lines[1], "mode: marker");
     assert!(
@@ -1213,6 +1221,18 @@ fn info_command_shows_and_returns_the_root() {
         "{text}"
     );
     assert_eq!(lines[3], "files: 6");
+    // One line per setting: `<name>: <value> (<source>)`.
+    let link = lines
+        .iter()
+        .find(|l| l.starts_with("link style: "))
+        .expect(text);
+    assert!(link.ends_with(')') && link.contains(" ("), "{text}");
+    assert!(
+        lines[4..]
+            .iter()
+            .all(|l| l.contains(": ") && l.ends_with(')')),
+        "{text}"
+    );
     let shown = seen.iter().any(|m| {
         matches!(m, Message::Notification(n)
             if n.method == "window/showMessage" && n.params["type"] == 3 && n.params["message"] == text)
@@ -1249,6 +1269,235 @@ fn rename_file_command_sends_apply_edit() {
     let resp = Response::new_ok(apply.id, json!({ "applied": false }));
     c.conn.sender.send(resp.into()).unwrap();
     assert_eq!(snapshot(&v), before);
+    c.shutdown().unwrap();
+}
+
+// ---- notebook commands ----
+
+/// Runs `name` with `args` and returns its result.
+fn run(c: &mut Client, name: &str, args: Value) -> Value {
+    ok(c.request("workspace/executeCommand", command(name, args)))
+}
+
+/// (file name, line, message) of each entry of a note list.
+fn entries(v: &Value) -> Vec<(String, u64, Option<String>)> {
+    let names = spots(v);
+    v.as_array()
+        .unwrap()
+        .iter()
+        .zip(names)
+        .map(|(l, (name, line, character))| {
+            assert_eq!(character, 0, "{l}");
+            assert_eq!(l["range"]["start"], l["range"]["end"], "{l}");
+            (name, line, l["message"].as_str().map(str::to_owned))
+        })
+        .collect()
+}
+
+fn entry(name: &str, line: u64, message: Option<&str>) -> (String, u64, Option<String>) {
+    (name.to_owned(), line, message.map(str::to_owned))
+}
+
+#[test]
+fn orphans_and_missing_backlinks_answer_in_path_order() {
+    let v = Vault::corpus("zk-min");
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let uri = v.uri("a.md");
+    let r = run(&mut c, "mdroots.orphans", json!([uri]));
+    assert_eq!(
+        entries(&r),
+        [
+            entry("README.md", 0, None),
+            entry("broken.md", 0, None),
+            entry("emoji.md", 0, None),
+            entry("tagged.md", 0, None),
+        ]
+    );
+    // a <-> b link each other; emoji -> b and tagged -> a do not come back.
+    let r = run(&mut c, "mdroots.missingBacklinks", json!([uri]));
+    assert_eq!(
+        entries(&r),
+        [
+            entry("emoji.md", 0, Some("→ b.md")),
+            entry("tagged.md", 0, Some("→ a.md")),
+        ]
+    );
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn related_lists_the_most_intermediaries_first() {
+    let v = Vault::corpus("zk-min");
+    v.write("src.md", "# Src\n\n[[hub1]] [[hub2]]\n");
+    v.write("hub1.md", "# Hub1\n\n[[zfar]] [[afar]]\n");
+    v.write("hub2.md", "# Hub2\n\n[[zfar]]\n");
+    v.write("zfar.md", "# Zfar\n");
+    v.write("afar.md", "# Afar\n");
+    let mut c = session(&v, UTF8, &["src.md"]);
+    let r = run(&mut c, "mdroots.related", json!([v.uri("src.md")]));
+    assert_eq!(
+        entries(&r),
+        [
+            entry("zfar.md", 0, Some("2 via")),
+            entry("afar.md", 0, Some("1 via")),
+        ]
+    );
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn search_answers_at_the_hit_line_with_the_snippet() {
+    let v = Vault::corpus("zk-min");
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let uri = v.uri("a.md");
+    let r = run(&mut c, "mdroots.search", json!([uri, "after an emoji"]));
+    let got = entries(&r);
+    assert_eq!(got.len(), 1, "{r}");
+    assert_eq!((got[0].0.as_str(), got[0].1), ("emoji.md", 2));
+    assert!(
+        got[0]
+            .2
+            .as_deref()
+            .is_some_and(|m| m.contains("after an emoji")),
+        "{r}"
+    );
+    // A limit caps the list; the default is 50.
+    let all = run(&mut c, "mdroots.search", json!([uri, "note"]));
+    assert!(all.as_array().unwrap().len() > 1, "{all}");
+    let one = run(&mut c, "mdroots.search", json!([uri, "note", 1]));
+    assert_eq!(one.as_array().unwrap().len(), 1);
+    // A query is required.
+    let r = c.request(
+        "workspace/executeCommand",
+        command("mdroots.search", json!([uri])),
+    );
+    assert_eq!(r.error.expect("an error").code, -32602);
+    c.shutdown().unwrap();
+}
+
+/// The graph commands need a full index: the single-file workspace that
+/// serves a note while its root opens is lazy, so they fail (and the
+/// client is told); once the root is open they answer.
+#[test]
+fn graph_commands_on_a_lazy_root_fail_and_show_a_message() {
+    let v = Vault::corpus("zk-min");
+    v.write("p.md", PENDING);
+    let (gate, cache) = (Gate::new(), tempfile::tempdir().unwrap());
+    let mut c = gated_session(&gate, cache.path(), serde_json::from_str(UTF8).unwrap());
+    let uri = v.uri("p.md");
+    c.open(&uri, PENDING);
+    assert_eq!(c.diagnostics(&uri).len(), 1);
+    let names = [
+        "mdroots.orphans",
+        "mdroots.missingBacklinks",
+        "mdroots.related",
+    ];
+    for name in names {
+        let (r, seen) = c.request_seeing("workspace/executeCommand", command(name, json!([uri])));
+        assert_eq!(r.error.expect("an error").code, -32803, "{name}");
+        let shown = seen.iter().any(|m| {
+            matches!(m, Message::Notification(n)
+                if n.method == "window/showMessage" && n.params["type"] == 1)
+        });
+        assert!(shown, "{name}: {seen:?}");
+    }
+    gate.release();
+    c.ready(&uri);
+    for name in names {
+        let r = ok(c.request("workspace/executeCommand", command(name, json!([uri]))));
+        assert!(r.is_array(), "{name}: {r}");
+    }
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn check_has_one_entry_per_note_by_path_even_when_empty() {
+    let v = Vault::corpus("zk-min");
+    let mut c = session(&v, UTF8, &["broken.md"]);
+    let uri = v.uri("broken.md");
+    let r = run(&mut c, "mdroots.check", json!([uri]));
+    let files: Vec<&str> = r
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["uri"].as_str().unwrap().rsplit('/').next().unwrap())
+        .collect();
+    assert_eq!(
+        files,
+        [
+            "README.md",
+            "a.md",
+            "b.md",
+            "broken.md",
+            "emoji.md",
+            "tagged.md"
+        ]
+    );
+    for e in r.as_array().unwrap() {
+        let n = e["diagnostics"].as_array().unwrap().len();
+        if e["uri"] == uri.as_str() {
+            assert_eq!(n, 1, "{e}");
+            assert_eq!(e["diagnostics"][0]["code"], "broken-link");
+            assert_eq!(e["diagnostics"][0]["source"], "mdroots");
+        } else {
+            assert_eq!(n, 0, "{e}");
+        }
+    }
+    // The server's setting applies: off leaves every entry empty.
+    c.notify(
+        "workspace/didChangeConfiguration",
+        json!({ "settings": { "mdroots": { "diagnostics": "off" } } }),
+    );
+    let _ = c.diagnostics(&uri);
+    let r = run(&mut c, "mdroots.check", json!([uri]));
+    assert_eq!(r.as_array().unwrap().len(), 6);
+    assert!(
+        r.as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["diagnostics"] == json!([]))
+    );
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn tags_and_link_to_answer_with_json() {
+    let v = Vault::corpus("zk-min");
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let uri = v.uri("a.md");
+    let r = run(&mut c, "mdroots.tags", json!([uri]));
+    assert_eq!(r, json!([{ "name": "project", "count": 1 }]));
+    let r = run(&mut c, "mdroots.linkTo", json!([uri, v.uri("emoji.md")]));
+    assert_eq!(r, json!("[Emoji](emoji)"));
+    let r = run(
+        &mut c,
+        "mdroots.linkTo",
+        json!([uri, v.uri("emoji.md"), "face"]),
+    );
+    assert_eq!(r, json!("[face](emoji)"));
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn reindex_picks_up_a_file_written_to_disk() {
+    let v = Vault::corpus("zk-min");
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let uri = v.uri("a.md");
+    let search = |c: &mut Client| run(c, "mdroots.search", json!([uri, "zebrafish"]));
+    assert_eq!(search(&mut c), json!([]));
+    v.write("new.md", "# New\n\nzebrafish\n");
+    // The open note's diagnostics are published again.
+    let (r, seen) = c.request_seeing(
+        "workspace/executeCommand",
+        command("mdroots.reindex", json!([uri])),
+    );
+    assert_eq!(ok(r), Value::Null);
+    let published = seen.iter().any(|m| {
+        matches!(m, Message::Notification(n)
+            if n.method == "textDocument/publishDiagnostics" && n.params["uri"] == uri.as_str())
+    });
+    assert!(published, "{seen:?}");
+    assert_eq!(entries(&search(&mut c)).len(), 1);
     c.shutdown().unwrap();
 }
 

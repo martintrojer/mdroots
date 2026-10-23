@@ -17,8 +17,7 @@ use std::time::SystemTime;
 use mdroots::query::{NoteQuery, TagExpr, day_range, format_rfc3339, parse_date, parse_sort};
 use mdroots::syntax::PositionEncoding;
 use mdroots::{
-    Cancel, Diagnostic, DialectMarker, Error, ErrorKind, NoteSummary, Options, Role, Severity,
-    Source, Workspace, names,
+    Cancel, Diagnostic, Error, ErrorKind, NoteSummary, Options, Role, Severity, Workspace, names,
 };
 
 const USAGE: &str = "\
@@ -445,41 +444,9 @@ fn roots(path: &str) -> Result<Outcome, Error> {
         println!("nested: {}", n.display());
     }
     for s in ws.settings() {
-        println!("{}: {} ({})", s.name, s.value, source_name(&s.source));
+        println!("{}: {} ({})", s.name, s.value, names::source(&s.source));
     }
     Ok(Outcome::Ok)
-}
-
-/// Where a setting came from, as `roots` prints it: `zk .zk/config.toml
-/// link-format`, `zk default`, `vote` or `default`.
-fn source_name(s: &Source) -> String {
-    match s {
-        Source::Config { tool, file, key } => format!("{tool} {file} {key}"),
-        Source::Marker(m) => format!("{} default", marker_name(*m)),
-        Source::Vote => "vote".to_owned(),
-        Source::Default => "default".to_owned(),
-        _ => "unknown".to_owned(),
-    }
-}
-
-fn marker_name(m: DialectMarker) -> &'static str {
-    match m {
-        DialectMarker::Zk => "zk",
-        DialectMarker::Obsidian => "obsidian",
-        DialectMarker::Marksman => "marksman",
-        DialectMarker::Foam => "foam",
-        DialectMarker::Dendron => "dendron",
-        DialectMarker::Logseq => "logseq",
-        DialectMarker::OrgRoam => "org-roam",
-        DialectMarker::Gollum => "gollum",
-        DialectMarker::Mkdocs => "mkdocs",
-        DialectMarker::Docusaurus => "docusaurus",
-        DialectMarker::Hugo => "hugo",
-        DialectMarker::Jekyll => "jekyll",
-        DialectMarker::MdBook => "mdbook",
-        DialectMarker::Zettlr => "zettlr",
-        _ => "unknown",
-    }
 }
 
 fn resolve(out: &Out, from: &str, link: &str) -> Result<Outcome, Error> {

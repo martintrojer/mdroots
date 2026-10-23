@@ -43,6 +43,80 @@ local function backlinks_to_loclist(err, result, ctx)
   end
 end
 
+-- The line `lnum` (1-based) of `fname` for a location without a message: from
+-- the loaded buffer when there is one (it may hold unsaved edits), else disk.
+local function line_text(fname, lnum)
+  local b = vim.fn.bufnr(fname)
+  if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
+    return vim.api.nvim_buf_get_lines(b, lnum - 1, lnum, false)[1] or ''
+  end
+  local ok, lines = pcall(vim.fn.readfile, fname, '', lnum)
+  return ok and lines[lnum] or ''
+end
+
+-- Result handler for the mdroots note-list commands (orphans, missingBacklinks,
+-- related, search, ...): `{uri, range, message?}[]` -> quickfix list, one item
+-- per location in server order. Not vim.lsp.util.locations_to_items: it
+-- re-sorts by file and drops `message`.
+local function ordered_to_qflist(title)
+  return function(err, result)
+    if err then
+      vim.notify(title .. ': ' .. (err.message or tostring(err)), vim.log.levels.WARN)
+      return
+    end
+    local items = {}
+    for _, loc in ipairs(result or {}) do
+      local fname = vim.uri_to_fname(loc.uri)
+      local lnum = loc.range.start.line + 1
+      table.insert(items, {
+        filename = fname,
+        lnum = lnum,
+        col = loc.range.start.character + 1,
+        text = loc.message or line_text(fname, lnum),
+      })
+    end
+    vim.fn.setqflist({}, ' ', { title = title, items = items })
+    if #items > 0 then
+      vim.cmd('copen')
+    else
+      vim.notify(title .. ': nothing found', vim.log.levels.INFO)
+    end
+  end
+end
+
+-- Result handler for mdroots.check: `{uri, diagnostics}[]` -> quickfix list of
+-- every diagnostic, notes by path.
+local severity_type = { 'E', 'W', 'I', 'N' }
+local function check_to_qflist(err, result)
+  if err then
+    vim.notify('mdroots.check: ' .. (err.message or tostring(err)), vim.log.levels.WARN)
+    return
+  end
+  local items = {}
+  for _, entry in ipairs(result or {}) do
+    local fname = vim.uri_to_fname(entry.uri)
+    for _, d in ipairs(entry.diagnostics) do
+      table.insert(items, {
+        filename = fname,
+        lnum = d.range.start.line + 1,
+        col = d.range.start.character + 1,
+        type = severity_type[d.severity or 1],
+        text = d.message,
+      })
+    end
+  end
+  vim.fn.setqflist({}, ' ', { title = 'mdroots check', items = items })
+  if #items > 0 then
+    vim.cmd('copen')
+  else
+    vim.notify('mdroots: no diagnostics', vim.log.levels.INFO)
+  end
+end
+
+-- Called with the tag name chosen in the <leader>nt picker. Does nothing yet.
+local function on_tag_selected(name) -- luacheck: ignore
+end
+
 vim.api.nvim_create_autocmd('LspAttach', {
   group = group,
   callback = function(ev)
@@ -96,6 +170,56 @@ vim.api.nvim_create_autocmd('LspAttach', {
         arguments = { vim.uri_from_bufnr(buf), pos },
       }, { bufnr = buf }, backlinks_to_loclist)
     end, 'backlinks of this note')
+
+    local function run(command, extra, handler)
+      local args = { vim.uri_from_bufnr(buf) }
+      vim.list_extend(args, extra or {})
+      client:exec_cmd({ command = command, arguments = args }, { bufnr = buf }, handler)
+    end
+
+    -- Whole-notebook lists into the quickfix list, in the server's order.
+    map('<leader>no', function()
+      run('mdroots.orphans', nil, ordered_to_qflist('mdroots orphans'))
+    end, 'orphan notes')
+    map('<leader>nm', function()
+      run('mdroots.missingBacklinks', nil, ordered_to_qflist('mdroots missing backlinks'))
+    end, 'missing backlinks')
+    map('<leader>nR', function()
+      run('mdroots.related', nil, ordered_to_qflist('mdroots related'))
+    end, 'notes related to this one')
+    map('<leader>n/', function()
+      local query = vim.fn.input('search> ')
+      if query ~= '' then
+        run('mdroots.search', { query }, ordered_to_qflist('mdroots search: ' .. query))
+      end
+    end, 'full-text search')
+
+    -- Tags with their note counts.
+    map('<leader>nt', function()
+      run('mdroots.tags', nil, function(err, result)
+        if err then
+          vim.notify('mdroots.tags: ' .. (err.message or tostring(err)), vim.log.levels.WARN)
+          return
+        end
+        vim.ui.select(result or {}, {
+          prompt = 'tags',
+          format_item = function(t)
+            return string.format('%s (%d)', t.name, t.count)
+          end,
+        }, function(choice)
+          if choice then
+            on_tag_selected(choice.name)
+          end
+        end)
+      end)
+    end, 'tags')
+
+    vim.api.nvim_buf_create_user_command(buf, 'MdrootsCheck', function()
+      run('mdroots.check', nil, check_to_qflist)
+    end, { desc = 'mdroots: diagnostics of every note into the quickfix list' })
+    vim.api.nvim_buf_create_user_command(buf, 'MdrootsReindex', function()
+      run('mdroots.reindex')
+    end, { desc = 'mdroots: rescan the notebook from disk' })
 
     -- Rename (move) the current note and fix every link to it. Neovim 0.12
     -- never sends workspace/willRenameFiles, so this goes through a command;

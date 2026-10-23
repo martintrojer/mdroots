@@ -2,7 +2,7 @@
 //! are `#[non_exhaustive]`: a variant added later prints `unknown` until it
 //! gets a name here.
 
-use crate::{LinkStatus, ResolveStep, RootMode, Severity};
+use crate::{DialectMarker, LinkStatus, ResolveStep, RootMode, Severity, Source};
 
 pub fn severity(s: Severity) -> &'static str {
     mdroots_resolve::dialect::severity_name(s)
@@ -46,6 +46,38 @@ pub fn status(s: LinkStatus) -> &'static str {
         LinkStatus::Broken => "broken",
         LinkStatus::External => "external",
         LinkStatus::Unchecked => "unchecked",
+        _ => "unknown",
+    }
+}
+
+/// Where a setting came from, as `roots` and the editor info command print it: `zk .zk/config.toml
+/// link-format`, `zk default`, `vote` or `default`.
+pub fn source(s: &Source) -> String {
+    match s {
+        Source::Config { tool, file, key } => format!("{tool} {file} {key}"),
+        Source::Marker(m) => format!("{} default", marker(*m)),
+        Source::Vote => "vote".to_owned(),
+        Source::Default => "default".to_owned(),
+        _ => "unknown".to_owned(),
+    }
+}
+
+pub fn marker(m: DialectMarker) -> &'static str {
+    match m {
+        DialectMarker::Zk => "zk",
+        DialectMarker::Obsidian => "obsidian",
+        DialectMarker::Marksman => "marksman",
+        DialectMarker::Foam => "foam",
+        DialectMarker::Dendron => "dendron",
+        DialectMarker::Logseq => "logseq",
+        DialectMarker::OrgRoam => "org-roam",
+        DialectMarker::Gollum => "gollum",
+        DialectMarker::Mkdocs => "mkdocs",
+        DialectMarker::Docusaurus => "docusaurus",
+        DialectMarker::Hugo => "hugo",
+        DialectMarker::Jekyll => "jekyll",
+        DialectMarker::MdBook => "mdbook",
+        DialectMarker::Zettlr => "zettlr",
         _ => "unknown",
     }
 }

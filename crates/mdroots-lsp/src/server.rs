@@ -33,12 +33,23 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 const DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// The commands `workspace/executeCommand` accepts.
-const COMMANDS: [&str; 4] = [
+const COMMANDS: [&str; 12] = [
     "mdroots.anchorLinks",
     "mdroots.backlinks",
+    "mdroots.check",
     "mdroots.info",
+    "mdroots.linkTo",
+    "mdroots.missingBacklinks",
+    "mdroots.orphans",
+    "mdroots.reindex",
+    "mdroots.related",
     "mdroots.renameFile",
+    "mdroots.search",
+    "mdroots.tags",
 ];
+
+/// Hits `mdroots.search` returns when the client gives no limit.
+const SEARCH_LIMIT: usize = 50;
 
 /// How long a background open runs before the client is told about it.
 const PROGRESS_AFTER: Duration = Duration::from_secs(1);
@@ -388,6 +399,7 @@ impl Server {
                 self.reply_err(req.id, ErrorCode::InternalError, e.message())
             }
             Some(Err(Fail::Params(m))) => self.reply_err(req.id, ErrorCode::InvalidParams, &m),
+            Some(Err(Fail::Failed(m))) => self.reply_err(req.id, ErrorCode::RequestFailed, &m),
             None => self.reply_err(
                 req.id,
                 ErrorCode::MethodNotFound,
@@ -532,6 +544,25 @@ impl Server {
         }
     }
 
+    /// A link-graph command: a failure other than cancellation is also
+    /// shown with `window/showMessage`.
+    fn graph_command(
+        &self,
+        uri: Option<&str>,
+        cancel: &Cancel,
+        f: impl FnOnce(&Ctx) -> Result<Value, Fail>,
+    ) -> Result<Value, Fail> {
+        let r = self.with_doc(uri, cancel, f);
+        if let Err(Fail::Failed(m)) = &r {
+            let params = ShowMessageParams {
+                typ: MessageType::ERROR,
+                message: m.clone(),
+            };
+            self.send(Notification::new("window/showMessage".to_owned(), params).into());
+        }
+        r
+    }
+
     fn workspace_of(&self, uri: &str) -> Option<(Workspace, PathBuf)> {
         if let Some(d) = self.docs.get(uri) {
             return Some((d.ws.clone()?, d.path.clone()));
@@ -571,6 +602,47 @@ impl Server {
                     self.send(Notification::new("window/showMessage".to_owned(), params).into());
                 }
                 Ok(info)
+            }
+            "mdroots.orphans" => self.graph_command(arg(0), cancel, features::orphans),
+            "mdroots.missingBacklinks" => {
+                self.graph_command(arg(0), cancel, features::missing_backlinks)
+            }
+            "mdroots.related" => self.graph_command(arg(0), cancel, features::related),
+            "mdroots.search" => {
+                let query = arg(1)
+                    .ok_or_else(|| Fail::Params("mdroots.search: query required".to_owned()))?;
+                let limit = match p.arguments.get(2) {
+                    None | Some(Value::Null) => SEARCH_LIMIT,
+                    Some(v) => v
+                        .as_u64()
+                        .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+                        .ok_or_else(|| {
+                            Fail::Params("mdroots.search: limit must be a number".to_owned())
+                        })?,
+                };
+                self.with_doc(arg(0), cancel, |c| {
+                    features::search(c, query, limit, cancel)
+                })
+            }
+            "mdroots.check" => {
+                let (enc, setting) = (self.enc, self.setting);
+                self.with_doc(arg(0), cancel, |c| check(c.ws, enc, setting, cancel))
+            }
+            "mdroots.tags" => self.with_doc(arg(0), cancel, |c| Ok(features::tags(c))),
+            "mdroots.reindex" => {
+                if let Some((ws, _)) = arg(0).and_then(|u| self.workspace_of(u)) {
+                    cancel.check()?;
+                    self.refresh(&[ws]);
+                }
+                Ok(Value::Null)
+            }
+            "mdroots.linkTo" => {
+                let target = arg(1)
+                    .and_then(|u| u.parse::<Uri>().ok())
+                    .and_then(|u| uri::to_path(&u))
+                    .ok_or_else(|| Fail::Params("mdroots.linkTo: bad target URI".to_owned()))?;
+                let label = arg(2);
+                self.with_doc(arg(0), cancel, |c| features::link_to(c, &target, label))
             }
             "mdroots.renameFile" => {
                 let to = arg(1)
@@ -1052,16 +1124,52 @@ fn doc_uri(r: &Request) -> Option<&str> {
     r.params.pointer("/textDocument/uri")?.as_str()
 }
 
-/// What `mdroots.info` reports.
+/// What `mdroots.info` reports: the root, then one line per setting.
 fn info(ws: &Workspace) -> String {
     let r = ws.root();
-    format!(
+    let mut out = format!(
         "root: {}\nmode: {}\nwhy: {}\nfiles: {}",
         r.path.display(),
         names::mode(r.mode),
         r.reason,
         ws.files().len()
-    )
+    );
+    for s in ws.settings() {
+        out.push_str(&format!(
+            "\n{}: {} ({})",
+            s.name,
+            s.value,
+            names::source(&s.source)
+        ));
+    }
+    out
+}
+
+/// `mdroots.check`: `[{uri, diagnostics}]`, one entry per indexed note by
+/// path, the diagnostics as published (after `setting`).
+fn check(
+    ws: &Workspace,
+    enc: PositionEncoding,
+    setting: Setting,
+    cancel: &Cancel,
+) -> Result<Value, Fail> {
+    let root = ws.root().path;
+    let mut out = Vec::new();
+    for path in ws.files() {
+        cancel.check()?;
+        let Some(uri) = uri::from_path(&path) else {
+            continue;
+        };
+        let text = ws.text(&path).unwrap_or_default();
+        let index = LineIndex::new(&text);
+        let diags: Vec<_> = setting
+            .apply(ws.diagnostics(&path, cancel)?)
+            .iter()
+            .map(|d| diagnostics::to_lsp(d, &index, &text, enc, &root))
+            .collect();
+        out.push(json!({ "uri": uri, "diagnostics": diags }));
+    }
+    Ok(Value::Array(out))
 }
 
 fn log_err(what: &str, r: Result<(), mdroots::Error>) {

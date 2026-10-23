@@ -343,8 +343,15 @@ Server behaviour (LSP layer, not library):
 - **Code action: extract note.** On a non-empty selection in a Markdown note, `textDocument/codeAction` returns one action of kind `refactor.extract.note`, titled `Extract to new note: <file name>`, from `Workspace::extract_note`. Its edit is `documentChanges`, in order: `CreateFile` (`overwrite: false`, `ignoreIfExists: false`), a `TextDocumentEdit` inserting the new note's content, and a `TextDocumentEdit` replacing the selection with the link. The client applies it. The name is re-checked against the disk on every request, because Neovim truncates an existing file on `CreateFile` whatever its options say. `context.only` is honoured (`refactor` and `refactor.extract` match); an empty selection, an Org note, an unknown file or another kind gets `[]`.
 - **Completion** triggers: `[`, `(`, `#`, `:`. After `[[`: notes by fuzzy search, at most 50, title as detail, inserting what `wiki_target` returns (the stem, or a path when another note shares the stem, case-insensitively, or the stem would resolve to another note from this one). After `[[note#` (or `[[#` for this note): its headings, without the H1 title. After `](`: relative paths to notes, percent-encoded like `link_to`. After a blank and `#`: tags with note counts. A `#` as the first non-blank character of a line starts a heading: the server returns an empty list, so no popup.
 - **Rename.** `textDocument/rename` on a link to a note, or on this note's H1, renames that note: the new name is a file stem (no directory or extension); the result is the link edits plus a `RenameFile` op (as marksman does). On the H1 it renames the file only, not the heading text.
-- **Commands.** `mdroots.backlinks <uri>`: `Location[]` of links to the note from other notes (self-links excluded, one per line). `mdroots.anchorLinks <uri> <slug>`: `Location[]` of links from other notes naming the note's heading with that slug by anchor (the `N links` lens). `mdroots.info <uri>`: root, mode, reason and file count, also sent as `window/showMessage`. `mdroots.renameFile <from-uri> <to-uri>`: the rename edit, sent to the client as `workspace/applyEdit`.
-- Not built ([ROADMAP](../ROADMAP.md)): `workspace/willRenameFiles`, semantic tokens, and a full-text request (the library has `full_text`; the server does not expose it).
+- **Commands.** `workspace/executeCommand`; the first argument is the URI of a note, whose workspace answers. Note lists are `[{uri, range, message?}]` (`range` empty, at column 0 of the hit's line), in the order below; the client must keep it. A graph command (`orphans`, `missingBacklinks`, `related`) on a lazy root (including a note still served alone while its root opens) fails with `RequestFailed` and a `window/showMessage` (Error); a missing or non-numeric argument is `InvalidParams`.
+  - `mdroots.backlinks <uri>`: `Location[]` of links to the note from other notes (self-links excluded, one per line). `mdroots.anchorLinks <uri> <slug>`: `Location[]` of links from other notes naming the note's heading with that slug by anchor (the `N links` lens).
+  - `mdroots.orphans <uri>`: the notes nothing links to, line 0, by path. `mdroots.missingBacklinks <uri>`: one entry per pair `from → to` where `to` does not link back: `from` at line 0, `message` `→ <to, root-relative>`, by `from`, then `to`. `mdroots.related <uri>`: notes two links away from this one, most intermediaries first, `message` `<k> via`.
+  - `mdroots.search <uri> <query> [limit]`: full-text hits (`full_text`, `limit` default 50) at each hit's line, the snippet as `message`.
+  - `mdroots.check <uri>`: `[{uri, diagnostics}]`, one entry per indexed note by path (`diagnostics` may be empty), the diagnostics as published, after the `mdroots.diagnostics` setting (`off`: every entry empty).
+  - `mdroots.tags <uri>`: `[{name, count}]` in `tags` order. `mdroots.linkTo <uri> <target-uri> [label]`: the link text `link_to` writes (a JSON string; the client inserts it).
+  - `mdroots.reindex <uri>`: a full `refresh` of the workspace, then the open documents are re-published (as after `didSave`); `null`.
+  - `mdroots.info <uri>`: root, mode, reason and file count, then one `<name>: <value> (<source>)` line per effective setting (the source as `mdroots roots` prints it), also sent as `window/showMessage`. `mdroots.renameFile <from-uri> <to-uri>`: the rename edit, sent to the client as `workspace/applyEdit`.
+- Not built ([ROADMAP](../ROADMAP.md)): `workspace/willRenameFiles` and semantic tokens.
 
 ## 4. Scheduling
 
@@ -390,7 +397,7 @@ Files in [`editors/nvim/`](../../editors/nvim/) (drop into your Neovim config di
 | File | What |
 |---|---|
 | `lsp/mdroots.lua` | config auto-discovered by `vim.lsp.config`: `cmd = {'mdroots','lsp'}`, `filetypes = {markdown, org}`, a `reuse_client` predicate, `workspace_required = false`, a commented `settings = { mdroots = { diagnostics = … } }` block |
-| `plugin/mdroots.lua` | `vim.lsp.enable('mdroots')` plus optional `LspAttach` extras: `gd`, `gO` (LSP symbols), guarded autotrigger completion, codelens, LSP folding, `<leader>ns` search, `<leader>nb` backlinks to loclist, `<leader>nr` rename note, `<leader>nn` extract the visual selection to a new note (the extract-note code action), `:MdrootsInfo`. Codelens and folding turn on only when the server offers code lenses and folding ranges (it does, §3.6); `<leader>nn` is always mapped |
+| `plugin/mdroots.lua` | `vim.lsp.enable('mdroots')` plus optional `LspAttach` extras: `gd`, `gO` (LSP symbols), guarded autotrigger completion, codelens, LSP folding, `<leader>ns` search, `<leader>nb` backlinks to loclist, `<leader>nr` rename note, `<leader>nn` extract the visual selection to a new note (the extract-note code action), `<leader>no` orphans, `<leader>nm` missing backlinks, `<leader>nR` related notes and `<leader>n/` full-text search (each into the quickfix list, in server order), `<leader>nt` tags (a picker), `:MdrootsInfo`, `:MdrootsCheck` (every diagnostic into the quickfix list), `:MdrootsReindex`. Codelens and folding turn on only when the server offers code lenses and folding ranges (it does, §3.6); `<leader>nn` is always mapped |
 
 Choices (checked against the 0.12.5 runtime):
 
@@ -402,6 +409,7 @@ Choices (checked against the 0.12.5 runtime):
 | `settings`, not `init_options` | Neovim sends `settings` via `workspace/didChangeConfiguration` (the server reads `mdroots.diagnostics` from it, §3.6); `init_options` is sent once, so can't carry changing settings |
 | `gO` remap | the markdown ftplugin maps `gO` to a treesitter outline; mapping `vim.lsp.buf.document_symbol` in `LspAttach` runs after the ftplugin |
 | Backlinks handler | `Client:exec_cmd` drops the result without a handler; ours feeds `Location[]` to the loclist via `vim.lsp.util.locations_to_items(result, client.offset_encoding)` |
+| Notebook-list handler | `ordered_to_qflist(title)` builds one quickfix item per location in server order, text `message` else the line (the loaded buffer's, so unsaved edits show, else the file's). `locations_to_items` would re-sort by file and drop `message` |
 | Rename | `grn` on a link or H1 uses `textDocument/rename`; `<leader>nr` calls `mdroots.renameFile` |
 | Completion | enabled only if `supports_method('textDocument/completion')`; nvim-cmp/blink.cmp users set `vim.g.mdroots_autocomplete = false` |
 | Position encoding | Neovim offers `utf-8` first; mdroots picks it |
@@ -417,9 +425,9 @@ nvim --clean --headless -u NONE -c 'luafile bench/nvim_smoke.lua'   # from the r
 
 [`bench/nvim_smoke.lua`](../../bench/nvim_smoke.lua) loads `editors/nvim` against the real `mdroots lsp` (`$MDROOTS_BIN`, else `$CARGO_TARGET_DIR/debug/mdroots`, else `target/debug/mdroots`; build with `cargo build -p mdroots-cli` first). It never writes the corpus vaults: edits go to scratch notes under `/tmp/mdroots-smoke/` (wiped at start), and the server's `XDG_CACHE_HOME` points there too. It waits on conditions, not sleeps; every line is an assertion, and a failure exits non-zero.
 
-Checks: one client with root_dir nil and settings sent; utf-8 position encoding; maps and `:MdrootsInfo` (its `window/showMessage` names the root); `gO` overriding the ftplugin; definition; symbols; backlinks via `exec_cmd` into the loclist (self-links excluded); `[[#` heading completion (H1 title excluded); no completion for `#` at line start; a broken-link diagnostic; cross-file goto from a vault README (backlinks and this goto are polled until the root's background open finishes); the LSP `foldexpr` on a note; the `6 backlinks` code lens on a vault A note; extract note via `<leader>nn` on a visual selection (next free file name, selection becomes the link, nothing written outside the scratch dir); `mdroots.renameFile` (the `workspace/applyEdit` fixes the linking note and moves the file, the buffer follows); unmodified vault buffers.
+Checks: one client with root_dir nil and settings sent; utf-8 position encoding; maps and `:MdrootsInfo`, `:MdrootsCheck`, `:MdrootsReindex` (`:MdrootsInfo`'s `window/showMessage` names the root); `gO` overriding the ftplugin; definition; symbols; backlinks via `exec_cmd` into the loclist (self-links excluded); `<leader>nR` on a vault A note puts `mdroots.related` into the quickfix list in server order with the server's `N via` text; `[[#` heading completion (H1 title excluded); no completion for `#` at line start; a broken-link diagnostic; cross-file goto from a vault README (backlinks and this goto are polled until the root's background open finishes); the LSP `foldexpr` on a note; the `6 backlinks` code lens on a vault A note; extract note via `<leader>nn` on a visual selection (next free file name, selection becomes the link, nothing written outside the scratch dir); `mdroots.renameFile` (the `workspace/applyEdit` fixes the linking note and moves the file, the buffer follows); unmodified vault buffers.
 
-Passes on NVIM 0.12.5: 38 checks (33 `check` calls, two in loops over 4 files and 3 buffers); attach ≈ 25–500 ms. Not covered: the fold ranges themselves, anchor `N links` lenses, the progress notification.
+Passes on NVIM 0.12.5: 40 checks (35 `check` calls, two in loops over 4 files and 3 buffers); attach ≈ 25–500 ms. Not covered: the fold ranges themselves, anchor `N links` lenses, the progress notification.
 
 ## Planned design
 
@@ -455,24 +463,13 @@ Rules:
 
 ### Notebook commands (phase 2)
 
-`workspace/executeCommand`, first argument the URI of a note in the notebook (its workspace answers). Note lists are `Location[]` (line 0, or the hit's line), in the order the table gives, each optionally with a `message` string; other results are JSON. The Neovim handler builds quickfix items itself, one per location in server order, with `message` (else the buffer line) as the text: `vim.lsp.util.locations_to_items` re-sorts by file and position and drops `message`.
+Left to build: `mdroots.query`. It answers as the commands in §3.6 do (`Location[]` in the query's sort, first argument a note's URI), and its Neovim handler is `ordered_to_qflist`.
 
 | Command | Arguments | Result | Library |
 |---|---|---|---|
-| `mdroots.orphans` | uri | `Location[]`, by path | `orphans` |
-| `mdroots.missingBacklinks` | uri | `Location[]`, one per pair `from → to` where `to` does not link back: `from` at line 0, `message` `→ <to, root-relative>`; by `from`, then `to` | `missing_backlinks` |
-| `mdroots.related` | uri | `Location[]`, most intermediaries first | `related` |
 | `mdroots.query` | uri, an object of the `notes` flags in camelCase (below) | `Location[]`, in the query's sort | `query` |
-| `mdroots.search` | uri, query, limit? | `Location[]` at each hit's line; the snippet in a `message` field | `full_text` |
-| `mdroots.check` | uri | `{uri, diagnostics}[]` for every note, as published | `diagnostics` per file |
-| `mdroots.tags` | uri | `[{name, count}]` | `tags` |
-| `mdroots.reindex` | uri | `null`; full `refresh`, then re-publish | `refresh` |
-| `mdroots.info` | uri | today's text plus each effective setting and its source | `settings` |
-| `mdroots.linkTo` | uri, target uri, label? | the link text | `link_to` |
 
 `mdroots.query` object, every field optional: `paths` (the positional PATHs), `tag`, `exclude`, `linkTo`, `linkedBy`, `related` are arrays (repeatable flags: and); `tag` entries are tag expressions as `notes -t` parses them; the path fields are `file:` URIs, each an indexed note (`paths`, `exclude`: any file or directory under the root), else a params error; `match` is one string (as `NoteQuery`; no repeat); `tagless`, `orphan`, `missingBacklink` are booleans; `created`, `createdAfter`, `createdBefore`, `modified`, `modifiedAfter`, `modifiedBefore` are strings parsed as `notes` parses dates; `sort` is a string as `notes -s`; `limit` a number. An unknown field is a params error.
-
-Graph commands on a lazy root are an error (as `query`), shown with `window/showMessage`. The Neovim plugin gains that handler and mappings under `<leader>n`.
 
 ### Smaller requests (phase 3)
 
