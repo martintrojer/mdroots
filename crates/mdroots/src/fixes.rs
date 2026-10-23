@@ -2,11 +2,11 @@
 //! [`WorkspaceEdit`]s the caller applies (D10). Never writes files.
 
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use mdroots_core::fs::clean_path;
 use mdroots_core::memstore::counts;
-use mdroots_core::{Cancel, DiagCode, Diagnostic, Error, MemStore};
+use mdroots_core::{Cancel, DiagCode, Diagnostic, Error, FileSystem, MemStore};
 use mdroots_resolve::ResolveStep;
 use mdroots_resolve::normalize::percent_decode;
 use mdroots_syntax::{Anchor, Dialect, Document, Link, LinkKind};
@@ -251,7 +251,9 @@ impl Ctx<'_> {
                 format!("{rel}.{ext}")
             }
         };
-        let abs = clean_path(&self.root.join(&rel));
+        // Through the filesystem, as `Workspace::rel` maps public paths: a
+        // symlinked folder inside the root may lead out of it.
+        let abs = canonical(self.ws.fs(), &clean_path(&self.root.join(&rel)))?;
         let inside = abs.strip_prefix(&self.root).ok()?;
         if inside.as_os_str().is_empty() {
             return None;
@@ -277,11 +279,7 @@ impl Ctx<'_> {
             return Vec::new();
         };
         let src = self.doc.source();
-        let Some(span) = path_span(src, link) else {
-            return Vec::new();
-        };
-        let wiki = matches!(link.kind, LinkKind::Wiki | LinkKind::WikiEmbed);
-        let Some(written) = anchor_span(src, span.end, link.range.end, wiki) else {
+        let Some(written) = anchor_span(src, link) else {
             return Vec::new();
         };
         let r = self.store.resolve_link(self.from, link, false);
@@ -306,7 +304,7 @@ impl Ctx<'_> {
                     .into_iter()
                     .flatten()
                     .min()?;
-                (s.0 <= 2).then_some((s, i, &*h.slug))
+                (s.0 <= 2 && !h.slug.is_empty()).then_some((s, i, &*h.slug))
             })
             .collect();
         scored.sort();
@@ -329,19 +327,34 @@ impl Ctx<'_> {
     }
 }
 
-/// The written anchor after the path ending at `path_end`: from after the
-/// `#` up to `|` or `]` (wiki), or `)`, `>` or whitespace (Markdown), else
-/// `end`. `None` without a `#`.
-fn anchor_span(src: &str, path_end: usize, end: usize, wiki: bool) -> Option<Range<usize>> {
-    let rest = src.get(path_end..end)?.strip_prefix('#')?;
-    let start = path_end + 1;
-    let len = rest
-        .find(|c: char| match wiki {
-            true => matches!(c, '|' | ']'),
-            false => matches!(c, ')' | '>') || c.is_whitespace(),
-        })
-        .unwrap_or(rest.len());
-    Some(start..start + len)
+/// The byte range of the link's written anchor (after the `#`) in `src`.
+/// The parser's raw target is the destination as written, already bounded
+/// by its own syntax (`<…>`, balanced parentheses, an attribute's quotes, a
+/// wiki `|` or `]]`), so the anchor is the part of it after the path, found
+/// where the path starts in the source. `None` when the source does not
+/// hold the raw target there (escapes, entities) or it has no `#`.
+fn anchor_span(src: &str, link: &Link) -> Option<Range<usize>> {
+    let t = link.target();
+    let anchor = t.raw().strip_prefix(t.path())?.strip_prefix('#')?;
+    let start = path_span(src, link)?.start;
+    let end = start + t.raw().len();
+    (end <= link.range.end && src.get(start..end)? == t.raw()).then(|| end - anchor.len()..end)
+}
+
+/// `p` through the filesystem's `canonicalize`; when that fails (a missing
+/// path on a filesystem that needs it to exist), the longest ancestor it
+/// canonicalizes with the rest appended.
+fn canonical(fs: &dyn FileSystem, p: &Path) -> Option<PathBuf> {
+    let mut tail = Vec::new();
+    let mut cur = p;
+    loop {
+        if let Ok(mut c) = fs.canonicalize(cur) {
+            c.extend(tail.iter().rev());
+            return Some(c);
+        }
+        tail.push(cur.file_name()?);
+        cur = cur.parent()?;
+    }
 }
 
 /// Whether the file name has an extension (`a.b`, not `.b` or `a.`).

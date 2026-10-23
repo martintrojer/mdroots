@@ -393,3 +393,78 @@ fn excludes_the_linking_note() {
     let w = ws(&[("/v/aa.md", "[[a]]\n")]);
     assert_eq!(titles(&fixes(&w, "/v/aa.md", 0..0)), ["Create note a.md"]);
 }
+
+/// The one anchor fix for the whole of `a` (in `/v/a.md`, `b` in
+/// `/v/b.md`), applied.
+fn anchor_fixed(a: &str, b: &str) -> String {
+    let w = ws(&[("/v/a.md", a), ("/v/b.md", b)]);
+    let f = fixes(&w, "/v/a.md", 0..a.len());
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert_eq!(code(&f[0]), DiagCode::BrokenAnchor);
+    apply(a, "/v/a.md", &f[0].edit)
+}
+
+#[test]
+fn anchor_fix_replaces_the_whole_destination_anchor() {
+    let started = "# B\n\n## Getting started\n";
+    assert_eq!(
+        anchor_fixed("[x](<b.md#Getting Start>)\n", started),
+        "[x](<b.md#getting-started>)\n"
+    );
+    assert_eq!(
+        // The whole `getting(start)` is read: a prefix of the heading text.
+        anchor_fixed(
+            "[x](b.md#getting(start))\n",
+            "# B\n\n## Getting(start) guide\n"
+        ),
+        "[x](b.md#gettingstart-guide)\n"
+    );
+    assert_eq!(
+        anchor_fixed("[x](b.md#Getting%20Start)\n", started),
+        "[x](b.md#getting-started)\n"
+    );
+}
+
+#[test]
+fn anchor_fix_in_html_hrefs_keeps_the_quotes() {
+    let intro = "# B\n\n## Introduction\n";
+    assert_eq!(
+        anchor_fixed("<a href=\"b.md#intro\">x</a>\n", intro),
+        "<a href=\"b.md#introduction\">x</a>\n"
+    );
+    assert_eq!(
+        anchor_fixed("<a href=b.md#intro>x</a>\n", intro),
+        "<a href=b.md#introduction>x</a>\n"
+    );
+    assert_eq!(
+        anchor_fixed("<a href='b.md#don'>x</a>\n", "# B\n\n## Don't panic\n"),
+        "<a href='b.md#dont-panic'>x</a>\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn create_note_not_offered_through_a_symlink_out_of_the_root() {
+    use mdroots::{IndexMode, StdFs, StdProbe};
+    let tmp = tempfile::tempdir().unwrap();
+    let v = tmp.path().join("v");
+    std::fs::create_dir_all(v.join("inside")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("outside")).unwrap();
+    std::os::unix::fs::symlink(tmp.path().join("outside"), v.join("escape")).unwrap();
+    std::fs::write(v.join(".mdroots"), "").unwrap();
+    let a = "[x](escape/new.md) [x](inside/new.md) [[escape/other]]\n";
+    std::fs::write(v.join("a.md"), a).unwrap();
+    let opts = Options::default()
+        .fs(Arc::new(StdFs))
+        .probe(Arc::new(StdProbe))
+        .enumerator(Arc::new(NoEnumerator))
+        .index(IndexMode::Memory);
+    let w = Workspace::open_for(&v.join("a.md"), opts).unwrap();
+    let root = w.root().path;
+    let f = w
+        .fixes(&root.join("a.md"), 0..a.len(), &Cancel::new())
+        .unwrap();
+    assert_eq!(titles(&f), ["Create note inside/new.md"]);
+    // Canonical, like every public path (temp dirs may sit behind a symlink).
+    assert_eq!(f[0].edit.create[0].0, root.join("inside/new.md"));
+}
