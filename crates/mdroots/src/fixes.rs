@@ -347,7 +347,8 @@ impl Ctx<'_> {
     /// (as written) and label kept. Only links outside frontmatter (where
     /// `[` would start a YAML list) in a Markdown note that resolve to one
     /// indexed note, and only when the new link resolves to that note too.
-    /// A Markdown label holding `|` (a wiki separator) is not converted.
+    /// A Markdown label holding `|` (dialects disagree on the pipe order)
+    /// and in-note anchor links (`[x](#h)`, `[[#h]]`) are not converted.
     fn convert(&self, link: &Link) -> Option<Fix> {
         if self.doc.dialect() != Dialect::Markdown
             || link.context == Context::Frontmatter
@@ -378,7 +379,11 @@ impl Ctx<'_> {
                 ("Convert to Markdown link", text.ok()?)
             }
             LinkKind::Markdown => {
-                let label = src.get(link.text_range.clone())?;
+                // The whole source between `[` and `](`: `text_range`
+                // covers text events only, not formatting at the edges.
+                let from = link.text_range.end.max(link.range.start + 1);
+                let close = from + src.get(from..link.range.end)?.find("](")?;
+                let label = src.get(link.range.start + 1..close)?;
                 if label.contains('|') {
                     return None;
                 }

@@ -617,6 +617,29 @@ fn markdown_to_wiki_keeps_the_label_unless_it_is_the_target() {
 }
 
 #[test]
+fn markdown_to_wiki_keeps_formatting_at_the_label_edges() {
+    let a = "[pre **Bee**](b.md) [*x*](b.md) [](b.md)\n";
+    let w = ws(&[("/v/a.md", a), BEE]);
+    let wiki = "Convert to wiki link".to_owned();
+    assert_eq!(
+        converted(&w, a, "[pre **Bee**](b.md)"),
+        [(
+            wiki.clone(),
+            a.replace("[pre **Bee**](b.md)", "[[b|pre **Bee**]]")
+        )]
+    );
+    assert_eq!(
+        converted(&w, a, "[*x*](b.md)"),
+        [(wiki.clone(), a.replace("[*x*](b.md)", "[[b|*x*]]"))]
+    );
+    // An empty label is dropped.
+    assert_eq!(
+        converted(&w, a, "[](b.md)"),
+        [(wiki, a.replace("[](b.md)", "[[b]]"))]
+    );
+}
+
+#[test]
 fn markdown_conversion_uses_the_root_relative_style_the_root_votes() {
     let a = "[[deep]]\n";
     let files = [("/v/sub/a.md", a), ("/v/sub/deep/deep.md", "# Deep\n")];
@@ -671,6 +694,10 @@ fn no_conversion_for_broken_unindexed_code_or_org_links() {
     // The unindexed target exists on disk: the link is fine, just not converted.
     let unindexed = at(a, "[N](ignored/n.md)");
     assert!(fixes(&w, "/v/a.md", unindexed).is_empty());
+    // In-note anchor links stay.
+    let h = "# H\n\n[x](#h) [[#h]]\n";
+    w = ws(&[("/v/a.md", h)]);
+    assert!(conv(&w, "/v/a.md", 0..h.len()).is_empty());
     // Frontmatter wiki links stay: `[` would start a YAML list.
     let f = "---\nup: \"[[b]]\"\n---\n";
     w = ws(&[("/v/a.md", f), BEE]);
