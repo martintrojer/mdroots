@@ -137,7 +137,17 @@ impl Workspace {
             return Ok(out);
         }
         let case_sensitive = self.fs().case_sensitive(&root);
-        let post = self.post_move_store(store, &map, &folders, case_sensitive, cancel)?;
+        // Most specific folder first.
+        folders.sort_by_key(|(o, _)| std::cmp::Reverse(o.len()));
+        let (post, post_fs) =
+            self.post_move_store(store, &map, &folders, case_sensitive, cancel)?;
+        // Where a path target is after the moves: a moved note, or any
+        // path (file, directory) under a moved folder.
+        let moved = |rel: &str| -> Option<String> {
+            map.get(rel)
+                .cloned()
+                .or_else(|| in_folder(&folders, rel, case_sensitive))
+        };
         for from in store.files() {
             cancel.check()?;
             let Some(doc) = store.document(from) else {
@@ -153,9 +163,12 @@ impl Workspace {
                 let Some(first) = r.targets.first() else {
                     continue;
                 };
-                let moved_to = map.get(first.as_str());
+                let moved_to = moved(first);
                 let to_moved = moved_to.is_some()
-                    && matches!(r.status, LinkStatus::Resolved | LinkStatus::Ambiguous);
+                    && matches!(
+                        r.status,
+                        LinkStatus::Resolved | LinkStatus::Ambiguous | LinkStatus::Unindexed
+                    );
                 let own_relative = own_moved_dir
                     && r.step == Some(ResolveStep::FileRelative)
                     && matches!(
@@ -171,7 +184,7 @@ impl Workspace {
                 let Some(span) = path_span(doc.source(), &link) else {
                     continue;
                 };
-                let target_after = moved_to.map_or(first.as_str(), String::as_str);
+                let target_after = moved_to.as_deref().unwrap_or(first);
                 let site_key = to_moved
                     && store
                         .document(first)
@@ -212,26 +225,23 @@ impl Workspace {
                     // Every rewritten link must land on its target in the
                     // post-move store, by the resolver itself: the
                     // preferred text, else the `/`-prefixed root-relative
-                    // path, else the file-relative path. A target that is
-                    // not a note after the moves (an unindexed file) is
-                    // not checked.
-                    // Every candidate must parse back, in place in the
-                    // link, as a link with exactly that path.
+                    // path, else the file-relative path. Every candidate
+                    // must parse back, in place in the link, as a link
+                    // with exactly that path. A target that is not a note
+                    // must exist on disk after the moves.
                     let src = doc.source();
-                    let check = post.document(target_after).is_some();
+                    if post.document(target_after).is_none()
+                        && post_fs.stat(&post.root().join(target_after)).is_err()
+                    {
+                        return None;
+                    }
                     let lands = |t: &str| {
                         let spliced = format!(
                             "{}{t}{}",
                             &src[link.range.start..span.start],
                             &src[span.end..link.range.end]
                         );
-                        lands_after(
-                            &post,
-                            from_after,
-                            &spliced,
-                            t,
-                            check.then_some(target_after),
-                        )
+                        lands_after(&post, from_after, &spliced, t, target_after)
                     };
                     [preferred, ctx.slash_rooted(), ctx.file_relative()]
                         .into_iter()
@@ -269,7 +279,7 @@ impl Workspace {
         folders: &[(String, String)],
         case_sensitive: bool,
         cancel: &Cancel,
-    ) -> Result<MemStore, Error> {
+    ) -> Result<(MemStore, Arc<MovedFs>), Error> {
         let root = store.root().to_path_buf();
         let contents = store
             .files()
@@ -286,9 +296,9 @@ impl Workspace {
             folders,
             case_sensitive,
         ));
-        let mut post = MemStore::from_contents(fs, root, contents, cancel)?;
+        let mut post = MemStore::from_contents(fs.clone(), root, contents, cancel)?;
         post.set_code_dirs(store.code_dirs().to_vec());
-        Ok(post)
+        Ok((post, fs))
     }
 }
 
@@ -304,19 +314,35 @@ fn stem_shared(post: &MemStore, rel: &str, case_sensitive: bool) -> bool {
         .any(|(_, key)| post.lookup(KeyKind::Stem, &key).iter().any(|p| p != rel))
 }
 
+/// `rel` under the most specific of `folders` (old, new; longest old
+/// first), as the same path under its new folder; `None` outside them.
+fn in_folder(folders: &[(String, String)], rel: &str, case_sensitive: bool) -> Option<String> {
+    let same = |a: &str, b: &str| match case_sensitive {
+        true => a == b,
+        false => a.to_lowercase() == b.to_lowercase(),
+    };
+    folders.iter().find_map(|(old, new)| {
+        let mut rest = rel.split('/');
+        for o in old.split('/') {
+            if !same(o, rest.next()?) {
+                return None;
+            }
+        }
+        Some(
+            std::iter::once(new.as_str())
+                .chain(rest)
+                .collect::<Vec<_>>()
+                .join("/"),
+        )
+    })
+}
+
 /// Whether `spliced` (the link's source text with `text` in place of its
 /// target path, written in the note at `from_after`) parses, in that
-/// note's dialect, to a link whose path is exactly `text`, and, when
-/// `target` is given, resolves in `post` to `target` first and not
-/// ambiguously. A `#`, `|`, `]]` or `::` in `text` that the parser would
-/// read as syntax fails the first test.
-fn lands_after(
-    post: &MemStore,
-    from_after: &str,
-    spliced: &str,
-    text: &str,
-    target: Option<&str>,
-) -> bool {
+/// note's dialect, to a link whose path is exactly `text` that resolves in
+/// `post` to `target` first and not ambiguously. A `#`, `|`, `]]` or `::`
+/// in `text` that the parser would read as syntax fails.
+fn lands_after(post: &MemStore, from_after: &str, spliced: &str, text: &str, target: &str) -> bool {
     let doc = parse(spliced, Dialect::detect_from_path(Path::new(from_after)));
     let Some(l) = doc.links().next() else {
         return false;
@@ -324,9 +350,6 @@ fn lands_after(
     if l.target().path() != text {
         return false;
     }
-    let Some(target) = target else {
-        return true;
-    };
     let r = post.resolve_link(from_after, l, false);
     r.status != LinkStatus::Ambiguous && r.targets.first().map(String::as_str) == Some(target)
 }
@@ -345,9 +368,9 @@ struct MovedFs {
     dest: HashMap<PathBuf, PathBuf>,
     /// Moved note sources (absolute, folded) that are not destinations.
     gone: HashSet<PathBuf>,
-    /// Folder pairs: (new, folded; old, absolute).
+    /// Folder pairs: (new, folded; old, absolute), deepest new first.
     folders: Vec<(PathBuf, PathBuf)>,
-    /// Old folders (absolute, folded).
+    /// Old folders (absolute, folded), deepest first.
     old_folders: Vec<PathBuf>,
     /// Directories (absolute, folded) holding a destination, up to the
     /// root.
@@ -380,11 +403,15 @@ impl MovedFs {
             .map(|f| fold(root.join(f)))
             .filter(|f| !dest.contains_key(f))
             .collect();
-        let old_folders = folders.iter().map(|(o, _)| fold(root.join(o))).collect();
-        let folders = folders
+        let mut old_folders: Vec<PathBuf> =
+            folders.iter().map(|(o, _)| fold(root.join(o))).collect();
+        let mut folders: Vec<(PathBuf, PathBuf)> = folders
             .iter()
             .map(|(o, n)| (fold(root.join(n)), root.join(o)))
             .collect();
+        // Most specific (deepest) folder first.
+        old_folders.sort_by_key(|o| std::cmp::Reverse(o.components().count()));
+        folders.sort_by_key(|(n, _)| std::cmp::Reverse(n.components().count()));
         let root = fold(root.to_path_buf());
         let mut dirs = HashSet::new();
         for d in dest.keys() {

@@ -1027,3 +1027,87 @@ fn rename_folder_moves_its_other_files_too() {
         Some(p("/v/near/z/new"))
     );
 }
+
+#[test]
+fn rename_folder_moves_the_files_its_notes_link_to() {
+    // notes/ -> archive/: the image moves with the note that shows it.
+    let files = [
+        ("/v/.mdroots", ""),
+        ("/v/notes/a.md", "![pic](img.png)\n"),
+        ("/v/notes/img.png", "image"),
+        ("/v/top.md", "![x](notes/img.png)\n"),
+    ];
+    let ws = open(&files, "/v/top.md");
+    let got = rename_many(&ws, &[("/v/notes", "/v/archive")]);
+    assert_eq!(
+        got,
+        [(p("/v/top.md"), "![x](archive/img.png)\n".to_owned())]
+    );
+    let after = open(
+        &[
+            ("/v/.mdroots", ""),
+            ("/v/archive/a.md", "![pic](img.png)\n"),
+            ("/v/archive/img.png", "image"),
+            ("/v/top.md", "![x](archive/img.png)\n"),
+        ],
+        "/v/top.md",
+    );
+    assert_eq!(
+        lands_on(&after, "/v/archive/a.md", "![pic](img.png)"),
+        Some(p("/v/archive/img.png"))
+    );
+    assert_eq!(
+        lands_on(&after, "/v/top.md", "![x](archive/img.png)"),
+        Some(p("/v/archive/img.png"))
+    );
+    // Control: only the note moves, so its link follows the image's old place.
+    let got = rename_many(&ws, &[("/v/notes/a.md", "/v/archive/a.md")]);
+    assert_eq!(
+        got,
+        [(p("/v/notes/a.md"), "![pic](../notes/img.png)\n".to_owned())]
+    );
+}
+
+#[test]
+fn rename_nested_folder_destinations_use_the_deepest() {
+    // two/ -> near/z/ lies under one/ -> near/: near/z/new is two/new, a
+    // directory, which an extensionless `z/new` from near/ finds. The order
+    // of the pairs does not matter.
+    let files = [
+        ("/v/.mdroots", ""),
+        ("/v/one/top.md", "[b](old/b)\n"),
+        ("/v/old/b.md", ""),
+        ("/v/two/t.md", ""),
+        ("/v/two/new/pic.png", "image"),
+    ];
+    let ws = open(&files, "/v/one/top.md");
+    for pairs in [
+        [
+            ("/v/old/b.md", "/v/z/new.md"),
+            ("/v/one", "/v/near"),
+            ("/v/two", "/v/near/z"),
+        ],
+        [
+            ("/v/old/b.md", "/v/z/new.md"),
+            ("/v/two", "/v/near/z"),
+            ("/v/one", "/v/near"),
+        ],
+    ] {
+        let got = rename_many(&ws, &pairs);
+        assert_eq!(got, [(p("/v/one/top.md"), "[b](/z/new)\n".to_owned())]);
+    }
+    let after = open(
+        &[
+            ("/v/.mdroots", ""),
+            ("/v/near/top.md", "[b](/z/new)\n"),
+            ("/v/z/new.md", ""),
+            ("/v/near/z/t.md", ""),
+            ("/v/near/z/new/pic.png", "image"),
+        ],
+        "/v/near/top.md",
+    );
+    assert_eq!(
+        lands_on(&after, "/v/near/top.md", "[b](/z/new)"),
+        Some(p("/v/z/new.md"))
+    );
+}
