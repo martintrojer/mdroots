@@ -113,10 +113,6 @@ local function check_to_qflist(err, result)
   end
 end
 
--- Called with the tag name chosen in the <leader>nt picker. Does nothing yet.
-local function on_tag_selected(name) -- luacheck: ignore
-end
-
 vim.api.nvim_create_autocmd('LspAttach', {
   group = group,
   callback = function(ev)
@@ -194,6 +190,11 @@ vim.api.nvim_create_autocmd('LspAttach', {
       end
     end, 'full-text search')
 
+    -- Notes carrying the chosen tag, into the quickfix list.
+    local function on_tag_selected(name)
+      run('mdroots.query', { { tag = { name } } }, ordered_to_qflist('mdroots tag #' .. name))
+    end
+
     -- Tags with their note counts.
     map('<leader>nt', function()
       run('mdroots.tags', nil, function(err, result)
@@ -217,6 +218,16 @@ vim.api.nvim_create_autocmd('LspAttach', {
     vim.api.nvim_buf_create_user_command(buf, 'MdrootsCheck', function()
       run('mdroots.check', nil, check_to_qflist)
     end, { desc = 'mdroots: diagnostics of every note into the quickfix list' })
+    -- :MdrootsQuery {"tag":["project"],"sort":"modified"}: the `notes` flags as
+    -- a JSON object (docs/specs/library.md §3.6); path fields are file: URIs.
+    vim.api.nvim_buf_create_user_command(buf, 'MdrootsQuery', function(o)
+      local ok, query = pcall(vim.json.decode, o.args == '' and '{}' or o.args)
+      if not ok or type(query) ~= 'table' then
+        vim.notify('MdrootsQuery: argument is not a JSON object', vim.log.levels.WARN)
+        return
+      end
+      run('mdroots.query', { query }, ordered_to_qflist('mdroots query'))
+    end, { nargs = '?', desc = 'mdroots: notes matching a JSON query into the quickfix list' })
     vim.api.nvim_buf_create_user_command(buf, 'MdrootsReindex', function()
       run('mdroots.reindex')
     end, { desc = 'mdroots: rescan the notebook from disk' })

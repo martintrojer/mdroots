@@ -236,7 +236,7 @@ pub(crate) fn note_locations(
 
 /// A link-graph command's library error: the client shows it and the
 /// request fails.
-fn graph_fail(e: mdroots::Error) -> Fail {
+pub(crate) fn graph_fail(e: mdroots::Error) -> Fail {
     match e.kind() {
         ErrorKind::Cancelled => Fail::Lib(e),
         _ => Fail::Failed(e.message().to_owned()),

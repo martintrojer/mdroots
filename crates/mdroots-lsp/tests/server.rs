@@ -295,6 +295,7 @@ fn falls_back_to_utf16() {
             "mdroots.linkTo",
             "mdroots.missingBacklinks",
             "mdroots.orphans",
+            "mdroots.query",
             "mdroots.reindex",
             "mdroots.related",
             "mdroots.renameFile",
@@ -2300,5 +2301,216 @@ fn document_links_are_advertised_and_null_for_unknown_files() {
         json!({ "textDocument": { "uri": "untitled:Untitled-1" } }),
     ));
     assert_eq!(r, Value::Null);
+    c.shutdown().unwrap();
+}
+
+/// A query's notes in answer order: (file name, title message).
+fn found(c: &mut Client, uri: &str, query: Value) -> Vec<(String, Option<String>)> {
+    let r = run(c, "mdroots.query", json!([uri, query]));
+    entries(&r).into_iter().map(|(n, _, m)| (n, m)).collect()
+}
+
+fn names(v: &[(String, Option<String>)]) -> Vec<&str> {
+    v.iter().map(|(n, _)| n.as_str()).collect()
+}
+
+fn query_error(c: &mut Client, uri: &str, query: Value) -> String {
+    let r = c.request(
+        "workspace/executeCommand",
+        command("mdroots.query", json!([uri, query])),
+    );
+    let e = r.error.expect("an error");
+    assert_eq!(e.code, -32602, "{}", e.message);
+    e.message
+}
+
+fn query_vault() -> Vault {
+    let v = Vault::corpus("zk-min");
+    v.write(
+        "c.md",
+        "---\ntags: [x, y]\ndate: 2020-01-05\n---\n# Gamma\n",
+    );
+    v.write("d.md", "---\ntags: [x]\ndate: 2020-01-10\n---\n# Alpha\n");
+    v.write("e.md", "---\ntags: [x]\ndate: 2020-01-01\n---\n# Beta\n");
+    v
+}
+
+#[test]
+fn query_ands_tags_and_answers_each_note_at_line_0_with_its_title() {
+    let v = query_vault();
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let uri = v.uri("a.md");
+    let r = found(&mut c, &uri, json!({ "tag": ["x", "y"] }));
+    assert_eq!(r, [("c.md".to_owned(), Some("Gamma".to_owned()))]);
+    // Without arguments every note, title A-Z.
+    let all = ok(c.request(
+        "workspace/executeCommand",
+        command("mdroots.query", json!([uri])),
+    ));
+    assert_eq!(all.as_array().unwrap().len(), 9, "{all}");
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn query_keeps_the_sort_and_limit() {
+    let v = query_vault();
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let uri = v.uri("a.md");
+    let q = |sort: &str| json!({ "tag": ["x"], "sort": sort });
+    let up = found(&mut c, &uri, q("title+"));
+    assert_eq!(names(&up), ["d.md", "e.md", "c.md"]);
+    let down = found(&mut c, &uri, q("title-"));
+    assert_eq!(names(&down), ["c.md", "e.md", "d.md"]);
+    let r = found(
+        &mut c,
+        &uri,
+        json!({ "tag": ["x"], "sort": "title-", "limit": 2 }),
+    );
+    assert_eq!(names(&r), ["c.md", "e.md"]);
+    let r = found(&mut c, &uri, json!({ "limit": 0 }));
+    assert!(r.is_empty());
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn query_takes_paths_and_link_filters_as_uris() {
+    let v = query_vault();
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let uri = v.uri("a.md");
+    let r = found(&mut c, &uri, json!({ "linkTo": [v.uri("a.md")] }));
+    assert_eq!(names(&r), ["b.md", "tagged.md"]);
+    let r = found(&mut c, &uri, json!({ "linkedBy": [v.uri("a.md")] }));
+    assert_eq!(names(&r), ["b.md"]);
+    let r = found(
+        &mut c,
+        &uri,
+        json!({ "paths": [v.uri("c.md"), v.uri("d.md")], "exclude": [v.uri("d.md")] }),
+    );
+    assert_eq!(names(&r), ["c.md"]);
+    let r = found(
+        &mut c,
+        &uri,
+        json!({ "orphan": true, "tagless": true, "match": "after an emoji" }),
+    );
+    assert_eq!(names(&r), ["emoji.md"]);
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn query_rejects_bad_arguments_naming_the_field() {
+    let v = query_vault();
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let uri = v.uri("a.md");
+    let cases = [
+        (json!({ "colour": 1 }), "colour"),
+        (json!({ "linkTo": [v.uri("missing.md")] }), "linkTo"),
+        (
+            json!({ "linkedBy": ["https://example.com/a.md"] }),
+            "linkedBy",
+        ),
+        (json!({ "related": [v.uri("missing.md")] }), "related"),
+        (json!({ "paths": ["untitled:x"] }), "paths"),
+        (json!({ "exclude": ["file:///"] }), "exclude"),
+        (json!({ "exclude": "a.md" }), "exclude"),
+        (json!({ "tag": ["a OR"] }), "tag"),
+        (json!({ "tag": [1] }), "tag"),
+        (json!({ "match": 1 }), "match"),
+        (json!({ "orphan": "yes" }), "orphan"),
+        (json!({ "created": "someday" }), "created"),
+        (json!({ "modifiedAfter": 5 }), "modifiedAfter"),
+        (json!({ "sort": "colour" }), "sort"),
+        (json!({ "limit": -1 }), "limit"),
+        (json!({ "limit": "3" }), "limit"),
+        (json!("tagless"), "argument"),
+    ];
+    for (q, field) in cases {
+        let msg = query_error(&mut c, &uri, q.clone());
+        assert!(msg.contains(field), "{q}: {msg}");
+    }
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn query_accepts_relative_dates() {
+    let v = query_vault();
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let uri = v.uri("a.md");
+    // The files were just written: modified today, and their frontmatter
+    // dates are in the past.
+    let r = found(&mut c, &uri, json!({ "modified": "today" }));
+    assert!(!r.is_empty());
+    let r = found(&mut c, &uri, json!({ "created": "today" }));
+    assert!(!names(&r).contains(&"c.md"));
+    let r = found(
+        &mut c,
+        &uri,
+        json!({ "createdBefore": "last week", "tag": ["x"] }),
+    );
+    assert_eq!(r.len(), 3);
+    c.shutdown().unwrap();
+}
+
+/// The bounds of one timestamp intersect, whatever the key order.
+#[test]
+fn query_date_fields_intersect_in_either_key_order() {
+    let v = query_vault();
+    let mut c = session(&v, UTF8, &["a.md"]);
+    let uri = v.uri("a.md");
+    let day = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+    let cases = [
+        r#"{"created":"2020-01-05","createdBefore":"2020-01-22"}"#,
+        r#"{"createdBefore":"2020-01-22","created":"2020-01-05"}"#,
+        r#"{"created":"2020-01-05","createdAfter":"2019-12-31"}"#,
+        r#"{"createdAfter":"2019-12-31","created":"2020-01-05"}"#,
+    ];
+    for q in cases {
+        let r = found(&mut c, &uri, day(q));
+        assert_eq!(names(&r), ["c.md"], "{q}");
+    }
+    // A later lower bound inside the day empties it.
+    let r = found(
+        &mut c,
+        &uri,
+        json!({ "created": "2020-01-05", "createdAfter": "2020-01-05T12:00" }),
+    );
+    assert!(r.is_empty());
+    // Same for modified: the files were written today, not 5 days ago.
+    let r = found(
+        &mut c,
+        &uri,
+        json!({ "modified": "2020-01-05", "modifiedAfter": "2020-01-01" }),
+    );
+    assert!(r.is_empty());
+    let r = found(
+        &mut c,
+        &uri,
+        json!({ "modifiedAfter": "2020-01-01", "modified": "today", "tag": ["y"] }),
+    );
+    assert_eq!(names(&r), ["c.md"]);
+    c.shutdown().unwrap();
+}
+
+/// A graph filter on a lazy root fails like the graph commands.
+#[test]
+fn query_graph_filter_on_a_lazy_root_fails() {
+    let v = Vault::corpus("zk-min");
+    v.write("p.md", PENDING);
+    let (gate, cache) = (Gate::new(), tempfile::tempdir().unwrap());
+    let mut c = gated_session(&gate, cache.path(), serde_json::from_str(UTF8).unwrap());
+    let uri = v.uri("p.md");
+    c.open(&uri, PENDING);
+    assert_eq!(c.diagnostics(&uri).len(), 1);
+    let r = c.request(
+        "workspace/executeCommand",
+        command("mdroots.query", json!([uri, { "orphan": true }])),
+    );
+    assert_eq!(r.error.expect("an error").code, -32803);
+    gate.release();
+    c.ready(&uri);
+    let r = ok(c.request(
+        "workspace/executeCommand",
+        command("mdroots.query", json!([uri, { "orphan": true }])),
+    ));
+    assert!(r.is_array(), "{r}");
     c.shutdown().unwrap();
 }

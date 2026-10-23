@@ -182,6 +182,28 @@ end
 check('related -> quickfix in server order', same,
   #qf .. ' items' .. (qf[1] and (', first "' .. qf[1].text .. '"') or ''))
 vim.cmd('cclose')
+
+-- 6c. Choosing a tag in the <leader>nt picker fills the quickfix list with
+--     the notes carrying it (mdroots.query {tag: [name]}).
+local select6c = vim.ui.select
+vim.ui.select = function(items, _, on_choice)
+  local pick
+  for _, t in ipairs(items) do if t.name == 'journal' then pick = t end end
+  on_choice(pick)
+end
+vim.fn.setqflist({}, 'r', { items = {} })
+maps_of(b_c)['\\nt'].callback()
+vim.wait(5000, function() return #vim.fn.getqflist() > 0 end, 20)
+vim.ui.select = select6c
+local qf6c = vim.fn.getqflist()
+local title6c = vim.fn.getqflist({ title = 1 }).title
+local all_journal = #qf6c > 0
+for _, item in ipairs(qf6c) do
+  if not vim.api.nvim_buf_get_name(item.bufnr):match('/journal/') then all_journal = false end
+end
+check('tag picker -> quickfix', all_journal and title6c == 'mdroots tag #journal',
+  #qf6c .. ' items, title "' .. title6c .. '"')
+vim.cmd('cclose')
 vim.api.nvim_buf_delete(b_c, {})
 
 -- 7. Completion after [[# (heading completion in the same document).

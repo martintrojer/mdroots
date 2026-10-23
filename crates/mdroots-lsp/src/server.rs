@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 
 use crate::diagnostics::{self, Setting};
 use crate::features::{self, Ctx, Fail};
-use crate::{position, uri};
+use crate::{position, query, uri};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -33,7 +33,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 const DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// The commands `workspace/executeCommand` accepts.
-const COMMANDS: [&str; 12] = [
+const COMMANDS: [&str; 13] = [
     "mdroots.anchorLinks",
     "mdroots.backlinks",
     "mdroots.check",
@@ -41,6 +41,7 @@ const COMMANDS: [&str; 12] = [
     "mdroots.linkTo",
     "mdroots.missingBacklinks",
     "mdroots.orphans",
+    "mdroots.query",
     "mdroots.reindex",
     "mdroots.related",
     "mdroots.renameFile",
@@ -608,6 +609,10 @@ impl Server {
                 self.graph_command(arg(0), cancel, features::missing_backlinks)
             }
             "mdroots.related" => self.graph_command(arg(0), cancel, features::related),
+            "mdroots.query" => {
+                let req = query::Request::parse(p.arguments.get(1))?;
+                self.graph_command(arg(0), cancel, |c| query::run(c, req))
+            }
             "mdroots.search" => {
                 let query = arg(1)
                     .ok_or_else(|| Fail::Params("mdroots.search: query required".to_owned()))?;

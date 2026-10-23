@@ -17,6 +17,7 @@
 mod diagnostics;
 mod features;
 mod position;
+mod query;
 mod server;
 mod uri;
 
