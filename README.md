@@ -99,7 +99,9 @@ mdroots lsp                         # the language server on stdio
 Editor features: go to definition (links, headings, `path:line` code
 mentions), references and backlinks, hover previews, symbols, completion of
 notes, headings, paths and tags, rename with link updates, broken-link
-diagnostics, folding, code lenses, document links and extract-note.
+diagnostics with quick fixes, link conversion, notebook commands (orphans,
+related, search, queries), highlights, inlay hints, folding, code lenses,
+document links and extract-note.
 
 ## Learn more
 

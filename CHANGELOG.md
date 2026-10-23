@@ -4,6 +4,37 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
+## Unreleased
+
+- **Quick fixes** (`mdroots lsp` code actions) for link diagnostics: a
+  broken link gets `Change to <title>` (up to 3 close notes) and `Create
+  note <path>`; a broken heading anchor `Change to #<slug>`; an ambiguous
+  link `Pick <path>`, one per candidate. A fix that is the single
+  candidate is preferred; none writes a file (the editor applies it).
+- **Convert link**: on a wiki or Markdown link that resolves to one note,
+  `Convert to Markdown link` / `Convert to wiki link`.
+- **Link selection**: a selection that names a note becomes a link to it
+  (`Link to <title>`).
+- **Notebook commands**: `mdroots.orphans`, `missingBacklinks`, `related`,
+  `query` (the `notes` flags as a JSON object), `search`, `check`, `tags`,
+  `reindex`, `linkTo`; `mdroots.info` also lists each effective setting and
+  where it came from. Neovim: `<leader>no`, `<leader>nm`, `<leader>nR`,
+  `<leader>n/`, the `<leader>nt` tag picker, `:MdrootsCheck`,
+  `:MdrootsQuery`, `:MdrootsReindex`, results in the quickfix list in
+  server order.
+- **`workspace/willRenameFiles`**: moving notes or folders in an editor
+  that sends it updates the links to them.
+- **Document highlight** of the links going where the link under the
+  cursor goes; **inlay hints** with the target's title after a bare
+  `[[stem]]`; **hover and references on a `#tag`**.
+- **Frontmatter key collision**: an info diagnostic on a key that loses to
+  another spelling of the same key (`Title:` next to `title:`).
+- **Library additions**: `Workspace::link_text` (a link in an explicit
+  style, with an anchor; `link_to` wraps it), `Workspace::fixes` with
+  `Fix` and `FixKind`, `Workspace::rename_notes` (several file and folder
+  moves planned together), `same_target_links`, `link_titles`, `tag_at`,
+  `DiagCode::FrontmatterKeyCollision`; `Workspace::fs()` is public.
+
 ## 0.3.2
 
 - Faster test suite (nextest 34 s to 10 s on macOS); `AGENTS.md` gates and a

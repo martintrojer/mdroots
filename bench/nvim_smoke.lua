@@ -2,7 +2,7 @@
 -- `mdroots lsp` server. Read-only on two vaults given by $MDROOTS_VAULT_A and
 -- $MDROOTS_VAULT_B (defaults: tests/corpus/zkvault and tests/corpus/notesvault):
 -- buffers there are only opened and queried. Edits (completion probe, broken
--- link, extract note, note rename) go to scratch notes under
+-- link, quick fix, link conversion, extract note, note rename) go to scratch notes under
 -- /tmp/mdroots-smoke, which is wiped at the start, and the server's cache dir
 -- is pointed there as well.
 --
@@ -239,6 +239,41 @@ vim.wait(5000, function()
   return false
 end, 50)
 check('diagnostic for broken link', diag ~= nil, diag and diag.message or 'none')
+vim.api.nvim_buf_set_lines(b, last, last + 1, false, {})
+
+-- 9b. Quick fix: [[linke]] is broken, and the only close note is linker.md,
+--     so the preferred quickfix is "Change to Linker"; applying it rewrites
+--     the link. Then a cursor (empty range) in [[linker]] is offered
+--     "Convert to Markdown link", whose edit makes a Markdown link to it.
+vim.api.nvim_buf_set_lines(b, -1, -1, false, { 'Near: [[linke]].' })
+last = vim.api.nvim_buf_line_count(b) - 1
+local function actions_at(s, e, diags)
+  local rr = c:request_sync('textDocument/codeAction', {
+    textDocument = { uri = uri },
+    range = { start = { line = last, character = s }, ['end'] = { line = last, character = e } },
+    context = { diagnostics = diags or {} },
+  }, 3000, b)
+  return rr and rr.result or {}
+end
+local qf
+vim.wait(5000, function()
+  for _, a in ipairs(actions_at(8, 8)) do
+    if a.kind == 'quickfix' and a.isPreferred then qf = a; return true end
+  end
+  return false
+end, 50)
+check('quickfix on broken link', qf ~= nil and qf.title == 'Change to Linker', qf and qf.title or 'none')
+if qf and qf.edit then vim.lsp.util.apply_workspace_edit(qf.edit, c.offset_encoding) end
+local qline = vim.api.nvim_buf_get_lines(b, last, last + 1, false)[1] or ''
+check('quickfix rewrote link', qline == 'Near: [[linker]].', qline)
+local conv
+for _, a in ipairs(actions_at(9, 9)) do
+  if a.title == 'Convert to Markdown link' then conv = a end
+end
+check('convert to Markdown link', conv ~= nil and conv.kind == 'refactor.rewrite.link', conv and conv.kind or 'none')
+if conv and conv.edit then vim.lsp.util.apply_workspace_edit(conv.edit, c.offset_encoding) end
+local cline = vim.api.nvim_buf_get_lines(b, last, last + 1, false)[1] or ''
+check('convert rewrote link', cline:match('^Near: %[Linker%]%(linker%.md%)%.$') ~= nil, cline)
 vim.api.nvim_buf_set_lines(b, last, last + 1, false, {})
 
 -- 10. Cross-file goto from vault B's README (its first [[link]]).
