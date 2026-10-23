@@ -64,6 +64,7 @@ pub(crate) fn code_name(c: DiagCode) -> &'static str {
         DiagCode::AmbiguousLink => "ambiguous-link",
         DiagCode::NotInWorkingSet => "not-in-working-set",
         DiagCode::InvalidFrontmatter => "invalid-frontmatter",
+        DiagCode::FrontmatterKeyCollision => "frontmatter-key-collision",
         _ => "unknown",
     }
 }

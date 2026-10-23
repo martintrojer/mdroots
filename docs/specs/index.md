@@ -430,13 +430,15 @@ diagnostics for every file in 46–65 ms.
   heading, custom id or block anchor) at the broken severity;
   `AmbiguousLink` at info, every candidate in `related`;
   `InvalidFrontmatter` at warning, the rest of the note still indexed
-  (§4.1). Partial matches (hints) are never diagnosed.
+  (§4.1); `FrontmatterKeyCollision` at info on the losing key's line
+  (`` `Title` is ignored; `title` sets the title ``, §4.1), whatever the
+  broken-link policy. Partial matches (hints) are never diagnosed.
 - **Lazy** ([roots §3](roots.md#3-lazy-and-vcs-enumerated-modes)). Only
   `stat`-checkable links are diagnosed and counted in the share: path link
   forms (markdown, reference, image, HTML, org) or any target containing
   `/`. Any other unresolved link (a bare `[[stem]]`) is a
   `NotInWorkingSet` hint, never broken.
-- Order: by start offset, then `InvalidFrontmatter`, `BrokenLink`,
+- Order: by start offset, then `InvalidFrontmatter`, `FrontmatterKeyCollision`, `BrokenLink`,
   `BrokenAnchor`, `AmbiguousLink`, `NotInWorkingSet`.
 
 **Point-fresh publishing.** Whole-index freshness never arrives for a peer
@@ -452,7 +454,7 @@ only affected documents (via `change_log`) is
 ### 4.1 Formats and parsing
 - YAML `---…---` (or `...` close), TOML `+++…+++`, JSON `{…}`; org `#+KEY:` and `:PROPERTIES:`; Logseq `key:: value` at the top; [MultiMarkdown](https://fletcherpenney.net/multimarkdown/) `Key: value` only with no other frontmatter and a matching first line.
 - Tolerant: unparsable YAML or TOML → `InvalidFrontmatter` warning, the rest still indexed. A line scan finds the entries; each counts only if the parser accepts its lines alone as a one-entry document (range extended over following lines starting with `]` or `}`, key line moved to column 0, continuation lines re-indented to 2 spaces, leading tabs read as spaces; YAML retries once with each unquoted flow-item-leading `#` hidden, `[#a, #b]`). A counting entry takes that parse's shape; block-map children are judged the same way, one level at a time. A non-counting entry has no value (`Value::Null` in `entries()`): no tag, title, alias, id, date or link, though `Document::frontmatter_fields()` shows it as written. Strict: values a human could read but the parser rejects alone give nothing (`title: Foo: bar`, `title: [Draft] My note`, `up: [[A]], [[B]]`, `tags: *x`), and the block's warning says so. A valid block is unaffected. Scalars and string lists kept; nested maps flattened (`a.b`).
-- **Key case**: stored as written; mapping to a standard meaning is case-insensitive. On collision (`Title`/`title`, `title`/`linkTitle`) the exact standard name wins (§4.2 order), else the first case-insensitive match. Info diagnostic on the loser: [planned](#frontmatter-features).
+- **Key case**: stored as written; mapping to a standard meaning is case-insensitive. On collision (`Title`/`title`, `title`/`linkTitle`) the exact standard name wins (§4.2 order), else the first case-insensitive match. Info diagnostic on the loser, `FrontmatterKeyCollision` (§3.3): the loser is a present entry spelled differently from the winner; exact duplicate keys, placeholder values and dates are not collisions.
 - **Placeholders** `—`, `–`, `-`, `n/a`, `N/A`, `TBD`, `none`, `""`, `~`, `null` mean no value: stored, but not links, ids or titles, and not offered in completion (vault B: 51 values).
 - **Comma-joined lists**: a value containing `, ` is split, each part tried as an implicit link; links only if every non-placeholder part resolves, else one string (vault B: 39 files like `"gen/a.html, gen/a.txt"`). Tags split without the resolve check.
 - **Library API** (`mdroots_syntax::Frontmatter`): `entries()` gives the flattened `a.b` keys, placeholders mapped to `Value::Null`. `Document::frontmatter_fields()` gives the top-level entries as written, in source order, unflattened (re-read from source on first use; a parsed document holds only the entries): one `Field { key, value, range }` per entry, duplicates included. `FieldValue` is `Scalar` (source text on one line, `null` included), `List`, or `Map` with the child fields; `display()` joins a list with `, ` and shows a map as `{…}`. `range` covers the entry's lines in the document. Keys found only by the parser (TOML tables and dotted keys, YAML flow maps) take the inner block, and their children the parent's range. JSON fields are the flattened entries. Org fields take the block range. `parsed()` is false when a non-blank block yields no key. `inner()` is the text between the fences (for unfenced formats, the whole range). TOML values on the parser path come out as TOML writes them (`1.0`, a nested array as `[1, 2]`).
@@ -494,7 +496,7 @@ including retries, methods missing from the server's capabilities are
 8. **Single writer**: 3 editors on one root. No peer writes (built: a peer's `refresh` leaves `PRAGMA data_version` unchanged, `crates/mdroots/tests/workspace.rs`). One peer save = one overlay parse + one reconciler parse/write. Cross-editor visibility p99 within the ~100–500 ms budget. [FSEvents replay](#change-sources) after offline edits, including a forced `MustScanSubDirs`. Native watcher: `crates/mdroots/tests/watch.rs` and the server's republish test.
 9. **Org**: vault A's 11 `#+LINK` files give zero diagnostics and hover shows expanded URLs; fixtures for `[[t][d]]` in `.md` and multi-line `[[…]]`.
 10. **Code context**: fenced `[[…]]` in a README, a zk template, Lean `[[]]` → zero diagnostics, goto still works; 44 gitignored targets quiet; dot-prefixed editor temp files never indexed.
-11. **Frontmatter**: `"—"` makes no links; 39 comma-joined values give two links each; a `Title`/`title` collision resolves to `title` (the info diagnostic is planned).
+11. **Frontmatter**: `"—"` makes no links; 39 comma-joined values give two links each; a `Title`/`title` collision resolves to `title`, with an info diagnostic on `Title`.
 
 ### 5.2 Thresholds still to validate
 | Threshold | Where | Known so far |
@@ -581,5 +583,4 @@ From the `frontmatter` table:
 - key completion ranked by frequency in the root; value completion per key from used values (placeholders excluded);
 - hover on a key: "used in 138/210 notes; top values …";
 - references on a value: every note with the same value;
-- **missing-key hint** only when ≥ 95% of sibling notes in the dir have the key; no schema file. Excludes dirs named `cache`, `generated`, `_site`, `public`, `out` or listed in `.mdrootsignore`. Would fire 7× in vault B, 3× in vault A;
-- an info diagnostic on the losing key of a collision (§4.1).
+- **missing-key hint** only when ≥ 95% of sibling notes in the dir have the key; no schema file. Excludes dirs named `cache`, `generated`, `_site`, `public`, `out` or listed in `.mdrootsignore`. Would fire 7× in vault B, 3× in vault A.

@@ -328,6 +328,38 @@ impl Frontmatter {
     pub fn site_path(&self) -> Option<&str> {
         self.standard_value(SITE_PATH).and_then(first_str)
     }
+
+    /// Entries that lose a key collision (docs/specs/index.md §4.1): for
+    /// each single-valued meaning (title, aliases, id, tags, summary, site
+    /// path) with a winner, every other present entry whose key reads as
+    /// the same meaning but is spelled differently. Exact duplicate keys
+    /// and placeholder values are not collisions. Each is `(index in
+    /// [`entries`](Self::entries), the winning key, the meaning)`, in
+    /// source order.
+    pub fn key_collisions(&self) -> Vec<(usize, String, &'static str)> {
+        let entries = self.entries();
+        let mut out = Vec::new();
+        for (names, meaning) in [
+            (TITLE, "title"),
+            (ALIASES, "aliases"),
+            (ID, "id"),
+            (TAGS, "tags"),
+            (SUMMARY, "summary"),
+            (SITE_PATH, "site path"),
+        ] {
+            let Some(win) = standard(entries, names) else {
+                continue;
+            };
+            let winner = &entries[win].0;
+            for (i, (key, value)) in entries.iter().enumerate() {
+                if matches(key, names) && key != winner && !absent(value) {
+                    out.push((i, winner.clone(), meaning));
+                }
+            }
+        }
+        out.sort_by_key(|(i, ..)| *i);
+        out
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2443,6 +2475,30 @@ mod tests {
         assert_eq!(&src[body(src, &r)], "a: 1");
         let src = "---\n---\n";
         assert_eq!(body(src, &(0..7)), 4..4);
+    }
+
+    fn collisions(src: &str) -> Vec<(usize, String, &'static str)> {
+        let doc = crate::parse(src, crate::model::Dialect::Markdown);
+        doc.frontmatter().expect("frontmatter").key_collisions()
+    }
+
+    #[test]
+    fn key_collisions_are_losers_with_a_different_spelling() {
+        let c = collisions("---\nTitle: A\ntitle: B\n---\n");
+        assert_eq!(c, [(0, "title".to_string(), "title")]);
+        let c = collisions("---\ntitle: A\nlinkTitle: B\ntags: [a]\nTags: [b]\n---\n");
+        assert_eq!(
+            c,
+            [(1, "title".into(), "title"), (3, "tags".into(), "tags")]
+        );
+        // Exact duplicates, dates, placeholders and single keys: none.
+        assert!(collisions("---\ntitle: A\ntitle: B\n---\n").is_empty());
+        assert!(collisions("---\ndate: 1\nDate: 2\n---\n").is_empty());
+        assert!(collisions("---\ntitle: A\nTitle: TBD\n---\n").is_empty());
+        assert!(collisions("---\nTitle: A\n---\n").is_empty());
+        // The loser's index is its entry's, whatever its spelling shares.
+        let c = collisions("---\nTitle: TBD\nTitle: A\ntitle: B\n---\n");
+        assert_eq!(c, [(1, "title".into(), "title")]);
     }
 
     #[test]

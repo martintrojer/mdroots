@@ -346,3 +346,71 @@ fn policy_cache_is_dropped_by_set_overlay() {
     s.clear_overlay("index.md");
     assert_eq!(s.policy(false).resolved_share, Some(0.75));
 }
+
+/// Diagnostics of a note with frontmatter `fm`, with the text each covers.
+fn collisions(fm: &str) -> Vec<(String, Severity, String)> {
+    let src = format!("---\n{fm}---\nbody\n");
+    let d = diags(MemFs::new().with_file("a.md", &src), false, "a.md");
+    assert!(
+        d.iter()
+            .all(|d| d.code == DiagCode::FrontmatterKeyCollision),
+        "{d:?}"
+    );
+    d.iter()
+        .map(|d| {
+            (
+                src[d.range.clone()].to_owned(),
+                d.severity,
+                d.message.clone(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn key_collision_is_an_info_on_the_loser() {
+    let c = collisions("Title: A\ntitle: B\n");
+    assert_eq!(
+        c,
+        [(
+            "Title: A".to_owned(),
+            Severity::Info,
+            "frontmatter: `Title` is ignored; `title` sets the title".to_owned()
+        )]
+    );
+    let c = collisions("title: A\nlinkTitle: B\n");
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].0, "linkTitle: B");
+    assert!(c[0].2.contains("`title` sets the title"), "{}", c[0].2);
+    let c = collisions("tags: [a]\nTags: [b]\n");
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].0, "Tags: [b]");
+    assert!(c[0].2.contains("`tags` sets the tags"), "{}", c[0].2);
+}
+
+#[test]
+fn key_collision_range_is_the_losing_entry() {
+    // The placeholder `Title` is not the loser; the second one is.
+    let c = collisions("Title: TBD\nTitle: A\ntitle: B\n");
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].0, "Title: A");
+}
+
+#[test]
+fn no_key_collision_for_dates_placeholders_duplicates_or_no_frontmatter() {
+    assert!(collisions("date: 2024-01-01\nDate: 2024-01-02\n").is_empty());
+    assert!(collisions("title: A\nTitle: TBD\n").is_empty());
+    assert!(collisions("title: A\ntitle: B\n").is_empty());
+    let d = diags(MemFs::new().with_file("a.md", "# T\n"), false, "a.md");
+    assert!(d.is_empty());
+}
+
+#[test]
+fn key_collision_is_reported_with_broken_links_off_and_sorts_first() {
+    let src = "---\nTitle: A\ntitle: B\n---\n[[gone]]\n";
+    let d = diags(MemFs::new().with_file("a.md", src), false, "a.md");
+    assert_eq!(
+        codes(&d),
+        [DiagCode::FrontmatterKeyCollision, DiagCode::BrokenLink]
+    );
+}

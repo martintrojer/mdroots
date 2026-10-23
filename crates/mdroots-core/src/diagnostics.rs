@@ -2,8 +2,8 @@
 //! every front end (CLI, language server) reports the same thing.
 //!
 //! Diagnosed: broken explicit links and their missing anchors, ambiguous
-//! links (info, with every candidate as related), and frontmatter that does
-//! not parse (info). Never diagnosed: links in code or comments, implicit
+//! links (info, with every candidate as related), frontmatter that does
+//! not parse, and frontmatter keys that lose a collision (info). Never diagnosed: links in code or comments, implicit
 //! links, external links, targets on disk but not indexed, and hint
 //! resolutions.
 
@@ -29,6 +29,10 @@ pub enum DiagCode {
     NotInWorkingSet,
     /// Frontmatter that does not parse; the rest of the note is indexed.
     InvalidFrontmatter,
+    /// A frontmatter key that loses to another spelling of the same
+    /// meaning (`Title` next to `title`); the note is indexed with the
+    /// winner.
+    FrontmatterKeyCollision,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +118,32 @@ impl DiagnosticPolicy {
                 related: Vec::new(),
             });
         }
+        if let Some(fm) = doc.frontmatter() {
+            let collisions = fm.key_collisions();
+            if !collisions.is_empty() {
+                let entries = fm.entries();
+                let fields = doc.frontmatter_fields();
+                for (i, winner, meaning) in collisions {
+                    let loser = &entries[i].0;
+                    // The n-th entry with this key is the n-th field with it.
+                    let nth = entries[..i].iter().filter(|(k, _)| k == loser).count();
+                    let range = fields
+                        .iter()
+                        .filter(|f| f.key == *loser)
+                        .nth(nth)
+                        .map_or_else(|| fm.range.clone(), |f| f.range.clone());
+                    out.push(Diagnostic {
+                        range,
+                        severity: Severity::Info,
+                        code: DiagCode::FrontmatterKeyCollision,
+                        message: format!(
+                            "frontmatter: `{loser}` is ignored; `{winner}` sets the {meaning}"
+                        ),
+                        related: Vec::new(),
+                    });
+                }
+            }
+        }
         for (l, r) in store.links(root_rel) {
             if diagnosable(&l)
                 && let Some(d) = self.link_diagnostic(store, &l, r)
@@ -198,9 +228,10 @@ fn stat_checkable(l: &Link) -> bool {
 fn rank(c: DiagCode) -> u8 {
     match c {
         DiagCode::InvalidFrontmatter => 0,
-        DiagCode::BrokenLink => 1,
-        DiagCode::BrokenAnchor => 2,
-        DiagCode::AmbiguousLink => 3,
-        DiagCode::NotInWorkingSet => 4,
+        DiagCode::FrontmatterKeyCollision => 1,
+        DiagCode::BrokenLink => 2,
+        DiagCode::BrokenAnchor => 3,
+        DiagCode::AmbiguousLink => 4,
+        DiagCode::NotInWorkingSet => 5,
     }
 }
