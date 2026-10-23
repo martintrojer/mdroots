@@ -8,7 +8,7 @@ use std::path::Path;
 use mdroots_core::memstore::{counts, heading_index};
 use mdroots_core::{Error, ErrorKind};
 use mdroots_resolve::ladder::LinkStatus;
-use mdroots_syntax::{Document, Heading, Link, Value};
+use mdroots_syntax::{Document, Heading, Link, LinkKind, Value};
 
 use crate::workspace::{Backlink, NoteSummary, Workspace, title};
 
@@ -206,6 +206,52 @@ impl Workspace {
             .collect())
     }
 
+    /// Where an editor can show a note's title next to a bare wiki link:
+    /// for each counting wiki link (as in
+    /// [`same_target_links`](Self::same_target_links)) overlapping the byte
+    /// range `range` whose written path has no `/` and no label, resolved
+    /// to one note (not ambiguous, not broken) whose title differs
+    /// case-insensitively from the written stem, the byte offset of the
+    /// link's end and the title, in source order. The stem is the written
+    /// path without a note extension (`md`, `markdown`, `org`, any case); a
+    /// link with no stem (`[[#heading]]`) gets none.
+    pub fn link_titles(
+        &self,
+        path: &Path,
+        range: Range<usize>,
+    ) -> Result<Vec<(usize, String)>, Error> {
+        let rel = self.rel(path)?;
+        let store = self.store();
+        let mut out = Vec::new();
+        for (l, r) in store.links(&rel) {
+            if l.kind != LinkKind::Wiki
+                || !counts(&l)
+                || r.status != LinkStatus::Resolved
+                || l.range.start >= range.end
+                || l.range.end <= range.start
+                || l.label().is_some()
+            {
+                continue;
+            }
+            let written = l.target().path();
+            let stem = strip_note_extension(written);
+            if stem.is_empty() || written.contains('/') {
+                continue;
+            }
+            let [target] = r.targets.as_slice() else {
+                continue;
+            };
+            let Some(doc) = store.document(target) else {
+                continue;
+            };
+            let t = title(target, doc);
+            if t.to_lowercase() != stem.to_lowercase() {
+                out.push((l.range.end, t));
+            }
+        }
+        Ok(out)
+    }
+
     /// The tag at byte `offset` of the note, frontmatter tags included: its
     /// name as written and its byte range. Read from the stored document
     /// (the root's tag syntaxes, as [`notes_with_tag`](Self::notes_with_tag)
@@ -240,6 +286,20 @@ fn raw_anchor(l: &Link) -> Option<&str> {
         .split_once('#')
         .map(|(_, a)| a)
         .filter(|a| !a.is_empty())
+}
+
+/// `name` without a trailing note extension, in any case.
+fn strip_note_extension(name: &str) -> &str {
+    let Some((stem, ext)) = name.rsplit_once('.') else {
+        return name;
+    };
+    match ["md", "markdown", "org"]
+        .iter()
+        .any(|e| e.eq_ignore_ascii_case(ext))
+    {
+        true => stem,
+        false => name,
+    }
 }
 
 fn not_indexed(rel: &str) -> Error {

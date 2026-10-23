@@ -136,3 +136,82 @@ fn tag_at_finds_body_and_frontmatter_tags_as_written() {
     assert!(at("First", 0).is_none());
     assert!(at("tags:", 0).is_none());
 }
+
+const TITLES: &str = "\
+# Titles
+
+[[alpha]] [[beta]] [[beta.MD]] [[Beta.md]] [[alpha|label]] [[a/twin]] [[twin]]
+[[#Titles]] [[gone]] `[[alpha]]` [[sub/deep]] [md](alpha.md)
+";
+
+fn titles_ws() -> Workspace {
+    open(
+        &[
+            ("/v/.mdroots", ""),
+            ("/v/titles.md", TITLES),
+            ("/v/alpha.md", "# Alpha Note\n"),
+            ("/v/beta.md", "# Beta\n"),
+            ("/v/a/twin.md", "# Twin A\n"),
+            ("/v/b/twin.md", "# Twin B\n"),
+            ("/v/sub/deep.md", "# Deep\n"),
+        ],
+        "/v/titles.md",
+    )
+}
+
+/// (text of the link ending at each offset, title).
+fn link_titles(range: Range<usize>) -> Vec<(String, String)> {
+    titles_ws()
+        .link_titles(Path::new("/v/titles.md"), range)
+        .unwrap()
+        .into_iter()
+        .map(|(end, t)| {
+            let start = TITLES[..end].rfind("[[").unwrap();
+            (TITLES[start..end].to_owned(), t)
+        })
+        .collect()
+}
+
+#[test]
+fn link_titles_names_only_bare_wiki_links_whose_title_differs() {
+    // The uppercase-extension links do resolve, so the stem rule decides.
+    let links = titles_ws()
+        .document_links(Path::new("/v/titles.md"))
+        .unwrap();
+    let upper = links
+        .iter()
+        .filter(|l| {
+            TITLES[l.range.clone()].contains(".MD") || TITLES[l.range.clone()].contains("Beta.md")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(upper.len(), 2);
+    assert!(upper.iter().all(|l| l.target == Some("/v/beta.md".into())));
+    // alpha: differs. beta, beta.MD, Beta.md: the title is the stem up to
+    // case (extension in any case ignored). Labelled, pathed, ambiguous,
+    // anchor-only, broken, code and Markdown links: none.
+    assert_eq!(
+        link_titles(0..TITLES.len()),
+        [("[[alpha]]".to_owned(), "Alpha Note".to_owned())]
+    );
+}
+
+#[test]
+fn link_titles_respects_the_range() {
+    let end = TITLES.find("[[alpha]]").unwrap();
+    // Before the link, ending where it starts: no overlap.
+    assert!(link_titles(0..end).is_empty());
+    // One byte inside it.
+    assert_eq!(link_titles(end + 3..end + 4).len(), 1);
+    // Starting where it ends: no overlap.
+    assert!(link_titles(end + "[[alpha]]".len()..TITLES.len()).is_empty());
+}
+
+#[test]
+fn link_titles_is_empty_for_a_note_that_is_not_indexed() {
+    let ws = titles_ws();
+    assert!(
+        ws.link_titles(Path::new("/v/nope.md"), 0..10)
+            .unwrap()
+            .is_empty()
+    );
+}

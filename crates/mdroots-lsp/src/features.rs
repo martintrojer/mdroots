@@ -16,7 +16,6 @@ use lsp_types::{
     MarkupContent, MarkupKind, OneOf, OptionalVersionedTextDocumentIdentifier, Position,
     PrepareRenameResponse, RenameFile, ResourceOp, SymbolInformation, SymbolKind, TextDocumentEdit,
 };
-use mdroots::syntax::{Context, LinkKind};
 use mdroots::syntax::{Heading, LineIndex, PositionEncoding};
 use mdroots::{Cancel, ErrorKind, LinkStatus, Workspace, markdown_destination, relative_path};
 
@@ -435,56 +434,23 @@ pub(crate) fn document_highlights(c: &Ctx, pos: Position) -> Result<Vec<Document
         .collect())
 }
 
-/// `textDocument/inlayHint`: after each bare `[[stem]]` in `range` (no
-/// directory, no label) that resolves to one note whose title differs from
-/// the stem, ` <title>`.
+/// `textDocument/inlayHint`: ` <title>` after the links `link_titles`
+/// names in `range`.
 pub(crate) fn inlay_hints(c: &Ctx, range: Range<usize>) -> Result<Vec<InlayHint>, Fail> {
-    let mut out = Vec::new();
-    for l in c.ws.document_links(&c.path)? {
-        let counts = matches!(
-            l.context,
-            Context::Prose | Context::Heading | Context::Html | Context::Frontmatter
-        );
-        if l.kind != LinkKind::Wiki
-            || !counts
-            || l.status != LinkStatus::Resolved
-            || !(range.start..=range.end).contains(&l.range.end)
-        {
-            continue;
-        }
-        let (Some(target), Some(text)) = (&l.target, c.text.get(l.range.clone())) else {
-            continue;
-        };
-        let inner = text.trim_start_matches('[').trim_end_matches(']');
-        if inner.contains(['/', '|']) {
-            continue;
-        }
-        let written = inner.split('#').next().unwrap_or_default();
-        if written.is_empty() {
-            continue; // `[[#heading]]`: no stem to annotate
-        }
-        let stem = ["md", "markdown", "org"]
-            .iter()
-            .find_map(|e| written.strip_suffix(&format!(".{e}")))
-            .unwrap_or(written);
-        let Ok(p) = c.ws.preview(target, 0) else {
-            continue;
-        };
-        if p.title.to_lowercase() == stem.to_lowercase() {
-            continue;
-        }
-        out.push(InlayHint {
-            position: c.range(l.range.end..l.range.end).start,
-            label: InlayHintLabel::String(format!(" {}", p.title)),
+    Ok(c.ws
+        .link_titles(&c.path, range)?
+        .into_iter()
+        .map(|(end, title)| InlayHint {
+            position: c.range(end..end).start,
+            label: InlayHintLabel::String(format!(" {title}")),
             kind: None,
             text_edits: None,
             tooltip: None,
             padding_left: Some(true),
             padding_right: None,
             data: None,
-        });
-    }
-    Ok(out)
+        })
+        .collect())
 }
 
 /// One link per link of the note with a target path (resolved,

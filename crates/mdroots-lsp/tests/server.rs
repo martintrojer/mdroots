@@ -2561,7 +2561,7 @@ fn small_vault() -> Vault {
     v.write("beta.md", "# Beta\n\nTagged #proj here.\n");
     v.write(
         "small.md",
-        "---\ntags: [proj]\n---\n# Small\n\n[[alpha]] and [[beta]] and [[alpha|label]] and [again](alpha.md).\n\nTo [[#Usage]] and [[gone]].\n\n## Usage\n",
+        "---\ntags: [proj]\n---\n# Small\n\n[[alpha]] and [[beta]] and [[alpha|label]] and [again](alpha.md) and [[beta.MD]].\n\nTo [[#Usage]] and [[gone]].\n\n## Usage\n",
     );
     v
 }
@@ -2607,7 +2607,8 @@ fn inlay_hint_shows_the_title_after_a_bare_wiki_link() {
     let params = |l0: u32, l1: u32| json!({ "textDocument": { "uri": uri }, "range": range(l0 as u64, 0, l1 as u64, 0) });
     let r = ok(c.request("textDocument/inlayHint", params(0, 12)));
     let hints = r.as_array().unwrap();
-    // Only `[[alpha]]`: [[beta]]'s title is its stem, `[[alpha|label]]` has
+    // Only `[[alpha]]`: the title of [[beta]] and [[beta.MD]] is the stem up to
+    // case, `[[alpha|label]]` has
     // a label, the Markdown link is not a wiki link, [[#Usage]] has no stem,
     // [[gone]] is broken.
     assert_eq!(hints.len(), 1, "{r}");
