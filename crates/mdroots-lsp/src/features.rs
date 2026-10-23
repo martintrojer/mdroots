@@ -17,7 +17,9 @@ use lsp_types::{
     PrepareRenameResponse, RenameFile, ResourceOp, SymbolInformation, SymbolKind, TextDocumentEdit,
 };
 use mdroots::syntax::{Heading, LineIndex, PositionEncoding};
-use mdroots::{Cancel, ErrorKind, LinkStatus, Workspace, markdown_destination, relative_path};
+use mdroots::{
+    Cancel, ErrorKind, FileSystem, LinkStatus, Workspace, markdown_destination, relative_path,
+};
 
 use serde_json::{Value, json};
 
@@ -854,14 +856,16 @@ pub(crate) fn lsp_edit(
     })
 }
 
-/// `path` made canonical as far as it exists: the longest existing
-/// ancestor canonicalized, the rest appended (a rename's new path does not
-/// exist yet).
-fn canonical(path: &Path) -> PathBuf {
+/// `path` made canonical through `fs` as far as it exists: the longest
+/// existing ancestor canonicalized, the rest appended (a rename's new path
+/// does not exist yet).
+fn canonical(fs: &dyn FileSystem, path: &Path) -> PathBuf {
     let mut rest = Vec::new();
     let mut cur = path;
     loop {
-        if let Ok(c) = std::fs::canonicalize(cur) {
+        if fs.stat(cur).is_ok()
+            && let Ok(c) = fs.canonicalize(cur)
+        {
             return rest.iter().rev().fold(c, |p, n| p.join(n));
         }
         match (cur.parent(), cur.file_name()) {
@@ -886,21 +890,18 @@ pub(crate) fn will_rename_files(
     enc: PositionEncoding,
     cancel: &Cancel,
 ) -> Result<Option<lsp_types::WorkspaceEdit>, Fail> {
-    let files: Vec<(PathBuf, PathBuf, bool)> = files
-        .iter()
-        .map(|(o, n)| {
-            let old = canonical(o);
-            let dir = old.is_dir();
-            (old, canonical(n), dir)
-        })
-        .collect();
     let mut ops = Vec::new();
     for ws in wss {
         let root = ws.root().path;
+        let fs = ws.fs();
         let pairs: Vec<(PathBuf, PathBuf)> = files
             .iter()
-            .filter(|(old, _, dir)| old.starts_with(&root) || (*dir && root.starts_with(old)))
-            .map(|(o, n, _)| (o.clone(), n.clone()))
+            .filter_map(|(o, n)| {
+                let old = canonical(fs, o);
+                let dir = fs.stat(&old).is_ok_and(|m| m.is_dir);
+                (old.starts_with(&root) || (dir && root.starts_with(&old)))
+                    .then(|| (old, canonical(fs, n)))
+            })
             .collect();
         if pairs.is_empty() {
             continue;

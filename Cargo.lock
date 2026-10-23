@@ -484,6 +484,8 @@ dependencies = [
  "lsp-server",
  "lsp-types",
  "mdroots",
+ "mdroots-core",
+ "mdroots-roots",
  "serde_json",
  "tempfile",
 ]

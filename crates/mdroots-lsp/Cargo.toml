@@ -21,6 +21,8 @@ crossbeam-channel = "0.5"
 
 [dev-dependencies]
 tempfile = "3"
+mdroots-core = { path = "../mdroots-core" }
+mdroots-roots = { path = "../mdroots-roots" }
 
 [lints]
 workspace = true

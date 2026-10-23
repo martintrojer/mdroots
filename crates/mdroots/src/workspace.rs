@@ -1168,7 +1168,8 @@ impl Workspace {
         self.inner.single
     }
 
-    pub(crate) fn fs(&self) -> &dyn FileSystem {
+    /// The `FileSystem` this workspace reads through (the embedder's, or `StdFs`).
+    pub fn fs(&self) -> &dyn FileSystem {
         &*self.inner.fs
     }
 

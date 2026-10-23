@@ -1398,6 +1398,46 @@ fn will_rename_files_reaches_a_nested_open_root() {
     c.shutdown().unwrap();
 }
 
+/// An old path the workspace's own `FileSystem` canonicalizes into its
+/// root (a case-insensitive `MemFs`) reaches the workspace: the request is
+/// not routed through the host filesystem.
+#[test]
+fn will_rename_files_canonicalizes_through_the_workspace_filesystem() {
+    let files = [
+        ("/review-vault/.zk/config.toml", ""),
+        ("/review-vault/a.md", "# A\n"),
+        ("/review-vault/top.md", "# T\n\n[a](a.md)\n"),
+    ];
+    let mut fs = mdroots_core::MemFs::new().case_insensitive();
+    let mut probe = mdroots_roots::FakeProbe::new().home("/h");
+    for (path, text) in files {
+        fs = fs.with_file(path, text);
+        probe = probe.file(path, text);
+    }
+    let mut c = Client::new();
+    c.spawn_with(
+        Options::default()
+            .fs(Arc::new(fs))
+            .probe(Arc::new(probe))
+            .index(IndexMode::Memory),
+    );
+    c.initialize(json!({}));
+    let top = "file:///review-vault/top.md";
+    c.open(top, files[2].1);
+    c.ready(top);
+    let moves = [(
+        "file:///REVIEW-VAULT/a.md".to_owned(),
+        "file:///review-vault/b.md".to_owned(),
+    )];
+    let (files, rename) = edits(&will_rename(&mut c, &moves));
+    assert_eq!(rename, None);
+    assert_eq!(
+        files,
+        [("top.md".to_owned(), vec![(2, 4, "b.md".to_owned())])]
+    );
+    c.shutdown().unwrap();
+}
+
 // ---- notebook commands ----
 
 /// Runs `name` with `args` and returns its result.
