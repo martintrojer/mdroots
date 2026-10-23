@@ -342,7 +342,13 @@ fn in_folder(folders: &[(String, String)], rel: &str, case_sensitive: bool) -> O
 /// note's dialect, to a link whose path is exactly `text` that resolves in
 /// `post` to `target` first and not ambiguously. A `#`, `|`, `]]` or `::`
 /// in `text` that the parser would read as syntax fails.
-fn lands_after(post: &MemStore, from_after: &str, spliced: &str, text: &str, target: &str) -> bool {
+pub(crate) fn lands_after(
+    post: &MemStore,
+    from_after: &str,
+    spliced: &str,
+    text: &str,
+    target: &str,
+) -> bool {
     let doc = parse(spliced, Dialect::detect_from_path(Path::new(from_after)));
     let Some(l) = doc.links().next() else {
         return false;
@@ -653,14 +659,21 @@ impl Rewrite<'_> {
 
     /// The target path as written by [`ResolveStep::FileRelative`], in
     /// the link's encoding, without a leading `./`.
-    fn file_relative(&self) -> String {
+    pub(crate) fn file_relative(&self) -> String {
         let decoded = percent_decode(self.written);
         self.encode(self.relative(&self.with_ext(self.target_after, &decoded)))
     }
 
+    /// The target as a root-relative path without a leading `/`, in the
+    /// link's encoding.
+    pub(crate) fn root_relative(&self) -> String {
+        let decoded = percent_decode(self.written);
+        self.encode(self.with_ext(self.target_after, &decoded))
+    }
+
     /// The target as a `/`-prefixed root-relative path, in the link's
     /// encoding.
-    fn slash_rooted(&self) -> String {
+    pub(crate) fn slash_rooted(&self) -> String {
         let decoded = percent_decode(self.written);
         self.encode(format!("/{}", self.with_ext(self.target_after, &decoded)))
     }
@@ -699,7 +712,6 @@ impl Rewrite<'_> {
 }
 
 /// The file name without its extension.
-#[allow(dead_code, reason = "kept for fixes.rs (unit fixes_repair)")]
 pub(crate) fn stem(rel: &str) -> &str {
     let name = rel.rsplit('/').next().unwrap_or(rel);
     name.rsplit_once('.').map_or(name, |(s, _)| s)

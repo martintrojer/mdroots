@@ -1,12 +1,12 @@
 //! Read-only note queries for editors: outline, fuzzy note search, preview
 //! and current text.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use mdroots_core::memstore::{counts, heading_index};
-use mdroots_core::{Error, ErrorKind};
+use mdroots_core::{Error, ErrorKind, MemStore};
 use mdroots_resolve::ladder::LinkStatus;
 use mdroots_syntax::{Document, Heading, Link, LinkKind, Value};
 
@@ -43,25 +43,44 @@ impl Workspace {
     /// An empty query lists every note by path. At most `limit` results.
     pub fn search_notes(&self, query: &str, limit: usize) -> Vec<NoteSummary> {
         let notes = self.notes();
-        let q: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
-        if q.is_empty() {
+        if query.chars().flat_map(char::to_lowercase).next().is_none() {
             return notes.into_iter().take(limit).collect();
         }
-        let store = self.store();
-        let mut scored: Vec<((u8, usize), NoteSummary)> = notes
+        let ranked = self.search_scored(&self.store(), query);
+        let mut by_path: HashMap<_, _> = notes.into_iter().map(|n| (n.path.clone(), n)).collect();
+        ranked
             .into_iter()
-            .filter_map(|n| {
-                let rel = self.rel(&n.path).ok()?;
-                let doc = store.document(&rel)?;
-                let score = candidates(&rel, doc, &n.title)
+            .filter_map(|(rel, _)| by_path.remove(&self.abs(&rel)))
+            .take(limit)
+            .collect()
+    }
+
+    /// The ranking behind [`search_notes`](Self::search_notes) over one
+    /// read of the store: root-relative paths with their score (lower is
+    /// better: 0 exact, 1 prefix, 2 substring, 3 subsequence; then gaps),
+    /// best first, ties by path. Empty for an empty query.
+    pub(crate) fn search_scored(
+        &self,
+        store: &MemStore,
+        query: &str,
+    ) -> Vec<(String, (u8, usize))> {
+        let q: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let mut scored: Vec<((u8, usize), PathBuf, String)> = store
+            .files()
+            .filter_map(|rel| {
+                let doc = store.document(rel)?;
+                let score = candidates(rel, doc, &title(rel, doc))
                     .iter()
                     .filter_map(|c| score(&q, c))
                     .min()?;
-                Some((score, n))
+                Some((score, self.abs(rel), rel.to_owned()))
             })
             .collect();
-        scored.sort_by(|(a, x), (b, y)| a.cmp(b).then_with(|| x.path.cmp(&y.path)));
-        scored.into_iter().take(limit).map(|(_, n)| n).collect()
+        scored.sort_by(|(a, x, _), (b, y, _)| a.cmp(b).then_with(|| x.cmp(y)));
+        scored.into_iter().map(|(s, _, rel)| (rel, s)).collect()
     }
 
     /// Title, frontmatter and the first `max_lines` lines of the note's
@@ -327,9 +346,9 @@ fn candidates(rel: &str, doc: &Document, title: &str) -> Vec<String> {
     v
 }
 
-/// Lower is better: (0 exact | 1 prefix | 2 substring | 3 subsequence,
+/// Lower is better (shared with fixes): (0 exact | 1 prefix | 2 substring | 3 subsequence,
 /// gaps). `None` when `q` (lowercase) is not a subsequence of `name`.
-fn score(q: &[char], name: &str) -> Option<(u8, usize)> {
+pub(crate) fn score(q: &[char], name: &str) -> Option<(u8, usize)> {
     let n: Vec<char> = name.chars().flat_map(char::to_lowercase).collect();
     if n == q {
         return Some((0, 0));

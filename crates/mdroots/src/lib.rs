@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 mod extract;
+mod fixes;
 mod goto;
 mod graph;
 mod indexing;
@@ -39,6 +40,7 @@ pub use mdroots_roots::probe::StdProbe;
 pub use mdroots_roots::probe::{FsStat, MountInfo, Probe};
 pub use mdroots_syntax as syntax;
 
+pub use fixes::{Fix, FixKind};
 pub use goto::Goto;
 pub use links::{markdown_destination, relative_path};
 pub use notes::Preview;

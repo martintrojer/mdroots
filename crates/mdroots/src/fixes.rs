@@ -1,0 +1,359 @@
+//! [`Workspace::fixes`]: quick fixes for a note's link diagnostics, as
+//! [`WorkspaceEdit`]s the caller applies (D10). Never writes files.
+
+use std::ops::Range;
+use std::path::Path;
+
+use mdroots_core::fs::clean_path;
+use mdroots_core::memstore::counts;
+use mdroots_core::{Cancel, DiagCode, Diagnostic, Error, MemStore};
+use mdroots_resolve::ResolveStep;
+use mdroots_resolve::normalize::percent_decode;
+use mdroots_syntax::{Anchor, Dialect, Document, Link, LinkKind};
+
+use crate::notes::score;
+use crate::rename::{
+    Rewrite, TextEdit, WorkspaceEdit, is_reference_usage, lands_after, parent, path_span, stem,
+};
+use crate::workspace::{Freshness, Workspace, is_note, slash, title};
+
+/// Most candidates one trigger offers (notes, headings).
+const MAX_CANDIDATES: usize = 3;
+
+/// One proposed change: a title for the editor's menu and the edit.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fix {
+    /// What the editor shows: `Change to <title>`, `Create note <path>`,
+    /// `Change to #<slug>`, `Pick <path>`.
+    pub title: String,
+    pub kind: FixKind,
+    /// The single candidate of its trigger: safe to apply with one key.
+    pub preferred: bool,
+    pub edit: WorkspaceEdit,
+}
+
+/// What a [`Fix`] answers.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub enum FixKind {
+    /// Repairs this diagnostic (range and code included).
+    QuickFix(Diagnostic),
+    /// Rewrites a link in another syntax.
+    ConvertLink,
+    /// Turns a selection into a link.
+    LinkSelection,
+}
+
+impl Workspace {
+    /// The fixes for the links of the note at `path` selected by the byte
+    /// `range`: a non-empty range selects the links overlapping it, an
+    /// empty range at `off` the link whose range contains `off` or ends
+    /// at it. Each selected link's diagnostic (computed now over the
+    /// current store and overlay) is answered by:
+    ///
+    /// - broken link: `Change to <title>` for up to 3 notes whose title,
+    ///   stem or alias matches the written stem exactly, as a prefix or as
+    ///   a substring (only the path is replaced, in the form it was
+    ///   written in), and `Create note <path>` for the path the link names;
+    /// - broken anchor: `Change to #<slug>` for up to 3 headings of the
+    ///   target matched the same way on slug or text;
+    /// - ambiguous link: `Pick <path>` per candidate.
+    ///
+    /// Order: by link start, then the list above, then candidate rank.
+    /// Links in code or comments, reference usages (`[x][r]`; their
+    /// definition carries the fixes) and other diagnostics get none; Org
+    /// notes get no anchor fix. Empty for a note that is not indexed.
+    pub fn fixes(
+        &self,
+        path: &Path,
+        range: Range<usize>,
+        cancel: &Cancel,
+    ) -> Result<Vec<Fix>, Error> {
+        cancel.check()?;
+        let rel = self.rel(path)?;
+        let store = self.store();
+        let Some(doc) = store.document(&rel) else {
+            return Ok(Vec::new());
+        };
+        let diags = store
+            .policy(self.freshness() == Freshness::Lazy)
+            .diagnostics(&store, &rel);
+        let mut links: Vec<Link> = doc
+            .links()
+            .filter(|l| counts(l) && !is_reference_usage(doc, l))
+            .filter(|l| match range.is_empty() {
+                true => l.range.start <= range.start && range.start <= l.range.end,
+                false => l.range.start < range.end && range.start < l.range.end,
+            })
+            .cloned()
+            .collect();
+        links.sort_by_key(|l| (l.range.start, l.range.end));
+        let ctx = Ctx {
+            ws: self,
+            store: &store,
+            doc,
+            from: &rel,
+            root: self.root().path,
+        };
+        let mut out = Vec::new();
+        for link in &links {
+            cancel.check()?;
+            for d in diags.iter().filter(|d| d.range == link.range) {
+                out.extend(ctx.for_diagnostic(link, d));
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// One `fixes` call: the note, under one read of the store.
+struct Ctx<'a> {
+    ws: &'a Workspace,
+    store: &'a MemStore,
+    doc: &'a Document,
+    /// Root-relative path of the note.
+    from: &'a str,
+    root: std::path::PathBuf,
+}
+
+/// A fix's title and its edit, before its trigger decides `preferred`.
+type Candidate = (String, WorkspaceEdit);
+
+impl Ctx<'_> {
+    fn for_diagnostic(&self, link: &Link, d: &Diagnostic) -> Vec<Fix> {
+        let fix = |(title, edit): Candidate, preferred| Fix {
+            title,
+            kind: FixKind::QuickFix(d.clone()),
+            preferred,
+            edit,
+        };
+        // One candidate exactly: preferred.
+        let single = |c: Vec<Candidate>| -> Vec<Fix> {
+            let one = c.len() == 1;
+            c.into_iter().map(|c| fix(c, one)).collect()
+        };
+        match d.code {
+            DiagCode::BrokenLink => {
+                let mut v = single(self.change_to(link));
+                v.extend(self.create_note(link).map(|c| fix(c, false)));
+                v
+            }
+            DiagCode::BrokenAnchor if self.doc.dialect() != Dialect::Org => {
+                single(self.change_anchor(link))
+            }
+            DiagCode::AmbiguousLink => d
+                .related
+                .iter()
+                .filter_map(|t| {
+                    let text = self.path_text(link, t)?;
+                    Some(fix((format!("Pick {t}"), text), false))
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// `Change to <title>`: notes matching the written stem (tiers 0–2).
+    fn change_to(&self, link: &Link) -> Vec<Candidate> {
+        let written = percent_decode(link.target().path());
+        let name = written.rsplit('/').next().unwrap_or(&written);
+        let query = stem(name);
+        if query.is_empty() {
+            return Vec::new();
+        }
+        self.ws
+            .search_scored(self.store, query)
+            .into_iter()
+            .filter(|(rel, (tier, _))| *tier <= 2 && rel != self.from)
+            .take(MAX_CANDIDATES)
+            .filter_map(|(rel, _)| {
+                let edit = self.path_text(link, &rel)?;
+                let title = title(&rel, self.store.document(&rel)?);
+                Some((format!("Change to {title}"), edit))
+            })
+            .collect()
+    }
+
+    /// The edit putting `target` (root-relative) in place of the link's
+    /// path, in the form the path was written in (extension kept iff it
+    /// had one); else, for a form that does not land on `target` alone,
+    /// the first fallback that does: wiki links the stem, the
+    /// root-relative, file-relative and `/`-rooted paths; other links the
+    /// file-relative and `/`-rooted paths. `None` if none lands.
+    fn path_text(&self, link: &Link, target: &str) -> Option<WorkspaceEdit> {
+        let src = self.doc.source();
+        let span = path_span(src, link)?;
+        let written = &src[span.clone()];
+        let rw = Rewrite {
+            root: &self.root,
+            from_after: self.from,
+            target_after: target,
+            written,
+            bracketed: src[..span.start].ends_with('<'),
+            kind: link.kind,
+            docs_dir: self.store.conventions().docs_dir.as_deref(),
+            site_key: false,
+        };
+        let wiki = matches!(link.kind, LinkKind::Wiki | LinkKind::WikiEmbed);
+        let decoded = percent_decode(written);
+        let step = match (wiki, decoded.starts_with('/'), decoded.contains('/')) {
+            (_, true, _) => ResolveStep::RootRelative,
+            (true, _, false) => ResolveStep::Stem,
+            (true, _, true) => ResolveStep::RootRelative,
+            (false, _, _) => ResolveStep::FileRelative,
+        };
+        let mut tries: Vec<String> = rw.text(step).into_iter().collect();
+        if wiki {
+            tries.extend(rw.text(ResolveStep::Stem));
+            tries.push(rw.root_relative());
+        }
+        tries.extend([rw.file_relative(), rw.slash_rooted()]);
+        let text = tries.into_iter().find(|t| {
+            let spliced = format!(
+                "{}{t}{}",
+                &src[link.range.start..span.start],
+                &src[span.end..link.range.end]
+            );
+            lands_after(self.store, self.from, &spliced, t, target)
+        })?;
+        Some(self.one_edit(span, text))
+    }
+
+    /// `Create note <path>`: the note the link names, if it is a note
+    /// path inside the root that is neither on disk nor indexed.
+    fn create_note(&self, link: &Link) -> Option<Candidate> {
+        let written = percent_decode(link.target().path());
+        let name = written.rsplit('/').next().unwrap_or(&written);
+        if name.is_empty() || (has_ext(name) && !is_note(name)) || written.starts_with('~') {
+            return None;
+        }
+        let wiki = matches!(link.kind, LinkKind::Wiki | LinkKind::WikiEmbed);
+        let rel = if let Some(inside) = Path::new(&written)
+            .strip_prefix(&self.root)
+            .ok()
+            .filter(|_| written.starts_with('/'))
+        {
+            slash(inside)
+        } else if let Some(r) = written.strip_prefix('/') {
+            r.to_owned()
+        } else if wiki && !written.contains('/') {
+            join(parent(self.from), &written)
+        } else if wiki {
+            written.clone()
+        } else {
+            join(parent(self.from), &written)
+        };
+        let rel = match is_note(rel.rsplit('/').next().unwrap_or(&rel)) {
+            true => rel,
+            false => {
+                let ext = self.from.rsplit_once('.').map_or("md", |(_, e)| e);
+                format!("{rel}.{ext}")
+            }
+        };
+        let abs = clean_path(&self.root.join(&rel));
+        let inside = abs.strip_prefix(&self.root).ok()?;
+        if inside.as_os_str().is_empty() {
+            return None;
+        }
+        let rel = slash(inside);
+        if self.store.document(&rel).is_some() || self.ws.fs().stat(&abs).is_ok() {
+            return None;
+        }
+        let content = format!("# {}\n", stem(&rel));
+        let edit = WorkspaceEdit {
+            edits: Vec::new(),
+            rename: None,
+            create: vec![(abs, content)],
+        };
+        Some((format!("Create note {rel}"), edit))
+    }
+
+    /// `Change to #<slug>`: headings of the link's one target whose slug
+    /// or text matches the written heading anchor (tiers 0–2), by score
+    /// then document order. Block and custom-id anchors: none.
+    fn change_anchor(&self, link: &Link) -> Vec<Candidate> {
+        let Some(Anchor::Heading(_)) = link.target().anchor() else {
+            return Vec::new();
+        };
+        let src = self.doc.source();
+        let Some(span) = path_span(src, link) else {
+            return Vec::new();
+        };
+        let wiki = matches!(link.kind, LinkKind::Wiki | LinkKind::WikiEmbed);
+        let Some(written) = anchor_span(src, span.end, link.range.end, wiki) else {
+            return Vec::new();
+        };
+        let r = self.store.resolve_link(self.from, link, false);
+        let [target] = r.targets.as_slice() else {
+            return Vec::new();
+        };
+        let Some(tdoc) = self.store.document(target) else {
+            return Vec::new();
+        };
+        let q: Vec<char> = percent_decode(&src[written.clone()])
+            .chars()
+            .flat_map(char::to_lowercase)
+            .collect();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let mut scored: Vec<((u8, usize), usize, &str)> = tdoc
+            .headings()
+            .enumerate()
+            .filter_map(|(i, h)| {
+                let s = [score(&q, &h.slug), score(&q, &h.text)]
+                    .into_iter()
+                    .flatten()
+                    .min()?;
+                (s.0 <= 2).then_some((s, i, &*h.slug))
+            })
+            .collect();
+        scored.sort();
+        scored
+            .into_iter()
+            .take(MAX_CANDIDATES)
+            .map(|(_, _, slug)| {
+                let edit = self.one_edit(written.clone(), slug.to_owned());
+                (format!("Change to #{slug}"), edit)
+            })
+            .collect()
+    }
+
+    fn one_edit(&self, range: Range<usize>, new_text: String) -> WorkspaceEdit {
+        WorkspaceEdit {
+            edits: vec![(self.ws.abs(self.from), vec![TextEdit { range, new_text }])],
+            rename: None,
+            create: Vec::new(),
+        }
+    }
+}
+
+/// The written anchor after the path ending at `path_end`: from after the
+/// `#` up to `|` or `]` (wiki), or `)`, `>` or whitespace (Markdown), else
+/// `end`. `None` without a `#`.
+fn anchor_span(src: &str, path_end: usize, end: usize, wiki: bool) -> Option<Range<usize>> {
+    let rest = src.get(path_end..end)?.strip_prefix('#')?;
+    let start = path_end + 1;
+    let len = rest
+        .find(|c: char| match wiki {
+            true => matches!(c, '|' | ']'),
+            false => matches!(c, ')' | '>') || c.is_whitespace(),
+        })
+        .unwrap_or(rest.len());
+    Some(start..start + len)
+}
+
+/// Whether the file name has an extension (`a.b`, not `.b` or `a.`).
+fn has_ext(name: &str) -> bool {
+    name.rfind('.').is_some_and(|d| d > 0 && d + 1 < name.len())
+}
+
+/// `rel` joined under the directory `dir` (root-relative, `""` at the
+/// root); `..` is folded later.
+fn join(dir: &str, rel: &str) -> String {
+    match dir.is_empty() {
+        true => rel.to_owned(),
+        false => format!("{dir}/{rel}"),
+    }
+}
