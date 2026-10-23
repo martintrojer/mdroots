@@ -18,11 +18,13 @@ use lsp_types::{
 };
 use mdroots::syntax::{Heading, LineIndex, PositionEncoding};
 use mdroots::{
-    Cancel, ErrorKind, FileSystem, LinkStatus, Workspace, markdown_destination, relative_path,
+    Cancel, ErrorKind, FileSystem, FixKind, LinkStatus, Workspace, markdown_destination,
+    relative_path,
 };
 
 use serde_json::{Value, json};
 
+use crate::diagnostics::{self, Setting};
 use crate::{position, uri};
 
 /// Notes offered after `[[` (and the cap on `](` paths).
@@ -921,25 +923,83 @@ pub(crate) fn will_rename_files(
 
 /// The code action kind of extract-note.
 pub(crate) const EXTRACT_KIND: CodeActionKind = CodeActionKind::new("refactor.extract.note");
+/// The code action kind of a link conversion.
+pub(crate) const CONVERT_KIND: CodeActionKind = CodeActionKind::new("refactor.rewrite.link");
+/// The code action kind of a link selection.
+pub(crate) const SELECTION_KIND: CodeActionKind =
+    CodeActionKind::new("refactor.rewrite.linkSelection");
 
-/// `textDocument/codeAction`: for a non-empty selection in a Markdown note,
-/// one action moving it to a new note (see `Workspace::extract_note`):
-/// create the file, insert its content, replace the selection with the
-/// link. Nothing is written here. The name is checked against the disk on
-/// every request, because [Neovim](https://neovim.io) truncates an existing
-/// file when it applies a `CreateFile`, whatever its options say.
+/// Whether a client asking for `only` (`context.only`; `None` for any
+/// kind) wants `kind`: it equals an entry or starts with `<entry>.`.
+pub(crate) fn wants(only: Option<&[String]>, kind: &CodeActionKind) -> bool {
+    only.is_none_or(|only| {
+        only.iter()
+            .any(|k| kind.as_str() == k || kind.as_str().starts_with(&format!("{k}.")))
+    })
+}
+
+/// `textDocument/codeAction`: the actions for `range` in a note, fixes
+/// first, in library order (`Workspace::fixes`; an empty range is the
+/// cursor), then extract note (non-empty selection only, see
+/// `Workspace::extract_note`). Nothing is written here. A quick fix always
+/// carries its diagnostic, severity from `setting` (also when `setting`
+/// turns publishing off). The extract-note name is checked against the disk
+/// on every request, because [Neovim](https://neovim.io) truncates an
+/// existing file when it applies a `CreateFile`, whatever its options say.
 pub(crate) fn code_actions(
     c: &Ctx,
     range: lsp_types::Range,
+    only: Option<&[String]>,
+    setting: Setting,
     cancel: &Cancel,
 ) -> Result<Vec<CodeAction>, Fail> {
     let (start, end) = (c.offset(range.start), c.offset(range.end));
-    if start >= end {
-        return Ok(Vec::new());
+    let (start, end) = (start.min(end), start.max(end));
+    let mut out = Vec::new();
+    let fixes = [CodeActionKind::QUICKFIX, CONVERT_KIND, SELECTION_KIND]
+        .iter()
+        .any(|k| wants(only, k));
+    if fixes {
+        let root = c.ws.root().path;
+        for f in c.ws.fixes(&c.path, start..end, cancel)? {
+            let (kind, diagnostics) = match &f.kind {
+                FixKind::QuickFix(d) => {
+                    let mut d = d.clone();
+                    d.severity = setting.severity_of(&d);
+                    let d = diagnostics::to_lsp(&d, &c.index, &c.text, c.enc, &root);
+                    (CodeActionKind::QUICKFIX, Some(vec![d]))
+                }
+                FixKind::ConvertLink => (CONVERT_KIND, None),
+                FixKind::LinkSelection => (SELECTION_KIND, None),
+                _ => continue,
+            };
+            if !wants(only, &kind) {
+                continue;
+            }
+            let Some(edit) = lsp_edit(c.ws, c.enc, &f.edit) else {
+                continue;
+            };
+            out.push(CodeAction {
+                title: f.title,
+                kind: Some(kind),
+                diagnostics,
+                edit: Some(edit),
+                is_preferred: f.preferred.then_some(true),
+                ..Default::default()
+            });
+        }
     }
-    let e = match c.ws.extract_note(&c.path, start..end, cancel) {
+    if start < end && wants(only, &EXTRACT_KIND) {
+        out.extend(extract_action(c, start..end, cancel)?);
+    }
+    Ok(out)
+}
+
+/// The extract-note action for the non-empty selection `sel`, if any.
+fn extract_action(c: &Ctx, sel: Range<usize>, cancel: &Cancel) -> Result<Option<CodeAction>, Fail> {
+    let e = match c.ws.extract_note(&c.path, sel, cancel) {
         Ok(e) => e,
-        Err(e) if e.kind() == ErrorKind::Unsupported => return Ok(Vec::new()),
+        Err(e) if e.kind() == ErrorKind::Unsupported => return Ok(None),
         Err(e) => return Err(e.into()),
     };
     let name = e
@@ -948,15 +1008,12 @@ pub(crate) fn code_actions(
         .and_then(|(p, _)| p.file_name())
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let Some(edit) = lsp_edit(c.ws, c.enc, &e) else {
-        return Ok(Vec::new());
-    };
-    Ok(vec![CodeAction {
+    Ok(lsp_edit(c.ws, c.enc, &e).map(|edit| CodeAction {
         title: format!("Extract to new note: {name}"),
         kind: Some(EXTRACT_KIND),
         edit: Some(edit),
         ..Default::default()
-    }])
+    }))
 }
 
 #[cfg(test)]

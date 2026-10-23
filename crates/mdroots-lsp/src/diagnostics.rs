@@ -44,15 +44,27 @@ impl Setting {
         match self {
             Setting::Auto => {}
             Setting::Off => diags.clear(),
-            Setting::Broken(s) => {
+            Setting::Broken(_) => {
                 for d in &mut diags {
-                    if matches!(d.code, DiagCode::BrokenLink | DiagCode::BrokenAnchor) {
-                        d.severity = s;
-                    }
+                    d.severity = self.severity_of(d);
                 }
             }
         }
         diags
+    }
+
+    /// The severity `d` is published with: the setting's for a broken link
+    /// or anchor under [`Setting::Broken`], else the library's. Quick fixes
+    /// attach their diagnostic with it, also under [`Setting::Off`].
+    pub(crate) fn severity_of(self, d: &Diagnostic) -> Severity {
+        match self {
+            Setting::Broken(s)
+                if matches!(d.code, DiagCode::BrokenLink | DiagCode::BrokenAnchor) =>
+            {
+                s
+            }
+            _ => d.severity,
+        }
     }
 }
 

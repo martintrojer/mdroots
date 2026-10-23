@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvError, Sender, TryRecvError, select};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
-    CancelParams, CodeActionOptions, CodeActionProviderCapability, CodeLensOptions,
+    CancelParams, CodeActionKind, CodeActionOptions, CodeActionProviderCapability, CodeLensOptions,
     CompletionOptions, DidChangeConfigurationParams, DidChangeTextDocumentParams,
     DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
@@ -486,22 +486,21 @@ impl Server {
             }
             "textDocument/codeAction" => {
                 let uri = p.pointer("/textDocument/uri").and_then(Value::as_str);
-                // `context.only`: kinds the client asked for; ours matches a
-                // prefix of it ("refactor", "refactor.extract", ...).
-                let wanted = p
+                // `context.only`: kinds the client asked for; ours matches
+                // an entry or its sub-kinds ("refactor", "refactor.extract").
+                let only: Option<Vec<String>> = p
                     .pointer("/context/only")
                     .and_then(Value::as_array)
-                    .is_none_or(|only| {
-                        only.iter().filter_map(Value::as_str).any(|k| {
-                            let ours = features::EXTRACT_KIND;
-                            let ours = ours.as_str();
-                            ours == k || ours.starts_with(&format!("{k}."))
-                        })
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
                     });
                 match p.get("range").cloned().map(serde_json::from_value) {
-                    _ if !wanted => Ok(json!([])),
                     Some(Ok(range)) => self.with_doc(uri, cancel, |c| {
-                        features::code_actions(c, range, cancel).map(|v| json!(v))
+                        features::code_actions(c, range, only.as_deref(), self.setting, cancel)
+                            .map(|v| json!(v))
                     }),
                     _ => Ok(json!([])),
                 }
@@ -1263,7 +1262,12 @@ fn capabilities(enc: PositionEncoding) -> ServerCapabilities {
         })),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
-            code_action_kinds: Some(vec![features::EXTRACT_KIND]),
+            code_action_kinds: Some(vec![
+                CodeActionKind::QUICKFIX,
+                features::CONVERT_KIND,
+                features::SELECTION_KIND,
+                features::EXTRACT_KIND,
+            ]),
             resolve_provider: Some(false),
             work_done_progress_options: WorkDoneProgressOptions::default(),
         })),

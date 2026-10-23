@@ -315,7 +315,12 @@ fn falls_back_to_utf16() {
     assert_eq!(caps["codeLensProvider"]["resolveProvider"], false);
     assert_eq!(
         caps["codeActionProvider"]["codeActionKinds"],
-        json!(["refactor.extract.note"])
+        json!([
+            "quickfix",
+            "refactor.rewrite.link",
+            "refactor.rewrite.linkSelection",
+            "refactor.extract.note"
+        ])
     );
     for p in [
         "definitionProvider",
@@ -2075,6 +2080,134 @@ fn no_extract_for_empty_selections_other_kinds_or_unknown_files() {
         json!([])
     );
     assert_eq!(snapshot(&v), before);
+    c.shutdown().unwrap();
+}
+
+fn titles(r: &Value) -> Vec<&str> {
+    r.as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["title"].as_str().unwrap())
+        .collect()
+}
+
+/// A vault with `x.md` holding a broken `[[proj-plan]]` on line 2 and the
+/// note `proj-plan-v2.md` it could mean.
+fn broken_vault() -> Vault {
+    let v = Vault::corpus("zk-min");
+    v.write("proj-plan-v2.md", "# Project plan\n");
+    v.write("x.md", "# X\n\nSee [[proj-plan]] now.\n");
+    v
+}
+
+#[test]
+fn quick_fixes_carry_their_diagnostic_and_come_before_the_refactors() {
+    let v = broken_vault();
+    let before = snapshot(&v);
+    let mut c = session(&v, UTF8, &["x.md"]);
+    let uri = v.uri("x.md");
+    // The cursor inside the link.
+    let r = code_action(&mut c, &uri, range(2, 8, 2, 8), None);
+    assert_eq!(
+        titles(&r),
+        ["Change to Project plan", "Create note proj-plan.md",],
+        "{r}"
+    );
+    let a = &r[0];
+    assert_eq!(a["kind"], "quickfix");
+    assert_eq!(a["isPreferred"], true);
+    assert_eq!(a["diagnostics"][0]["code"], "broken-link");
+    assert_eq!(a["diagnostics"][0]["source"], "mdroots");
+    assert_eq!(a["diagnostics"][0]["range"], range(2, 4, 2, 17));
+    assert_eq!(
+        a["edit"]["documentChanges"][0]["edits"][0]["newText"],
+        "proj-plan-v2"
+    );
+    let b = &r[1];
+    assert_eq!(b["kind"], "quickfix");
+    assert!(b.get("isPreferred").is_none(), "{b}");
+    let ops = b["edit"]["documentChanges"].as_array().unwrap();
+    assert_eq!(ops[0]["kind"], "create");
+    assert_eq!(ops[0]["uri"], v.uri("proj-plan.md"));
+    assert_eq!(
+        ops[0]["options"],
+        json!({ "overwrite": false, "ignoreIfExists": false })
+    );
+    assert_eq!(ops[1]["textDocument"]["uri"], v.uri("proj-plan.md"));
+    // `only` keeps quickfix, `refactor` drops it.
+    let r = code_action(&mut c, &uri, range(2, 8, 2, 8), Some("quickfix"));
+    assert_eq!(titles(&r).len(), 2);
+    let r = code_action(&mut c, &uri, range(2, 8, 2, 8), Some("refactor"));
+    assert_eq!(r, json!([]));
+    assert_eq!(snapshot(&v), before);
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn quick_fixes_ignore_the_diagnostics_setting_but_take_its_severity() {
+    let v = broken_vault();
+    let mut c = session(&v, UTF8, &["x.md"]);
+    let uri = v.uri("x.md");
+    let set = |s: &str| json!({ "settings": { "mdroots": { "diagnostics": s } } });
+    let published = c.diagnostics(&uri);
+    assert_eq!(published.len(), 1);
+    let auto = published[0]["severity"].clone();
+    c.notify("workspace/didChangeConfiguration", set("off"));
+    assert_eq!(c.diagnostics(&uri), Vec::<Value>::new());
+    let r = code_action(&mut c, &uri, range(2, 8, 2, 8), None);
+    assert_eq!(r[0]["title"], "Change to Project plan");
+    assert_eq!(r[0]["diagnostics"][0]["code"], "broken-link");
+    // Off keeps the library's severity.
+    assert_eq!(r[0]["diagnostics"][0]["severity"], auto);
+    let sev = if auto == 1 { "warn" } else { "error" };
+    let want = if auto == 1 { 2 } else { 1 };
+    c.notify("workspace/didChangeConfiguration", set(sev));
+    assert_eq!(c.diagnostics(&uri)[0]["severity"], want);
+    let r = code_action(&mut c, &uri, range(2, 8, 2, 8), None);
+    assert_eq!(r[0]["diagnostics"][0]["severity"], want);
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn a_cursor_in_a_link_offers_conversion() {
+    let v = Vault::corpus("zk-min");
+    v.write("x.md", "# X\n\nSee [[a]] now.\n");
+    let mut c = session(&v, UTF8, &["x.md"]);
+    let uri = v.uri("x.md");
+    let r = code_action(&mut c, &uri, range(2, 7, 2, 7), None);
+    assert_eq!(titles(&r), ["Convert to Markdown link"], "{r}");
+    assert_eq!(r[0]["kind"], "refactor.rewrite.link");
+    assert!(r[0].get("diagnostics").is_none());
+    let r = code_action(&mut c, &uri, range(2, 7, 2, 7), Some("refactor.rewrite"));
+    assert_eq!(titles(&r).len(), 1);
+    let r = code_action(&mut c, &uri, range(2, 7, 2, 7), Some("refactor.extract"));
+    assert_eq!(r, json!([]));
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn a_selection_offers_link_selection_then_extract() {
+    let v = Vault::corpus("zk-min");
+    v.write("x.md", "# X\n\nSee Note A now.\n");
+    let mut c = session(&v, UTF8, &["x.md"]);
+    let uri = v.uri("x.md");
+    let r = code_action(&mut c, &uri, range(2, 4, 2, 10), None);
+    let kinds: Vec<_> = r
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["refactor.rewrite.linkSelection", "refactor.extract.note"],
+        "{r}"
+    );
+    let r = code_action(&mut c, &uri, range(2, 4, 2, 10), Some("refactor.extract"));
+    assert_eq!(r.as_array().unwrap().len(), 1);
+    assert_eq!(r[0]["kind"], "refactor.extract.note");
+    let r = code_action(&mut c, &uri, range(2, 4, 2, 10), Some("quickfix"));
+    assert_eq!(r, json!([]));
     c.shutdown().unwrap();
 }
 
