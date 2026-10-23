@@ -2084,6 +2084,34 @@ fn requests_during_a_slow_open_answer_from_the_single_file() {
     c.shutdown().unwrap();
 }
 
+/// `mdroots.reindex` re-publishes as `didSave` does, also for a document
+/// whose root is still opening (served by its single-file workspace).
+#[test]
+fn reindex_during_a_slow_open_publishes_the_single_file_diagnostics() {
+    let v = Vault::corpus("zk-min");
+    v.write("p.md", PENDING);
+    let (gate, cache) = (Gate::new(), tempfile::tempdir().unwrap());
+    let mut c = gated_session(&gate, cache.path(), json!({}));
+    let uri = v.uri("p.md");
+    c.open(&uri, PENDING);
+    assert_eq!(codes(&c.diagnostics(&uri)), ["not-in-working-set"]);
+    let (r, seen) = c.request_seeing(
+        "workspace/executeCommand",
+        command("mdroots.reindex", json!([uri])),
+    );
+    assert_eq!(ok(r), Value::Null);
+    let published = seen
+        .iter()
+        .filter(|m| {
+            matches!(m, Message::Notification(n)
+                if n.method == "textDocument/publishDiagnostics" && n.params["uri"] == uri.as_str())
+        })
+        .count();
+    assert_eq!(published, 1, "{seen:?}");
+    gate.release();
+    c.shutdown().unwrap();
+}
+
 /// Messages until one matches `want` (10 s), and that message.
 fn until(c: &Client, want: impl Fn(&Message) -> bool) -> (Message, Vec<Message>) {
     let mut seen = Vec::new();

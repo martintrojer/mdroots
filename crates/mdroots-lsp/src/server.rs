@@ -630,9 +630,13 @@ impl Server {
             }
             "mdroots.tags" => self.with_doc(arg(0), cancel, |c| Ok(features::tags(c))),
             "mdroots.reindex" => {
-                if let Some((ws, _)) = arg(0).and_then(|u| self.workspace_of(u)) {
-                    cancel.check()?;
-                    self.refresh(&[ws]);
+                cancel.check()?;
+                if let Some(uri) = arg(0) {
+                    if self.docs.contains_key(uri) {
+                        self.refresh_open(uri);
+                    } else if let Some((ws, _)) = self.workspace_of(uri) {
+                        self.refresh(&[ws]);
+                    }
                 }
                 Ok(Value::Null)
             }
@@ -692,21 +696,7 @@ impl Server {
             "textDocument/didSave" => {
                 if let Ok(p) = serde_json::from_value::<DidSaveTextDocumentParams>(n.params) {
                     let key = p.text_document.uri.as_str().to_owned();
-                    self.due.remove(&key);
-                    // A buffer saved for the first time: its file exists
-                    // now, so it gets a workspace, then refreshes as any.
-                    if let Some(d) = self.docs.get(&key).filter(|d| d.ws.is_none()) {
-                        let (uri, version, text) = (d.uri.clone(), d.version, d.text.clone());
-                        self.update(uri, version, text);
-                    }
-                    match self.docs.get(&key).map(|d| (d.ws.clone(), d.ready)) {
-                        Some((Some(ws), true)) => self.refresh(&[ws]),
-                        Some((Some(ws), false)) => {
-                            log_err("refresh", ws.refresh(&Cancel::new()));
-                            self.publish(&key);
-                        }
-                        _ => self.publish(&key),
-                    }
+                    self.refresh_open(&key);
                 }
             }
             "workspace/didChangeWatchedFiles" => {
@@ -790,6 +780,27 @@ impl Server {
             roots.push(ws.root().path);
         }
         self.republish(&roots);
+    }
+
+    /// Refreshes the workspace of the open document `key` from disk and
+    /// re-publishes (`didSave`, `mdroots.reindex`). A buffer saved for the
+    /// first time gets its workspace first. A document whose root is still
+    /// opening is served by its single-file workspace, which is refreshed
+    /// and published here alone.
+    fn refresh_open(&mut self, key: &str) {
+        self.due.remove(key);
+        if let Some(d) = self.docs.get(key).filter(|d| d.ws.is_none()) {
+            let (uri, version, text) = (d.uri.clone(), d.version, d.text.clone());
+            self.update(uri, version, text);
+        }
+        match self.docs.get(key).map(|d| (d.ws.clone(), d.ready)) {
+            Some((Some(ws), true)) => self.refresh(&[ws]),
+            Some((Some(ws), false)) => {
+                log_err("refresh", ws.refresh(&Cancel::new()));
+                self.publish(key);
+            }
+            _ => self.publish(key),
+        }
     }
 
     /// Republishes the diagnostics of the open documents in the
