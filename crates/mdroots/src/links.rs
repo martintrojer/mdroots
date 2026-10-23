@@ -33,24 +33,63 @@ impl Workspace {
     /// A wiki target containing `|`, `]` or a line break, or a label
     /// containing `]]` or a line break, is `Unsupported`, as are paths
     /// outside the root.
+    ///
+    /// This is [`link_text`](Self::link_text) with the root's style and no
+    /// anchor.
     pub fn link_to(
         &self,
         from: &Path,
         target: &Path,
         label: Option<&str>,
     ) -> Result<String, Error> {
+        self.link_text(from, target, self.link_style(), None, label)
+    }
+
+    /// [`link_to`](Self::link_to) in an explicit `style`, with an optional
+    /// `anchor` (a heading slug or `^block` id, as written in the source,
+    /// without the `#`). Wiki styles write `[[target#anchor]]` or
+    /// `[[target#anchor|label]]`; Markdown styles write
+    /// `[label](dest#anchor)`, the anchor appended after the path is encoded.
+    /// The anchor is inserted verbatim. It is `Unsupported` when a wiki
+    /// anchor contains `[`, `]`, `|` or a line break, or a Markdown anchor
+    /// contains whitespace, `(`, `)`, `\`, `<`, `>` or a line break. Whether
+    /// the link lands on `target` is judged on the link without the anchor.
+    pub fn link_text(
+        &self,
+        from: &Path,
+        target: &Path,
+        style: LinkStyle,
+        anchor: Option<&str>,
+        label: Option<&str>,
+    ) -> Result<String, Error> {
         let from_rel = self.rel(from)?;
         let to_rel = self.rel(target)?;
-        let style = self.link_style();
         let store = self.store();
+        // Any style added later is written as WikiPath, as below.
+        let is_wiki = !matches!(
+            style,
+            LinkStyle::MarkdownRelative { .. } | LinkStyle::MarkdownRootRelative { .. }
+        );
+        if let Some(a) = anchor {
+            let bad = match is_wiki {
+                true => a.contains(['[', ']', '|', '\n', '\r']),
+                false => a.contains(|c: char| {
+                    c.is_whitespace() || matches!(c, '(' | ')' | '\\' | '<' | '>')
+                }),
+            };
+            if bad {
+                return Err(unsupported(a));
+            }
+        }
+        let frag = anchor.map(|a| format!("#{a}")).unwrap_or_default();
         let wiki = |t: String| -> Result<String, Error> {
             if t.contains(['|', ']', '\n', '\r']) {
                 return Err(unsupported(&t));
             }
             match label {
-                None => Ok(format!("[[{t}]]")),
+                None => Ok(format!("[[{t}{frag}]]")),
                 Some(l) if l.contains("]]") || l.contains(['\n', '\r']) => Err(unsupported(l)),
-                Some(l) => Ok(format!("[[{t}|{l}]]")),
+                Some(l) => Ok(format!("[[{t}{frag}|{l}]]")),
             }
         };
         let markdown = |paths: Vec<String>, md_suffix: bool| -> String {
@@ -69,7 +108,7 @@ impl Workspace {
                     .map(|d| title(&to_rel, d))
                     .unwrap_or_else(|| stem(&to_rel).to_owned()),
             };
-            format!("[{}]({dest})", escape_label(&text))
+            format!("[{}]({dest}{frag})", escape_label(&text))
         };
         let dir = Path::new(&from_rel).parent().unwrap_or(Path::new(""));
         let file_relative = relative_path(dir, Path::new(&to_rel));

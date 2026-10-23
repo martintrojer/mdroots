@@ -268,3 +268,140 @@ fn unwritable_wiki_targets_and_outside_paths_are_unsupported() {
     assert_eq!(err("/v/ok.md", Some("x]]y")), ErrorKind::Unsupported);
     assert_eq!(err("/elsewhere/x.md", None), ErrorKind::Unsupported);
 }
+
+#[test]
+fn link_text_writes_every_style_with_and_without_anchor() {
+    let w = ws(&[]);
+    let t = |style, anchor: Option<&str>, label: Option<&str>| {
+        w.link_text(&p("/v/a.md"), &p("/v/sub/deep/b.md"), style, anchor, label)
+            .unwrap()
+    };
+    let cases: [(LinkStyle, [&str; 4]); 5] = [
+        (
+            LinkStyle::WikiStem,
+            ["[[b]]", "[[b#h]]", "[[b|L]]", "[[b#h|L]]"],
+        ),
+        (
+            LinkStyle::WikiPath,
+            [
+                "[[sub/deep/b]]",
+                "[[sub/deep/b#h]]",
+                "[[sub/deep/b|L]]",
+                "[[sub/deep/b#h|L]]",
+            ],
+        ),
+        (
+            LinkStyle::MarkdownRelative { md_suffix: true },
+            [
+                "[Bee note](sub/deep/b.md)",
+                "[Bee note](sub/deep/b.md#h)",
+                "[L](sub/deep/b.md)",
+                "[L](sub/deep/b.md#h)",
+            ],
+        ),
+        (
+            LinkStyle::MarkdownRelative { md_suffix: false },
+            [
+                "[Bee note](sub/deep/b)",
+                "[Bee note](sub/deep/b#h)",
+                "[L](sub/deep/b)",
+                "[L](sub/deep/b#h)",
+            ],
+        ),
+        (
+            LinkStyle::MarkdownRootRelative { md_suffix: true },
+            [
+                "[Bee note](sub/deep/b.md)",
+                "[Bee note](sub/deep/b.md#h)",
+                "[L](sub/deep/b.md)",
+                "[L](sub/deep/b.md#h)",
+            ],
+        ),
+    ];
+    for (style, [plain, anchored, labelled, both]) in cases {
+        assert_eq!(t(style, None, None), plain, "{style:?}");
+        assert_eq!(t(style, Some("h"), None), anchored, "{style:?}");
+        assert_eq!(t(style, None, Some("L")), labelled, "{style:?}");
+        assert_eq!(t(style, Some("h"), Some("L")), both, "{style:?}");
+    }
+    // Block anchors are written as given.
+    assert_eq!(t(LinkStyle::WikiStem, Some("^blk"), None), "[[b#^blk]]");
+}
+
+#[test]
+fn link_text_encodes_the_path_then_appends_the_anchor() {
+    let w = ws(&[]);
+    let style = LinkStyle::MarkdownRelative { md_suffix: true };
+    let text = w
+        .link_text(
+            &p("/v/a.md"),
+            &p("/v/my notes/c (1).md"),
+            style,
+            Some("h"),
+            None,
+        )
+        .unwrap();
+    assert_eq!(text, "[c (1)](my%20notes/c%20%281%29.md#h)");
+}
+
+#[test]
+fn link_to_is_link_text_in_the_root_style_without_anchor() {
+    let w = ws(&[("/v/.zk/config.toml", ZK_WIKI)]);
+    for label in [None, Some("L")] {
+        assert_eq!(
+            w.link_to(&p("/v/a.md"), &p("/v/sub/deep/b.md"), label)
+                .unwrap(),
+            w.link_text(
+                &p("/v/a.md"),
+                &p("/v/sub/deep/b.md"),
+                w.link_style(),
+                None,
+                label
+            )
+            .unwrap()
+        );
+    }
+}
+
+#[test]
+fn link_text_rejects_anchors_that_break_the_link() {
+    let w = ws(&[]);
+    let err = |style, anchor: &str| {
+        w.link_text(
+            &p("/v/a.md"),
+            &p("/v/sub/deep/b.md"),
+            style,
+            Some(anchor),
+            None,
+        )
+        .unwrap_err()
+        .kind()
+    };
+    let md = LinkStyle::MarkdownRelative { md_suffix: true };
+    for a in ["a|b", "a]b", "[[h", "a[b", "a\nb", "a\rb"] {
+        assert_eq!(err(LinkStyle::WikiStem, a), ErrorKind::Unsupported, "{a:?}");
+        assert_eq!(err(LinkStyle::WikiPath, a), ErrorKind::Unsupported, "{a:?}");
+    }
+    for a in [
+        "a b", "a\tb", "a(b", "a)b", "h\\", "a<b", "a>b", "a\nb", "a\rb",
+    ] {
+        assert_eq!(err(md, a), ErrorKind::Unsupported, "{a:?}");
+        let root = LinkStyle::MarkdownRootRelative { md_suffix: false };
+        assert_eq!(err(root, a), ErrorKind::Unsupported, "{a:?}");
+    }
+    // What is unsafe in one family is fine in the other.
+    assert!(
+        w.link_text(&p("/v/a.md"), &p("/v/sub/deep/b.md"), md, Some("a|b"), None)
+            .is_ok()
+    );
+    assert!(
+        w.link_text(
+            &p("/v/a.md"),
+            &p("/v/sub/deep/b.md"),
+            LinkStyle::WikiStem,
+            Some("a b"),
+            None
+        )
+        .is_ok()
+    );
+}
