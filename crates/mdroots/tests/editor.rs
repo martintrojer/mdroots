@@ -638,6 +638,157 @@ fn rename_writes_a_path_for_a_stem_shared_before_the_move() {
     }
 }
 
+/// `files` with each `(old, new)` moved and every edit applied: the tree
+/// after the rename, opened fresh.
+fn after_moves(
+    files: &[(&str, &str)],
+    moves: &[(&str, &str)],
+    got: &[(PathBuf, String)],
+    at: &str,
+) -> Workspace {
+    let tree: Vec<(String, String)> = files
+        .iter()
+        .map(|(f, text)| {
+            let text = got
+                .iter()
+                .find(|(g, _)| g == Path::new(f))
+                .map_or(text.to_string(), |(_, t)| t.clone());
+            let f = moves.iter().find(|(o, _)| o == f).map_or(*f, |(_, n)| *n);
+            (f.to_owned(), text)
+        })
+        .collect();
+    let tree: Vec<(&str, &str)> = tree.iter().map(|(f, t)| (&**f, &**t)).collect();
+    open(&tree, at)
+}
+
+/// The first target of `link` written in `from`, in `ws`.
+fn lands_on(ws: &Workspace, from: &str, link: &str) -> Option<PathBuf> {
+    let r = ws.resolve(Path::new(from), link).unwrap();
+    assert_ne!(r.status, mdroots::LinkStatus::Ambiguous, "{link}: {r:?}");
+    r.targets.first().cloned()
+}
+
+#[test]
+fn rename_fallback_is_not_shadowed_by_a_site_path() {
+    // `/z/new` is site.md's permalink: the rooted form finds site.md, and
+    // `z/new` finds near/z/new.md from near/; only `../z/new` lands.
+    let files = [
+        ("/v/.mdroots", ""),
+        ("/v/near/top.md", "[[b]]\n"),
+        ("/v/old/b.md", ""),
+        ("/v/else/c.md", ""),
+        ("/v/near/z/new.md", ""),
+        ("/v/site.md", "---\npermalink: /z/new\n---\n"),
+    ];
+    let moves = [
+        ("/v/old/b.md", "/v/z/new.md"),
+        ("/v/else/c.md", "/v/a/new.md"),
+    ];
+    let ws = open(&files, "/v/near/top.md");
+    let got = rename_many(&ws, &moves);
+    assert_eq!(got, [(p("/v/near/top.md"), "[[../z/new]]\n".to_owned())]);
+    let after = after_moves(&files, &moves, &got, "/v/near/top.md");
+    assert_eq!(
+        lands_on(&after, "/v/near/top.md", "[[../z/new]]"),
+        Some(p("/v/z/new.md"))
+    );
+    // Single move of a `/`-rooted link: `/z/new.md` would be the site path.
+    let files = [
+        ("/v/.mdroots", ""),
+        ("/v/near/top.md", "[y](/old/b.md)\n"),
+        ("/v/old/b.md", ""),
+        ("/v/site.md", "---\npermalink: /z/new\n---\n"),
+    ];
+    let ws = open(&files, "/v/near/top.md");
+    let got = rename(&ws, "/v/old/b.md", "/v/z/new.md");
+    assert_eq!(
+        got,
+        [(p("/v/near/top.md"), "[y](../z/new.md)\n".to_owned())]
+    );
+    let moves = [("/v/old/b.md", "/v/z/new.md")];
+    let after = after_moves(&files, &moves, &got, "/v/near/top.md");
+    assert_eq!(
+        lands_on(&after, "/v/near/top.md", "[y](../z/new.md)"),
+        Some(p("/v/z/new.md"))
+    );
+}
+
+#[test]
+fn rename_extensionless_link_is_not_shadowed_by_a_directory() {
+    // An extensionless Markdown link finds an existing file or directory
+    // first: from near/, `z/new` is the directory near/z/new.
+    let files = [
+        ("/v/.mdroots", ""),
+        ("/v/near/top.md", "[b](old/b)\n"),
+        ("/v/old/b.md", ""),
+        ("/v/near/z/new/other.md", ""),
+    ];
+    let ws = open(&files, "/v/near/top.md");
+    let got = rename(&ws, "/v/old/b.md", "/v/z/new.md");
+    assert_eq!(got, [(p("/v/near/top.md"), "[b](/z/new)\n".to_owned())]);
+    let moves = [("/v/old/b.md", "/v/z/new.md")];
+    let after = after_moves(&files, &moves, &got, "/v/near/top.md");
+    assert_eq!(
+        lands_on(&after, "/v/near/top.md", "[b](/z/new)"),
+        Some(p("/v/z/new.md"))
+    );
+}
+
+#[test]
+fn rename_stem_test_uses_normalized_keys() {
+    // An NFD twin of the NFC name shares its stem key.
+    let files = [
+        ("/v/.mdroots", ""),
+        ("/v/top.md", "[[b]]\n"),
+        ("/v/old/b.md", ""),
+        ("/v/near/cafe\u{301}.md", ""),
+    ];
+    let ws = open(&files, "/v/top.md");
+    let got = rename(&ws, "/v/old/b.md", "/v/z/caf\u{e9}.md");
+    assert_eq!(got, [(p("/v/top.md"), "[[z/caf\u{e9}]]\n".to_owned())]);
+    let moves = [("/v/old/b.md", "/v/z/caf\u{e9}.md")];
+    let after = after_moves(&files, &moves, &got, "/v/top.md");
+    assert_eq!(
+        lands_on(&after, "/v/top.md", "[[z/caf\u{e9}]]"),
+        Some(p("/v/z/caf\u{e9}.md"))
+    );
+}
+
+#[test]
+fn rename_percent_named_notes_use_decoded_keys() {
+    // A `%`-named decoy decodes to the new name.
+    let files = [
+        ("/v/.mdroots", ""),
+        ("/v/near/top.md", "[[b]]\n"),
+        ("/v/old/b.md", ""),
+        ("/v/near/n%65w.md", ""),
+    ];
+    let ws = open(&files, "/v/near/top.md");
+    let got = rename(&ws, "/v/old/b.md", "/v/z/new.md");
+    assert_eq!(got, [(p("/v/near/top.md"), "[[z/new]]\n".to_owned())]);
+    let moves = [("/v/old/b.md", "/v/z/new.md")];
+    let after = after_moves(&files, &moves, &got, "/v/near/top.md");
+    assert_eq!(
+        lands_on(&after, "/v/near/top.md", "[[z/new]]"),
+        Some(p("/v/z/new.md"))
+    );
+    // A `%`-named destination is still found by its decoded stem.
+    let files = [
+        ("/v/.mdroots", ""),
+        ("/v/near/top.md", "[[b]]\n"),
+        ("/v/old/b.md", ""),
+    ];
+    let ws = open(&files, "/v/near/top.md");
+    let got = rename(&ws, "/v/old/b.md", "/v/z/n%65w.md");
+    assert_eq!(got, [(p("/v/near/top.md"), "[[n%65w]]\n".to_owned())]);
+    let moves = [("/v/old/b.md", "/v/z/n%65w.md")];
+    let after = after_moves(&files, &moves, &got, "/v/near/top.md");
+    assert_eq!(
+        lands_on(&after, "/v/near/top.md", "[[n%65w]]"),
+        Some(p("/v/z/n%65w.md"))
+    );
+}
+
 /// Temp-dir trees through the non-canonical path the OS hands out (on
 /// macOS `/var/…`, a symlink to `/private/var/…`).
 fn std_opts() -> Options {

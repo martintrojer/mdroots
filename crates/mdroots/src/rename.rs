@@ -1,16 +1,18 @@
 //! [`Workspace::rename_note`]: the text edits that keep links working when
 //! a note moves. Never writes files.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use mdroots_core::memstore::counts;
-use mdroots_core::{Cancel, Error, ErrorKind, MemStore};
-use mdroots_resolve::ResolveStep;
+use mdroots_core::{Cancel, Error, ErrorKind, FileSystem, FsKind, MemStore, Meta};
 use mdroots_resolve::ladder::LinkStatus;
 use mdroots_resolve::normalize::percent_decode;
-use mdroots_syntax::{Document, Link, LinkKind};
+use mdroots_resolve::{KeyKind, KeyLookup, ResolveStep, doc_keys};
+use mdroots_syntax::{Document, Link, LinkKind, LinkTarget};
 
 use crate::links::{encode_destination, relative_path};
 use crate::workspace::{Workspace, is_note};
@@ -126,13 +128,11 @@ impl Workspace {
         let root = self.root().path;
         let docs_dir = store.conventions().docs_dir.clone();
         let mut out = WorkspaceEdit::default();
+        if map.is_empty() {
+            return Ok(out);
+        }
         let case_sensitive = self.fs().case_sensitive(&root);
-        let layout = Layout::new(
-            store.files().map(|f| map.get(f).map_or(f, String::as_str)),
-            case_sensitive,
-            docs_dir.as_deref(),
-            &root,
-        );
+        let post = self.post_move_store(store, &map, case_sensitive, cancel)?;
         for from in store.files() {
             cancel.check()?;
             let Some(doc) = store.document(from) else {
@@ -185,7 +185,7 @@ impl Workspace {
                 };
                 // A bare stem that another note carries after the moves
                 // would find that note (or be ambiguous): write the path.
-                let stem_taken = layout.stem_shared(target_after);
+                let stem_taken = stem_shared(&post, target_after, case_sensitive);
                 // A slash-less wiki target is written by name even when the
                 // ladder found it by path (a note at the root): keep that
                 // style unless the new name is taken.
@@ -205,16 +205,18 @@ impl Workspace {
                 };
                 let new_text = step.and_then(|st| ctx.text(st)).and_then(|preferred| {
                     // Every rewritten link must land on its target in the
-                    // layout after the moves: the preferred text, else the
-                    // site-rooted path, else the file-relative path.
-                    if !layout.contains(target_after)
-                        || layout.lands(from_after, &preferred, target_after)
-                    {
+                    // post-move store, by the resolver itself: the
+                    // preferred text, else the `/`-prefixed root-relative
+                    // path, else the file-relative path. A target that is
+                    // not a note after the moves (an unindexed file) is
+                    // not checked.
+                    if post.document(target_after).is_none() {
                         return Some(preferred);
                     }
-                    [ctx.slash_rooted(), ctx.file_relative()]
+                    let lands = |t: &str| lands_after(&post, from_after, &ctx, &link, t);
+                    [preferred, ctx.slash_rooted(), ctx.file_relative()]
                         .into_iter()
-                        .find(|t| layout.lands(from_after, t, target_after))
+                        .find(|t| lands(t))
                 });
                 if let Some(new_text) = new_text
                     && new_text != ctx.written
@@ -233,6 +235,188 @@ impl Workspace {
         }
         out.edits.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(out)
+    }
+}
+
+impl Workspace {
+    /// The store as it will be after the moves in `map`: every indexed
+    /// note's current text (overlay wins) under its new path, over a
+    /// filesystem that shows the moves, with the same code dirs. Re-parses
+    /// every note.
+    fn post_move_store(
+        &self,
+        store: &MemStore,
+        map: &HashMap<String, String>,
+        case_sensitive: bool,
+        cancel: &Cancel,
+    ) -> Result<MemStore, Error> {
+        let root = store.root().to_path_buf();
+        let contents = store
+            .files()
+            .filter_map(|f| {
+                let text = store.document(f)?.source();
+                let at = map.get(f).map_or(f, String::as_str);
+                Some((at.to_owned(), Arc::from(text.as_bytes())))
+            })
+            .collect();
+        let fs = Arc::new(MovedFs::new(self.fs_arc(), &root, map, case_sensitive));
+        let mut post = MemStore::from_contents(fs, root, contents, cancel)?;
+        post.set_code_dirs(store.code_dirs().to_vec());
+        Ok(post)
+    }
+}
+
+/// Another note than `rel` has its stem key in `post` (normalised and
+/// case-folded as the resolver keys it).
+fn stem_shared(post: &MemStore, rel: &str, case_sensitive: bool) -> bool {
+    let Some(doc) = post.document(rel) else {
+        return false;
+    };
+    doc_keys(rel, doc, case_sensitive)
+        .into_iter()
+        .filter(|(k, _)| *k == KeyKind::Stem)
+        .any(|(_, key)| post.lookup(KeyKind::Stem, &key).iter().any(|p| p != rel))
+}
+
+/// Whether `link`, with `text` written as its target path, resolves from
+/// the note at `from_after` in `post` to `ctx.target_after` alone. The
+/// link keeps its kind, label and any scheme prefix (`file:`), not its
+/// anchor, which does not change where it lands.
+fn lands_after(post: &MemStore, from_after: &str, ctx: &Rewrite, link: &Link, text: &str) -> bool {
+    let (raw, path) = (link.target().raw(), link.target().path());
+    // `path` is a slice of `raw`: what precedes it is the scheme prefix.
+    let at = (path.as_ptr() as usize).saturating_sub(raw.as_ptr() as usize);
+    let prefix = raw.get(..at).unwrap_or_default();
+    let raw = format!("{prefix}{text}");
+    let target = LinkTarget::new(&raw, prefix.len()..raw.len(), None);
+    let probe = link.clone().with_target(target);
+    let r = post.resolve_link(from_after, &probe, false);
+    r.status != LinkStatus::Ambiguous
+        && r.targets.first().map(String::as_str) == Some(ctx.target_after)
+}
+
+/// The workspace filesystem as it will be after the moves: a destination
+/// path answers with its source's file, a moved source that is not also
+/// a destination is gone, and a directory holding a destination exists.
+/// Paths are matched case-folded on a case-insensitive root, as the
+/// resolver may ask for a folded key.
+struct MovedFs {
+    inner: Arc<dyn FileSystem>,
+    case_sensitive: bool,
+    /// Destination (absolute, folded) -> source (absolute).
+    dest: HashMap<PathBuf, PathBuf>,
+    /// Moved sources (absolute, folded) that are not destinations.
+    gone: HashSet<PathBuf>,
+    /// Directories (absolute, folded) holding a destination, up to the
+    /// root.
+    dirs: HashSet<PathBuf>,
+    /// A directory's metadata, for the `dirs` that do not exist yet.
+    dir_meta: Meta,
+}
+
+impl MovedFs {
+    fn new(
+        inner: Arc<dyn FileSystem>,
+        root: &Path,
+        map: &HashMap<String, String>,
+        case_sensitive: bool,
+    ) -> Self {
+        let fold = |p: PathBuf| fold_path(p, case_sensitive);
+        let dest: HashMap<PathBuf, PathBuf> = map
+            .iter()
+            .map(|(f, t)| (fold(root.join(t)), root.join(f)))
+            .collect();
+        let gone = map
+            .keys()
+            .map(|f| fold(root.join(f)))
+            .filter(|f| !dest.contains_key(f))
+            .collect();
+        let root = fold(root.to_path_buf());
+        let mut dirs = HashSet::new();
+        for d in dest.keys() {
+            for a in d.ancestors().skip(1) {
+                if !a.starts_with(&root) || !dirs.insert(a.to_path_buf()) {
+                    break;
+                }
+            }
+        }
+        let dir_meta = inner.stat(&root).unwrap_or(Meta {
+            ino: 0,
+            ctime_ns: 0,
+            mtime_ns: 0,
+            size: 0,
+            is_dir: true,
+            is_file: false,
+            dataless: false,
+        });
+        MovedFs {
+            inner,
+            case_sensitive,
+            dest,
+            gone,
+            dirs,
+            dir_meta,
+        }
+    }
+
+    /// Where the bytes of `p` live before the moves; `None` when `p` is a
+    /// moved-away source.
+    fn source<'p>(&'p self, p: &'p Path) -> Option<&'p Path> {
+        let key = fold_path(p.to_path_buf(), self.case_sensitive);
+        match self.dest.get(&key) {
+            Some(s) => Some(s),
+            None if self.gone.contains(&key) => None,
+            None => Some(p),
+        }
+    }
+
+    /// A directory that holds a destination.
+    fn is_new_dir(&self, p: &Path) -> bool {
+        self.dirs
+            .contains(&fold_path(p.to_path_buf(), self.case_sensitive))
+    }
+}
+
+fn fold_path(p: PathBuf, case_sensitive: bool) -> PathBuf {
+    match case_sensitive {
+        true => p,
+        false => PathBuf::from(p.to_string_lossy().to_lowercase()),
+    }
+}
+
+fn not_found(p: &Path) -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, format!("{}: moved", p.display()))
+}
+
+impl FileSystem for MovedFs {
+    fn read(&self, p: &Path) -> io::Result<(Arc<[u8]>, Meta)> {
+        self.inner.read(self.source(p).ok_or_else(|| not_found(p))?)
+    }
+
+    fn stat(&self, p: &Path) -> io::Result<Meta> {
+        let Some(src) = self.source(p) else {
+            return Err(not_found(p));
+        };
+        match self.inner.stat(src) {
+            Err(_) if self.is_new_dir(p) => Ok(self.dir_meta),
+            r => r,
+        }
+    }
+
+    fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, Meta)>> {
+        self.inner.read_dir(p)
+    }
+
+    fn canonicalize(&self, p: &Path) -> io::Result<PathBuf> {
+        self.inner.canonicalize(p)
+    }
+
+    fn case_sensitive(&self, dir: &Path) -> bool {
+        self.inner.case_sensitive(dir)
+    }
+
+    fn fs_kind(&self, dir: &Path) -> FsKind {
+        self.inner.fs_kind(dir)
     }
 }
 
@@ -420,137 +604,8 @@ impl Rewrite<'_> {
     }
 }
 
-/// The indexed notes after the moves, keyed as the resolver keys them
-/// (path and stem, without the note extension, case-folded on a
-/// case-insensitive filesystem), to check where a written link lands.
-struct Layout<'a> {
-    paths: HashMap<String, Vec<String>>,
-    stems: HashMap<String, Vec<String>>,
-    case_sensitive: bool,
-    docs_dir: Option<&'a str>,
-    root: &'a Path,
-}
-
-impl<'a> Layout<'a> {
-    fn new<'f>(
-        files: impl Iterator<Item = &'f str>,
-        case_sensitive: bool,
-        docs_dir: Option<&'a str>,
-        root: &'a Path,
-    ) -> Self {
-        let mut l = Layout {
-            paths: HashMap::new(),
-            stems: HashMap::new(),
-            case_sensitive,
-            docs_dir,
-            root,
-        };
-        for f in files {
-            let key = l.fold(strip_ext(f));
-            let name = key.rsplit('/').next().unwrap_or(&key).to_owned();
-            l.paths.entry(key).or_default().push(f.to_owned());
-            l.stems.entry(name).or_default().push(f.to_owned());
-        }
-        l
-    }
-
-    fn fold(&self, s: &str) -> String {
-        match self.case_sensitive {
-            true => s.to_owned(),
-            false => s.to_lowercase(),
-        }
-    }
-
-    fn contains(&self, rel: &str) -> bool {
-        self.paths
-            .get(&self.fold(strip_ext(rel)))
-            .is_some_and(|v| v.iter().any(|p| p == rel))
-    }
-
-    /// Another note than `rel` has its stem.
-    fn stem_shared(&self, rel: &str) -> bool {
-        let stem = self.fold(stem(rel));
-        self.stems
-            .get(&stem)
-            .is_some_and(|v| v.iter().any(|p| p != rel))
-    }
-
-    /// Whether `text` (a written link path, `from` the linking note's path
-    /// after the moves) resolves to `target`, by the resolver's order: the
-    /// file-relative path, the root-relative path (a leading `/` or the
-    /// root's own path maps to root-relative; site-rooted links try the
-    /// docs dir first), then, for a bare name, the stem.
-    fn lands(&self, from: &str, text: &str, target: &str) -> bool {
-        let decoded = percent_decode(text);
-        let (key, rooted, mapped) = match Path::new(&decoded).strip_prefix(self.root) {
-            Ok(rest) if Path::new(&decoded).is_absolute() => {
-                (rest.to_string_lossy().replace('\\', "/"), false, true)
-            }
-            _ => match decoded.strip_prefix('/') {
-                Some(r) => (r.to_owned(), true, false),
-                None => (decoded.clone(), false, false),
-            },
-        };
-        let hit = |dir: &str| -> Option<bool> {
-            let joined = join(dir, &key)?;
-            let v = self.paths.get(&self.fold(strip_ext(&joined)))?;
-            Some(v.len() == 1 && v[0] == target)
-        };
-        if !rooted
-            && !mapped
-            && let Some(r) = hit(parent(from))
-        {
-            return r;
-        }
-        if rooted
-            && let Some(d) = self.docs_dir
-            && let Some(r) = hit(d)
-        {
-            return r;
-        }
-        if let Some(r) = hit("") {
-            return r;
-        }
-        if mapped || rooted || key.contains('/') {
-            return false;
-        }
-        let name = self.fold(strip_ext(&key));
-        self.stems
-            .get(&name)
-            .is_some_and(|v| v.len() == 1 && v[0] == target)
-    }
-}
-
-/// `path` without its note extension.
-fn strip_ext(path: &str) -> &str {
-    let name_at = path.rfind('/').map_or(0, |i| i + 1);
-    match is_note(&path[name_at..]) {
-        true => path.rsplit_once('.').map_or(path, |(s, _)| s),
-        false => path,
-    }
-}
-
-/// `dir` and `key` joined with `.` dropped and `..` folded; `None` when it
-/// climbs above the root.
-fn join(dir: &str, key: &str) -> Option<String> {
-    let mut out: Vec<&str> = Vec::new();
-    for s in dir
-        .split('/')
-        .chain(key.split('/'))
-        .filter(|s| !s.is_empty())
-    {
-        match s {
-            "." => {}
-            ".." => {
-                out.pop()?;
-            }
-            _ => out.push(s),
-        }
-    }
-    Some(out.join("/"))
-}
-
 /// The file name without its extension.
+#[allow(dead_code, reason = "kept for fixes.rs (unit fixes_repair)")]
 pub(crate) fn stem(rel: &str) -> &str {
     let name = rel.rsplit('/').next().unwrap_or(rel);
     name.rsplit_once('.').map_or(name, |(s, _)| s)

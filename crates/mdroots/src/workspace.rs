@@ -1172,6 +1172,10 @@ impl Workspace {
         &*self.inner.fs
     }
 
+    pub(crate) fn fs_arc(&self) -> Arc<dyn FileSystem> {
+        self.inner.fs.clone()
+    }
+
     pub(crate) fn store(&self) -> RwLockReadGuard<'_, MemStore> {
         self.inner.store.read().unwrap_or_else(|e| e.into_inner())
     }
