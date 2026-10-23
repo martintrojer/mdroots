@@ -920,3 +920,110 @@ fn open_single_indexes_the_file_alone_without_discovery_or_cache() {
         .expect("the marker root serves b.md");
     assert_eq!(got.root().path, canon);
 }
+
+#[test]
+fn rename_rejects_a_candidate_the_link_syntax_would_split() {
+    // In a wiki link `#` starts an anchor, `|` a label and `]]` ends the
+    // link: no form of these names can be written, so no edit (the old
+    // link breaks rather than finding a.md).
+    for name in ["a#b", "a|b", "a]]b"] {
+        let files = [
+            ("/v/.mdroots", ""),
+            ("/v/top.md", "[[b]]\n"),
+            ("/v/old/b.md", ""),
+            ("/v/a.md", ""),
+        ];
+        let ws = open(&files, "/v/top.md");
+        let got = rename_many(&ws, &[("/v/old/b.md", &format!("/v/z/{name}.md"))]);
+        assert!(got.is_empty(), "{name}: {got:?}");
+    }
+    // In an Org link `::` starts a search.
+    let files = [
+        ("/v/.mdroots", ""),
+        ("/v/near/top.org", "[[file:../old/b.md][B]]\n"),
+        ("/v/old/b.md", ""),
+    ];
+    let ws = open(&files, "/v/near/top.org");
+    let got = rename_many(&ws, &[("/v/old/b.md", "/v/z/a::b.md")]);
+    assert!(got.is_empty(), "{got:?}");
+    // Control: a Markdown destination encodes `#` and lands.
+    let files = [
+        ("/v/.mdroots", ""),
+        ("/v/top.md", "[x](old/b.md#h)\n"),
+        ("/v/old/b.md", ""),
+        ("/v/a.md", ""),
+    ];
+    let ws = open(&files, "/v/top.md");
+    let got = rename(&ws, "/v/old/b.md", "/v/z/a#b.md");
+    assert_eq!(got, [(p("/v/top.md"), "[x](z/a%23b.md#h)\n".to_owned())]);
+}
+
+#[test]
+fn rename_moved_folder_does_not_shadow_destination() {
+    // z/new/ is renamed to archive/ in the same batch: the directory z/new
+    // is gone, so the extensionless `z/new` reaches z/new.md.
+    let ws = open(
+        &[
+            ("/v/.mdroots", ""),
+            ("/v/top.md", "[b](old/b)\n"),
+            ("/v/old/b.md", ""),
+            ("/v/z/new/other.md", ""),
+        ],
+        "/v/top.md",
+    );
+    let got = rename_many(
+        &ws,
+        &[("/v/old/b.md", "/v/z/new.md"), ("/v/z/new", "/v/archive")],
+    );
+    assert_eq!(got, [(p("/v/top.md"), "[b](z/new)\n".to_owned())]);
+    let after = open(
+        &[
+            ("/v/.mdroots", ""),
+            ("/v/top.md", "[b](z/new)\n"),
+            ("/v/z/new.md", ""),
+            ("/v/archive/other.md", ""),
+        ],
+        "/v/top.md",
+    );
+    assert_eq!(
+        lands_on(&after, "/v/top.md", "[b](z/new)"),
+        Some(p("/v/z/new.md"))
+    );
+}
+
+#[test]
+fn rename_folder_moves_its_other_files_too() {
+    // assets/ (a note and a non-note subtree) becomes near/z/: near/z/new
+    // is then a directory, which an extensionless `z/new` from near/ finds.
+    let files = [
+        ("/v/.mdroots", ""),
+        ("/v/near/top.md", "[b](old/b)\n"),
+        ("/v/old/b.md", ""),
+        ("/v/assets/readme.md", ""),
+        ("/v/assets/new/pic.png", ""),
+    ];
+    let ws = open(&files, "/v/near/top.md");
+    let got = rename_many(
+        &ws,
+        &[("/v/old/b.md", "/v/z/new.md"), ("/v/assets", "/v/near/z")],
+    );
+    assert_eq!(got, [(p("/v/near/top.md"), "[b](/z/new)\n".to_owned())]);
+    let after = open(
+        &[
+            ("/v/.mdroots", ""),
+            ("/v/near/top.md", "[b](/z/new)\n"),
+            ("/v/z/new.md", ""),
+            ("/v/near/z/readme.md", ""),
+            ("/v/near/z/new/pic.png", ""),
+        ],
+        "/v/near/top.md",
+    );
+    assert_eq!(
+        lands_on(&after, "/v/near/top.md", "[b](/z/new)"),
+        Some(p("/v/z/new.md"))
+    );
+    assert_eq!(
+        lands_on(&after, "/v/near/top.md", "[b](z/new)"),
+        Some(p("/v/near/z/new"))
+    );
+}

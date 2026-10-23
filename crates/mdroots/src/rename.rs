@@ -12,7 +12,7 @@ use mdroots_core::{Cancel, Error, ErrorKind, FileSystem, FsKind, MemStore, Meta}
 use mdroots_resolve::ladder::LinkStatus;
 use mdroots_resolve::normalize::percent_decode;
 use mdroots_resolve::{KeyKind, KeyLookup, ResolveStep, doc_keys};
-use mdroots_syntax::{Document, Link, LinkKind, LinkTarget};
+use mdroots_syntax::{Dialect, Document, Link, LinkKind, parse};
 
 use crate::links::{encode_destination, relative_path};
 use crate::workspace::{Workspace, is_note};
@@ -101,6 +101,8 @@ impl Workspace {
         cancel: &Cancel,
     ) -> Result<WorkspaceEdit, Error> {
         let mut map: HashMap<String, String> = HashMap::new();
+        // Folder pairs that move at least one note: the whole directory moves.
+        let mut folders: Vec<(String, String)> = Vec::new();
         for (old, new) in moves {
             cancel.check()?;
             let (Ok(old_rel), Ok(new_rel)) = (self.rel(old), self.rel(new)) else {
@@ -118,6 +120,9 @@ impl Workspace {
                         pairs.push((f.to_owned(), format!("{new_rel}/{sub}")));
                     }
                 }
+                if !pairs.is_empty() {
+                    folders.push((old_rel, new_rel));
+                }
             }
             for (from, to) in pairs {
                 if map.insert(from.clone(), to).is_some() {
@@ -132,7 +137,7 @@ impl Workspace {
             return Ok(out);
         }
         let case_sensitive = self.fs().case_sensitive(&root);
-        let post = self.post_move_store(store, &map, case_sensitive, cancel)?;
+        let post = self.post_move_store(store, &map, &folders, case_sensitive, cancel)?;
         for from in store.files() {
             cancel.check()?;
             let Some(doc) = store.document(from) else {
@@ -210,10 +215,24 @@ impl Workspace {
                     // path, else the file-relative path. A target that is
                     // not a note after the moves (an unindexed file) is
                     // not checked.
-                    if post.document(target_after).is_none() {
-                        return Some(preferred);
-                    }
-                    let lands = |t: &str| lands_after(&post, from_after, &ctx, &link, t);
+                    // Every candidate must parse back, in place in the
+                    // link, as a link with exactly that path.
+                    let src = doc.source();
+                    let check = post.document(target_after).is_some();
+                    let lands = |t: &str| {
+                        let spliced = format!(
+                            "{}{t}{}",
+                            &src[link.range.start..span.start],
+                            &src[span.end..link.range.end]
+                        );
+                        lands_after(
+                            &post,
+                            from_after,
+                            &spliced,
+                            t,
+                            check.then_some(target_after),
+                        )
+                    };
                     [preferred, ctx.slash_rooted(), ctx.file_relative()]
                         .into_iter()
                         .find(|t| lands(t))
@@ -247,6 +266,7 @@ impl Workspace {
         &self,
         store: &MemStore,
         map: &HashMap<String, String>,
+        folders: &[(String, String)],
         case_sensitive: bool,
         cancel: &Cancel,
     ) -> Result<MemStore, Error> {
@@ -259,7 +279,13 @@ impl Workspace {
                 Some((at.to_owned(), Arc::from(text.as_bytes())))
             })
             .collect();
-        let fs = Arc::new(MovedFs::new(self.fs_arc(), &root, map, case_sensitive));
+        let fs = Arc::new(MovedFs::new(
+            self.fs_arc(),
+            &root,
+            map,
+            folders,
+            case_sensitive,
+        ));
         let mut post = MemStore::from_contents(fs, root, contents, cancel)?;
         post.set_code_dirs(store.code_dirs().to_vec());
         Ok(post)
@@ -278,35 +304,51 @@ fn stem_shared(post: &MemStore, rel: &str, case_sensitive: bool) -> bool {
         .any(|(_, key)| post.lookup(KeyKind::Stem, &key).iter().any(|p| p != rel))
 }
 
-/// Whether `link`, with `text` written as its target path, resolves from
-/// the note at `from_after` in `post` to `ctx.target_after` alone. The
-/// link keeps its kind, label and any scheme prefix (`file:`), not its
-/// anchor, which does not change where it lands.
-fn lands_after(post: &MemStore, from_after: &str, ctx: &Rewrite, link: &Link, text: &str) -> bool {
-    let (raw, path) = (link.target().raw(), link.target().path());
-    // `path` is a slice of `raw`: what precedes it is the scheme prefix.
-    let at = (path.as_ptr() as usize).saturating_sub(raw.as_ptr() as usize);
-    let prefix = raw.get(..at).unwrap_or_default();
-    let raw = format!("{prefix}{text}");
-    let target = LinkTarget::new(&raw, prefix.len()..raw.len(), None);
-    let probe = link.clone().with_target(target);
-    let r = post.resolve_link(from_after, &probe, false);
-    r.status != LinkStatus::Ambiguous
-        && r.targets.first().map(String::as_str) == Some(ctx.target_after)
+/// Whether `spliced` (the link's source text with `text` in place of its
+/// target path, written in the note at `from_after`) parses, in that
+/// note's dialect, to a link whose path is exactly `text`, and, when
+/// `target` is given, resolves in `post` to `target` first and not
+/// ambiguously. A `#`, `|`, `]]` or `::` in `text` that the parser would
+/// read as syntax fails the first test.
+fn lands_after(
+    post: &MemStore,
+    from_after: &str,
+    spliced: &str,
+    text: &str,
+    target: Option<&str>,
+) -> bool {
+    let doc = parse(spliced, Dialect::detect_from_path(Path::new(from_after)));
+    let Some(l) = doc.links().next() else {
+        return false;
+    };
+    if l.target().path() != text {
+        return false;
+    }
+    let Some(target) = target else {
+        return true;
+    };
+    let r = post.resolve_link(from_after, l, false);
+    r.status != LinkStatus::Ambiguous && r.targets.first().map(String::as_str) == Some(target)
 }
 
-/// The workspace filesystem as it will be after the moves: a destination
-/// path answers with its source's file, a moved source that is not also
-/// a destination is gone, and a directory holding a destination exists.
+/// The workspace filesystem as it will be after the moves. A note pair
+/// moves one file: its destination answers with the source's file and the
+/// source is gone. A folder pair moves the whole directory: a path under
+/// the new folder answers from the same path under the old one, and a path
+/// under the old folder is gone. A directory holding a destination exists.
 /// Paths are matched case-folded on a case-insensitive root, as the
 /// resolver may ask for a folded key.
 struct MovedFs {
     inner: Arc<dyn FileSystem>,
     case_sensitive: bool,
-    /// Destination (absolute, folded) -> source (absolute).
+    /// Note destination (absolute, folded) -> source (absolute).
     dest: HashMap<PathBuf, PathBuf>,
-    /// Moved sources (absolute, folded) that are not destinations.
+    /// Moved note sources (absolute, folded) that are not destinations.
     gone: HashSet<PathBuf>,
+    /// Folder pairs: (new, folded; old, absolute).
+    folders: Vec<(PathBuf, PathBuf)>,
+    /// Old folders (absolute, folded).
+    old_folders: Vec<PathBuf>,
     /// Directories (absolute, folded) holding a destination, up to the
     /// root.
     dirs: HashSet<PathBuf>,
@@ -314,11 +356,18 @@ struct MovedFs {
     dir_meta: Meta,
 }
 
+/// Where a path of the post-move tree lives before the moves.
+enum Before {
+    At(PathBuf),
+    Gone,
+}
+
 impl MovedFs {
     fn new(
         inner: Arc<dyn FileSystem>,
         root: &Path,
         map: &HashMap<String, String>,
+        folders: &[(String, String)],
         case_sensitive: bool,
     ) -> Self {
         let fold = |p: PathBuf| fold_path(p, case_sensitive);
@@ -330,6 +379,11 @@ impl MovedFs {
             .keys()
             .map(|f| fold(root.join(f)))
             .filter(|f| !dest.contains_key(f))
+            .collect();
+        let old_folders = folders.iter().map(|(o, _)| fold(root.join(o))).collect();
+        let folders = folders
+            .iter()
+            .map(|(o, n)| (fold(root.join(n)), root.join(o)))
             .collect();
         let root = fold(root.to_path_buf());
         let mut dirs = HashSet::new();
@@ -354,20 +408,29 @@ impl MovedFs {
             case_sensitive,
             dest,
             gone,
+            folders,
+            old_folders,
             dirs,
             dir_meta,
         }
     }
 
-    /// Where the bytes of `p` live before the moves; `None` when `p` is a
-    /// moved-away source.
-    fn source<'p>(&'p self, p: &'p Path) -> Option<&'p Path> {
+    fn before(&self, p: &Path) -> Before {
         let key = fold_path(p.to_path_buf(), self.case_sensitive);
-        match self.dest.get(&key) {
-            Some(s) => Some(s),
-            None if self.gone.contains(&key) => None,
-            None => Some(p),
+        if let Some(s) = self.dest.get(&key) {
+            return Before::At(s.clone());
         }
+        for (new, old) in &self.folders {
+            if key.starts_with(new) {
+                // `key` and `p` have the same components, folded or not.
+                let n = new.components().count();
+                return Before::At(old.join(p.components().skip(n).collect::<PathBuf>()));
+            }
+        }
+        if self.gone.contains(&key) || self.old_folders.iter().any(|o| key.starts_with(o)) {
+            return Before::Gone;
+        }
+        Before::At(p.to_path_buf())
     }
 
     /// A directory that holds a destination.
@@ -390,14 +453,18 @@ fn not_found(p: &Path) -> io::Error {
 
 impl FileSystem for MovedFs {
     fn read(&self, p: &Path) -> io::Result<(Arc<[u8]>, Meta)> {
-        self.inner.read(self.source(p).ok_or_else(|| not_found(p))?)
+        match self.before(p) {
+            Before::At(src) => self.inner.read(&src),
+            Before::Gone => Err(not_found(p)),
+        }
     }
 
     fn stat(&self, p: &Path) -> io::Result<Meta> {
-        let Some(src) = self.source(p) else {
-            return Err(not_found(p));
+        let r = match self.before(p) {
+            Before::At(src) => self.inner.stat(&src),
+            Before::Gone => Err(not_found(p)),
         };
-        match self.inner.stat(src) {
+        match r {
             Err(_) if self.is_new_dir(p) => Ok(self.dir_meta),
             r => r,
         }
