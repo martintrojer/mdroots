@@ -468,3 +468,76 @@ fn create_note_not_offered_through_a_symlink_out_of_the_root() {
     // Canonical, like every public path (temp dirs may sit behind a symlink).
     assert_eq!(f[0].edit.create[0].0, root.join("inside/new.md"));
 }
+
+/// The preferred fix for the whole of `a` (in `/v/a.md`), applied; then
+/// the note has no diagnostics left.
+fn preferred_clears(w: &Workspace, a: &str) -> String {
+    let f = fixes(w, "/v/a.md", 0..a.len());
+    let pick: Vec<&Fix> = f.iter().filter(|f| f.preferred).collect();
+    assert_eq!(pick.len(), 1, "{f:?}");
+    let out = apply(a, "/v/a.md", &pick[0].edit);
+    w.set_overlay(&p("/v/a.md"), &out).unwrap();
+    assert_eq!(w.diagnostics(&p("/v/a.md"), &Cancel::new()).unwrap(), []);
+    out
+}
+
+// Reviewer repros (medium_html_anchor_fixes_locate_the): the destination
+// is the `href` value, not the first place its text appears in the tag.
+#[test]
+fn html_anchor_fix_edits_href_not_an_earlier_attribute() {
+    let b = "## Introduction\n";
+    let a = "<a title='b.md#intro' href='b.md#intro'>x</a>";
+    let w = ws(&[("/v/a.md", a), ("/v/b.md", b)]);
+    assert_eq!(
+        preferred_clears(&w, a),
+        "<a title='b.md#intro' href='b.md#introduction'>x</a>"
+    );
+    let a = "<a title='b.md' href='b.md#intro'>x</a>";
+    let w = ws(&[("/v/a.md", a), ("/v/b.md", b)]);
+    assert_eq!(
+        preferred_clears(&w, a),
+        "<a title='b.md' href='b.md#introduction'>x</a>"
+    );
+    // Control.
+    let a = "<a href='b.md#intro'>x</a>";
+    let w = ws(&[("/v/a.md", a), ("/v/b.md", b)]);
+    assert_eq!(preferred_clears(&w, a), "<a href='b.md#introduction'>x</a>");
+}
+
+#[test]
+fn same_note_html_anchor_gets_the_fix() {
+    let a = "## Introduction\n\n<a href='#intro'>x</a>";
+    let w = ws(&[("/v/a.md", a)]);
+    assert_eq!(
+        preferred_clears(&w, a),
+        "## Introduction\n\n<a href='#introduction'>x</a>"
+    );
+    // Control: the Markdown form.
+    let a = "## Introduction\n\n[x](#intro)";
+    let w = ws(&[("/v/a.md", a)]);
+    assert_eq!(
+        preferred_clears(&w, a),
+        "## Introduction\n\n[x](#introduction)"
+    );
+}
+
+// Reviewer repro (medium_org_links_in_markdown_create_the): an Org link in
+// a Markdown note keeps `file:` outside the path, as in an Org note.
+#[test]
+fn org_link_in_a_markdown_note_drops_the_file_scheme() {
+    let a = "[[file:missin.org][M]]";
+    let w = ws(&[("/v/a.md", a), ("/v/missing.org", "* Missing\n")]);
+    let f = fixes(&w, "/v/a.md", 0..a.len());
+    assert_eq!(titles(&f), ["Change to Missing", "Create note missin.org"]);
+    assert_eq!(apply(a, "/v/a.md", &f[0].edit), "[[file:missing.org][M]]");
+    assert_eq!(
+        f[1].edit.create,
+        [(p("/v/missin.org"), "# missin\n".to_owned())]
+    );
+    // Control: the same link in an Org note.
+    let w = ws(&[("/v/a.org", a), ("/v/missing.org", "* Missing\n")]);
+    let f = fixes(&w, "/v/a.org", 0..a.len());
+    assert_eq!(titles(&f), ["Change to Missing", "Create note missin.org"]);
+    assert_eq!(apply(a, "/v/a.org", &f[0].edit), "[[file:missing.org][M]]");
+    assert_eq!(f[1].edit.create[0].0, p("/v/missin.org"));
+}

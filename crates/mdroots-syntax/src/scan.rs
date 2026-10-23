@@ -730,6 +730,15 @@ fn shortcode(
 }
 
 /// `<a … href=…>` or `<img … src=…>` at `at`: value range and tag end.
+/// The byte range of the destination (`href` of `<a>`, `src` of `<img>`;
+/// the attribute's value, without quotes) in `tag`, an HTML link's source
+/// starting at its `<`, as the parser reads it: the attribute is found by
+/// name, never by matching its value elsewhere in the tag. `None` when
+/// `tag` is not such a link or the value is empty.
+pub fn html_destination(tag: &str) -> Option<Range<usize>> {
+    html_link(tag, 0).map(|(v, _)| v)
+}
+
 fn html_link(text: &str, at: usize) -> Option<(Range<usize>, usize)> {
     let b = text.as_bytes();
     let mut i = at + 1;

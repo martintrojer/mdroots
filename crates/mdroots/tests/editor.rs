@@ -223,6 +223,26 @@ fn rename_rewrites_links_in_their_written_style() {
     assert_eq!(got, want);
 }
 
+/// The shared path span (fixes, rename) reads an HTML link's `href` value,
+/// not the first place its text appears, and an Org link in a Markdown
+/// note with its `file:` prefix outside the path.
+#[test]
+fn rename_edits_the_href_and_an_org_link_in_markdown() {
+    let a = "<a title='b.org' href='b.org'>x</a> [[file:b.org][M]]\n";
+    let ws = open(
+        &[("/v/.mdroots", ""), ("/v/a.md", a), ("/v/b.org", "* B\n")],
+        "/v/a.md",
+    );
+    let got = rename(&ws, "/v/b.org", "/v/d/b.org");
+    assert_eq!(
+        got,
+        [(
+            p("/v/a.md"),
+            "<a title='b.org' href='d/b.org'>x</a> [[file:d/b.org][M]]\n".to_owned()
+        )]
+    );
+}
+
 #[test]
 fn rename_in_place_and_percent_encoding() {
     let ws = open(

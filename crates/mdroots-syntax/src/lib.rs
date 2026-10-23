@@ -19,7 +19,7 @@ pub use model::{
     Value,
 };
 
-pub use scan::strip_position;
+pub use scan::{html_destination, strip_position};
 pub use structure::scheme;
 
 /// Parse `text` with default options for `dialect`.

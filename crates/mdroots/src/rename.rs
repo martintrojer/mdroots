@@ -12,7 +12,7 @@ use mdroots_core::{Cancel, Error, ErrorKind, FileSystem, FsKind, MemStore, Meta}
 use mdroots_resolve::ladder::LinkStatus;
 use mdroots_resolve::normalize::percent_decode;
 use mdroots_resolve::{KeyKind, KeyLookup, ResolveStep, doc_keys};
-use mdroots_syntax::{Dialect, Document, Link, LinkKind, parse};
+use mdroots_syntax::{Dialect, Document, Link, LinkKind, html_destination, parse};
 
 use crate::links::{encode_destination, relative_path};
 use crate::workspace::{Workspace, is_note};
@@ -353,7 +353,7 @@ pub(crate) fn lands_after(
     let Some(l) = doc.links().next() else {
         return false;
     };
-    if l.target().path() != text {
+    if link_path(l) != text {
         return false;
     }
     let r = post.resolve_link(from_after, l, false);
@@ -529,8 +529,23 @@ pub(crate) fn is_reference_usage(doc: &Document, l: &Link) -> bool {
     l.kind == LinkKind::Reference && !doc.link_defs().any(|d| d.range == l.range)
 }
 
+/// The link's path as an editor sees it in the source: `target.path`,
+/// except that an Org link's `file:` prefix and `::search` are not part of
+/// it. The Org parser already splits them off; the Markdown parser (an
+/// Org link in a Markdown note) keeps them in the path.
+pub(crate) fn link_path(l: &Link) -> &str {
+    let p = l.target().path();
+    match l.kind {
+        LinkKind::Org => {
+            let p = p.strip_prefix("file:").unwrap_or(p);
+            p.split("::").next().unwrap_or(p)
+        }
+        _ => p,
+    }
+}
+
 /// The byte range of the link's target path (no anchor, no brackets) in
-/// `src`, checked against `target.path`.
+/// `src`, checked against [`link_path`].
 pub(crate) fn path_span(src: &str, l: &Link) -> Option<Range<usize>> {
     let slice = src.get(l.range.clone())?;
     let base = l.range.start;
@@ -561,14 +576,20 @@ pub(crate) fn path_span(src: &str, l: &Link) -> Option<Range<usize>> {
                 .min()?;
             (open, open + len)
         }
+        // The `href` / `src` value, as the parser found it.
+        LinkKind::Html => {
+            let v = html_destination(slice)?;
+            (v.start, (v.start + l.target().path().len()).min(v.end))
+        }
         _ => {
             let at = slice.find(l.target().path())?;
             (at, at + l.target().path().len())
         }
     };
     let text = slice.get(start..end)?;
+    let path = link_path(l);
     // Unexpected syntax (escapes, a target on the right of a pipe): no edit.
-    (text == l.target().path() || text.split('#').next() == Some(l.target().path())).then(|| {
+    (text == path || text.split('#').next() == Some(path)).then(|| {
         let end = start + text.find('#').unwrap_or(text.len());
         base + start..base + end
     })

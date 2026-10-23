@@ -13,7 +13,8 @@ use mdroots_syntax::{Anchor, Dialect, Document, Link, LinkKind};
 
 use crate::notes::score;
 use crate::rename::{
-    Rewrite, TextEdit, WorkspaceEdit, is_reference_usage, lands_after, parent, path_span, stem,
+    Rewrite, TextEdit, WorkspaceEdit, is_reference_usage, lands_after, link_path, parent,
+    path_span, stem,
 };
 use crate::workspace::{Freshness, Workspace, is_note, slash, title};
 
@@ -156,7 +157,7 @@ impl Ctx<'_> {
 
     /// `Change to <title>`: notes matching the written stem (tiers 0–2).
     fn change_to(&self, link: &Link) -> Vec<Candidate> {
-        let written = percent_decode(link.target().path());
+        let written = percent_decode(link_path(link));
         let name = written.rsplit('/').next().unwrap_or(&written);
         let query = stem(name);
         if query.is_empty() {
@@ -223,7 +224,7 @@ impl Ctx<'_> {
     /// `Create note <path>`: the note the link names, if it is a note
     /// path inside the root that is neither on disk nor indexed.
     fn create_note(&self, link: &Link) -> Option<Candidate> {
-        let written = percent_decode(link.target().path());
+        let written = percent_decode(link_path(link));
         let name = written.rsplit('/').next().unwrap_or(&written);
         if name.is_empty() || (has_ext(name) && !is_note(name)) || written.starts_with('~') {
             return None;
