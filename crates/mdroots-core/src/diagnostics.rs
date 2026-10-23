@@ -11,7 +11,7 @@ use std::ops::Range;
 
 use mdroots_resolve::dialect::{Severity, VoteResult, link_severity};
 use mdroots_resolve::ladder::{LinkStatus, Resolution};
-use mdroots_syntax::{Anchor, Confidence, Link, LinkKind};
+use mdroots_syntax::{Anchor, Confidence, FieldValue, Link, LinkKind};
 
 use crate::memstore::{AnchorStatus, MemStore, counts};
 
@@ -125,11 +125,14 @@ impl DiagnosticPolicy {
                 let fields = doc.frontmatter_fields();
                 for (i, winner, meaning) in collisions {
                     let loser = &entries[i].0;
-                    // The n-th entry with this key is the n-th field with it.
+                    // The n-th entry with this key is the n-th field with it,
+                    // not counting a non-empty map: `entries` flattens it
+                    // into `key.child` entries.
                     let nth = entries[..i].iter().filter(|(k, _)| k == loser).count();
                     let range = fields
                         .iter()
                         .filter(|f| f.key == *loser)
+                        .filter(|f| !matches!(&f.value, FieldValue::Map(m) if !m.is_empty()))
                         .nth(nth)
                         .map_or_else(|| fm.range.clone(), |f| f.range.clone());
                     out.push(Diagnostic {

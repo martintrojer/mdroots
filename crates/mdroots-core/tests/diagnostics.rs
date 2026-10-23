@@ -397,6 +397,16 @@ fn key_collision_range_is_the_losing_entry() {
 }
 
 #[test]
+fn key_collision_range_skips_a_flattened_map() {
+    // `Title:` with children is flattened out of the entries.
+    let src = "---\nTitle:\n  nested: x\nTitle: A\ntitle: B\n---\nbody\n";
+    let d = diags(MemFs::new().with_file("a.md", src), false, "a.md");
+    assert_eq!(codes(&d), [DiagCode::FrontmatterKeyCollision]);
+    assert_eq!(&src[d[0].range.clone()], "Title: A");
+    assert_eq!(src[..d[0].range.start].matches('\n').count(), 3);
+}
+
+#[test]
 fn no_key_collision_for_dates_placeholders_duplicates_or_no_frontmatter() {
     assert!(collisions("date: 2024-01-01\nDate: 2024-01-02\n").is_empty());
     assert!(collisions("title: A\nTitle: TBD\n").is_empty());
