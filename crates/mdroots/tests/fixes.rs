@@ -1,6 +1,6 @@
 //! `Workspace::fixes` on in-memory roots (`MemFs` with a `FakeProbe`
 //! holding the same files): link repair for broken links and anchors and
-//! ambiguous links.
+//! ambiguous links, link conversion and link selection.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -12,12 +12,17 @@ use mdroots::{
 use mdroots_core::MemFs;
 use mdroots_roots::probe::FakeProbe;
 
-/// A root at `/v` (a `.obsidian` marker) holding `files`, opened at the
-/// first one.
+/// A root at `/v` (a `.obsidian` marker: wiki links by stem) holding
+/// `files`, opened at the first one.
 fn ws(files: &[(&str, &str)]) -> Workspace {
+    ws_with(files, "{}")
+}
+
+/// [`ws`] with `app` as the Obsidian config (`.obsidian/app.json`).
+fn ws_with(files: &[(&str, &str)], app: &str) -> Workspace {
     let mut fs = MemFs::new();
     let mut probe = FakeProbe::new().home("/h");
-    for (path, text) in files.iter().chain(&[("/v/.obsidian/app.json", "{}")]) {
+    for (path, text) in files.iter().chain(&[("/v/.obsidian/app.json", app)]) {
         fs = fs.with_file(path, text);
         probe = probe.file(path, text);
     }
@@ -42,6 +47,13 @@ fn fixes(w: &Workspace, path: &str, range: Range<usize>) -> Vec<Fix> {
     w.fixes(&p(path), range, &Cancel::new()).unwrap()
 }
 
+/// [`fixes`] without conversion and link selection: the quick fixes only.
+fn quick(w: &Workspace, path: &str, range: Range<usize>) -> Vec<Fix> {
+    let mut f = fixes(w, path, range);
+    f.retain(|f| matches!(f.kind, FixKind::QuickFix(_)));
+    f
+}
+
 fn titles(f: &[Fix]) -> Vec<&str> {
     f.iter().map(|f| f.title.as_str()).collect()
 }
@@ -56,6 +68,11 @@ fn apply(text: &str, file: &str, edit: &WorkspaceEdit) -> String {
         }
     }
     out
+}
+
+/// Only the fixes of `kind`.
+fn only(f: Vec<Fix>, kind: &FixKind) -> Vec<Fix> {
+    f.into_iter().filter(|f| &f.kind == kind).collect()
 }
 
 fn code(f: &Fix) -> DiagCode {
@@ -210,7 +227,7 @@ fn fixes_follow_link_order() {
 fn resolved_and_code_links_get_nothing() {
     let a = "[[b]] `[[nope]]`\n\n```\n[[gone]]\n```\n<!-- [[lost]] -->\n";
     let w = ws(&[("/v/a.md", a), ("/v/b.md", "")]);
-    assert!(fixes(&w, "/v/a.md", 0..a.len()).is_empty());
+    assert!(quick(&w, "/v/a.md", 0..a.len()).is_empty());
 }
 
 #[test]
@@ -273,7 +290,7 @@ fn create_note_not_offered_when_the_file_exists() {
 fn anchor_fix_changes_only_the_anchor() {
     let a = "[[b#intro]] and [y](b.md#intro \"t\")\n";
     let w = ws(&[("/v/a.md", a), ("/v/b.md", "# B\n\n## Introduction\n")]);
-    let f = fixes(&w, "/v/a.md", at(a, "[[b#intro]]"));
+    let f = quick(&w, "/v/a.md", at(a, "[[b#intro]]"));
     assert_eq!(titles(&f), ["Change to #introduction"]);
     assert!(f[0].preferred);
     assert_eq!(code(&f[0]), DiagCode::BrokenAnchor);
@@ -305,7 +322,7 @@ fn anchor_fix_ranks_headings_and_skips_blocks() {
     let a = "[[b#set|s]] [[b#^blk]]\n";
     let b = "# B\n\n## Old setup\n\n## Setup\n\n## Settings\n\n## Reset\n\n## Sxexxtx\n";
     let w = ws(&[("/v/a.md", a), ("/v/b.md", b)]);
-    let f = fixes(&w, "/v/a.md", at(a, "[[b#set|s]]"));
+    let f = quick(&w, "/v/a.md", at(a, "[[b#set|s]]"));
     // Prefix (document order), then substring; never a subsequence.
     assert_eq!(
         titles(&f),
@@ -320,7 +337,7 @@ fn anchor_fix_ranks_headings_and_skips_blocks() {
         apply(a, "/v/a.md", &f[0].edit),
         "[[b#setup|s]] [[b#^blk]]\n"
     );
-    assert!(fixes(&w, "/v/a.md", at(a, "[[b#^blk]]")).is_empty());
+    assert!(quick(&w, "/v/a.md", at(a, "[[b#^blk]]")).is_empty());
 }
 
 #[test]
@@ -374,7 +391,7 @@ fn reference_definition_gets_fixes_not_its_usage() {
 #[test]
 fn overlay_text_is_what_fixes_see() {
     let w = ws(&[("/v/a.md", "[[b]]\n"), ("/v/b.md", ""), ("/v/bee.md", "")]);
-    assert!(fixes(&w, "/v/a.md", 0..0).is_empty());
+    assert!(quick(&w, "/v/a.md", 0..0).is_empty());
     let text = "[[be]]\n";
     w.set_overlay(&p("/v/a.md"), text).unwrap();
     let f = fixes(&w, "/v/a.md", 0..0);
@@ -398,7 +415,7 @@ fn excludes_the_linking_note() {
 /// `/v/b.md`), applied.
 fn anchor_fixed(a: &str, b: &str) -> String {
     let w = ws(&[("/v/a.md", a), ("/v/b.md", b)]);
-    let f = fixes(&w, "/v/a.md", 0..a.len());
+    let f = quick(&w, "/v/a.md", 0..a.len());
     assert_eq!(f.len(), 1, "{f:?}");
     assert_eq!(code(&f[0]), DiagCode::BrokenAnchor);
     apply(a, "/v/a.md", &f[0].edit)
@@ -540,4 +557,198 @@ fn org_link_in_a_markdown_note_drops_the_file_scheme() {
     assert_eq!(titles(&f), ["Change to Missing", "Create note missin.org"]);
     assert_eq!(apply(a, "/v/a.org", &f[0].edit), "[[file:missing.org][M]]");
     assert_eq!(f[1].edit.create[0].0, p("/v/missin.org"));
+}
+
+/// The conversion fixes for the link `needle` in `a` (`/v/a.md`), each
+/// applied.
+fn converted(w: &Workspace, a: &str, needle: &str) -> Vec<(String, String)> {
+    let f = only(fixes(w, "/v/a.md", at(a, needle)), &FixKind::ConvertLink);
+    assert!(
+        f.iter().all(|f| !f.preferred),
+        "conversion is never preferred"
+    );
+    f.iter()
+        .map(|f| (f.title.clone(), apply(a, "/v/a.md", &f.edit)))
+        .collect()
+}
+
+const BEE: (&str, &str) = ("/v/b.md", "---\ntitle: Bee note\n---\n\n## Part two\n");
+
+#[test]
+fn wiki_to_markdown_keeps_label_and_anchor() {
+    let a = "[[b]] [[b|the bee]] [[b#part-two]]\n";
+    let w = ws(&[("/v/a.md", a), BEE]);
+    let md = "Convert to Markdown link".to_owned();
+    // No label: the target's title.
+    assert_eq!(
+        converted(&w, a, "[[b]]"),
+        [(md.clone(), a.replacen("[[b]]", "[Bee note](b.md)", 1))]
+    );
+    assert_eq!(
+        converted(&w, a, "[[b|the bee]]"),
+        [(md.clone(), a.replace("[[b|the bee]]", "[the bee](b.md)"))]
+    );
+    assert_eq!(
+        converted(&w, a, "[[b#part-two]]"),
+        [(md, a.replace("[[b#part-two]]", "[Bee note](b.md#part-two)"))]
+    );
+}
+
+#[test]
+fn markdown_to_wiki_keeps_the_label_unless_it_is_the_target() {
+    let a = "[Bee note](b.md) [b](b.md) [x](b.md#part-two)\n";
+    let w = ws(&[("/v/a.md", a), BEE]);
+    let wiki = "Convert to wiki link".to_owned();
+    assert_eq!(
+        converted(&w, a, "[Bee note](b.md)"),
+        [(
+            wiki.clone(),
+            a.replace("[Bee note](b.md)", "[[b|Bee note]]")
+        )]
+    );
+    assert_eq!(
+        converted(&w, a, "[b](b.md)"),
+        [(wiki.clone(), a.replace("[b](b.md)", "[[b]]"))]
+    );
+    assert_eq!(
+        converted(&w, a, "[x](b.md#part-two)"),
+        [(wiki, a.replace("[x](b.md#part-two)", "[[b#part-two|x]]"))]
+    );
+}
+
+#[test]
+fn markdown_conversion_uses_the_root_relative_style_the_root_votes() {
+    let a = "[[deep]]\n";
+    let files = [("/v/sub/a.md", a), ("/v/sub/deep/deep.md", "# Deep\n")];
+    let abs = r#"{"useMarkdownLinks": true, "newLinkFormat": "absolute"}"#;
+    let w = ws_with(&files, abs);
+    let f = only(fixes(&w, "/v/sub/a.md", 0..0), &FixKind::ConvertLink);
+    assert_eq!(titles(&f), ["Convert to Markdown link"]);
+    assert_eq!(
+        apply(a, "/v/sub/a.md", &f[0].edit),
+        "[Deep](sub/deep/deep.md)\n"
+    );
+    // A wiki root writes file-relative with the extension.
+    let w = ws(&files);
+    let f = only(fixes(&w, "/v/sub/a.md", 0..0), &FixKind::ConvertLink);
+    assert_eq!(
+        apply(a, "/v/sub/a.md", &f[0].edit),
+        "[Deep](deep/deep.md)\n"
+    );
+}
+
+#[test]
+fn conversion_follows_the_diagnostic_fixes_of_its_link() {
+    let a = "[[b#part-tw]]\n";
+    let w = ws(&[("/v/a.md", a), BEE]);
+    assert_eq!(
+        titles(&fixes(&w, "/v/a.md", 0..0)),
+        ["Change to #part-two", "Convert to Markdown link"]
+    );
+}
+
+#[test]
+fn no_conversion_for_broken_unindexed_code_or_org_links() {
+    let a = "[[gone]] [N](ignored/n.md) `[[b]]` <!-- [[b]] --> [a|b](b.md)\n";
+    let mut w = ws(&[
+        ("/v/a.md", a),
+        BEE,
+        ("/v/.gitignore", "ignored/\n"),
+        ("/v/ignored/n.md", "# N\n"),
+    ]);
+    let conv =
+        |w: &Workspace, path: &str, r: Range<usize>| only(fixes(w, path, r), &FixKind::ConvertLink);
+    let needles = [
+        "[[gone]]",
+        "[N](ignored/n.md)",
+        "`[[b]]`",
+        "<!-- [[b]] -->",
+        "[a|b](b.md)",
+    ];
+    for needle in needles {
+        assert!(conv(&w, "/v/a.md", at(a, needle)).is_empty(), "{needle}");
+    }
+    // The unindexed target exists on disk: the link is fine, just not converted.
+    let unindexed = at(a, "[N](ignored/n.md)");
+    assert!(fixes(&w, "/v/a.md", unindexed).is_empty());
+    // Frontmatter wiki links stay: `[` would start a YAML list.
+    let f = "---\nup: \"[[b]]\"\n---\n";
+    w = ws(&[("/v/a.md", f), BEE]);
+    assert!(conv(&w, "/v/a.md", at(f, "[[b]]")).is_empty());
+    let o = "[[file:b.org][B]] [[b]]\n";
+    w = ws(&[("/v/a.org", o), ("/v/b.org", "* B\n")]);
+    assert!(conv(&w, "/v/a.org", 0..o.len()).is_empty());
+}
+
+#[test]
+fn selection_links_to_a_note_by_title_prefix() {
+    let a = "I saw a Bee today.\n";
+    let w = ws(&[("/v/a.md", a), BEE]);
+    let f = fixes(&w, "/v/a.md", at(a, "Bee"));
+    assert_eq!(titles(&f), ["Link to Bee note"]);
+    assert_eq!(f[0].kind, FixKind::LinkSelection);
+    assert!(f[0].preferred, "the only candidate");
+    assert_eq!(
+        apply(a, "/v/a.md", &f[0].edit),
+        "I saw a [[b|Bee]] today.\n"
+    );
+    // Surrounding blanks stay outside the link; the stem itself needs no label.
+    let s = at(a, " a Bee ");
+    let f = fixes(&w, "/v/a.md", s.start + 2..s.end);
+    assert_eq!(
+        apply(a, "/v/a.md", &f[0].edit),
+        "I saw a [[b|Bee]] today.\n"
+    );
+    let b = "see b here\n";
+    w.set_overlay(&p("/v/a.md"), b).unwrap();
+    let f = fixes(&w, "/v/a.md", at(b, " b "));
+    assert_eq!(apply(b, "/v/a.md", &f[0].edit), "see [[b]] here\n");
+}
+
+#[test]
+fn selection_offers_up_to_three_exact_or_prefix_matches() {
+    let a = "plan\n";
+    let w = ws_with(
+        &[
+            ("/v/a.md", a),
+            ("/v/plan.md", "# Plan\n"),
+            ("/v/plan-b.md", ""),
+            ("/v/plan-c.md", ""),
+            ("/v/plan-d.md", ""),
+            ("/v/my-plan.md", ""),
+        ],
+        r#"{"useMarkdownLinks": true}"#,
+    );
+    let f = fixes(&w, "/v/a.md", at(a, "plan"));
+    assert_eq!(
+        titles(&f),
+        ["Link to Plan", "Link to plan-b", "Link to plan-c"]
+    );
+    assert!(f.iter().all(|f| !f.preferred));
+    assert_eq!(apply(a, "/v/a.md", &f[0].edit), "[plan](plan.md)\n");
+}
+
+#[test]
+fn no_link_selection_over_a_link_two_lines_or_no_match() {
+    let a = "Bee [[b]] and\nBee here. Zzz.\n";
+    let w = ws(&[("/v/a.md", a), BEE]);
+    let sel = |r: Range<usize>| only(fixes(&w, "/v/a.md", r), &FixKind::LinkSelection);
+    let spanning = at(a, "Bee [[b]]");
+    assert!(sel(spanning).is_empty());
+    let two_lines = at(a, "and\nBee");
+    assert!(sel(two_lines).is_empty());
+    assert!(sel(at(a, "Zzz")).is_empty());
+    // A cursor selects nothing.
+    let s = at(a, "here").start;
+    assert!(sel(s..s).is_empty());
+    assert!(sel(at(a, "Bee here")).is_empty(), "no title starts with it");
+    // Code, comments and frontmatter get none; Org notes neither.
+    let c = "---\nk: Bee\n---\n`Bee` <!-- Bee -->\n\n```\nBee\n```\n";
+    let w = ws(&[("/v/a.md", c), BEE]);
+    for (i, _) in c.match_indices("Bee") {
+        assert!(only(fixes(&w, "/v/a.md", i..i + 3), &FixKind::LinkSelection).is_empty());
+    }
+    let o = "* Bee\n";
+    let w = ws(&[("/v/a.org", o), ("/v/b.org", "#+title: Bee note\n")]);
+    assert!(fixes(&w, "/v/a.org", at(o, "Bee")).is_empty());
 }

@@ -64,66 +64,7 @@ impl Workspace {
     ) -> Result<String, Error> {
         let from_rel = self.rel(from)?;
         let to_rel = self.rel(target)?;
-        let store = self.store();
-        // Any style added later is written as WikiPath, as below.
-        let is_wiki = !matches!(
-            style,
-            LinkStyle::MarkdownRelative { .. } | LinkStyle::MarkdownRootRelative { .. }
-        );
-        if let Some(a) = anchor {
-            let bad = match is_wiki {
-                true => a.contains(['[', ']', '|', '\n', '\r']),
-                false => a.contains(|c: char| {
-                    c.is_whitespace() || matches!(c, '(' | ')' | '\\' | '<' | '>')
-                }),
-            };
-            if bad {
-                return Err(unsupported(a));
-            }
-        }
-        let frag = anchor.map(|a| format!("#{a}")).unwrap_or_default();
-        let wiki = |t: String| -> Result<String, Error> {
-            if t.contains(['|', ']', '\n', '\r']) {
-                return Err(unsupported(&t));
-            }
-            match label {
-                None => Ok(format!("[[{t}{frag}]]")),
-                Some(l) if l.contains("]]") || l.contains(['\n', '\r']) => Err(unsupported(l)),
-                Some(l) => Ok(format!("[[{t}{frag}|{l}]]")),
-            }
-        };
-        let markdown = |paths: Vec<String>, md_suffix: bool| -> String {
-            let dests: Vec<String> = paths
-                .into_iter()
-                .map(|p| match md_suffix {
-                    true => markdown_destination(&p),
-                    false => markdown_destination(drop_ext(&p)),
-                })
-                .collect();
-            let dest = first_landing(&store, &from_rel, &to_rel, dests, &|d| format!("[x]({d})"));
-            let text = match label {
-                Some(l) => l.to_owned(),
-                None => store
-                    .document(&to_rel)
-                    .map(|d| title(&to_rel, d))
-                    .unwrap_or_else(|| stem(&to_rel).to_owned()),
-            };
-            format!("[{}]({dest}{frag})", escape_label(&text))
-        };
-        let dir = Path::new(&from_rel).parent().unwrap_or(Path::new(""));
-        let file_relative = relative_path(dir, Path::new(&to_rel));
-        match style {
-            LinkStyle::WikiStem => wiki(wiki_target(&store, &from_rel, &to_rel, true)),
-            LinkStyle::MarkdownRelative { md_suffix } => {
-                Ok(markdown(vec![file_relative], md_suffix))
-            }
-            LinkStyle::MarkdownRootRelative { md_suffix } => Ok(markdown(
-                vec![to_rel.clone(), format!("/{to_rel}"), file_relative],
-                md_suffix,
-            )),
-            // WikiPath, and any style added later.
-            _ => wiki(wiki_target(&store, &from_rel, &to_rel, false)),
-        }
+        link_text(&self.store(), &from_rel, &to_rel, style, anchor, label)
     }
 
     /// The text inside `[[…]]` that links `from` to `target`, as
@@ -140,9 +81,83 @@ impl Workspace {
     }
 }
 
+/// [`Workspace::link_text`] on root-relative paths, under a store the
+/// caller holds.
+pub(crate) fn link_text(
+    store: &MemStore,
+    from_rel: &str,
+    to_rel: &str,
+    style: LinkStyle,
+    anchor: Option<&str>,
+    label: Option<&str>,
+) -> Result<String, Error> {
+    // Any style added later is written as WikiPath, as below.
+    let is_wiki = !matches!(
+        style,
+        LinkStyle::MarkdownRelative { .. } | LinkStyle::MarkdownRootRelative { .. }
+    );
+    if let Some(a) = anchor {
+        let bad = match is_wiki {
+            true => a.contains(['[', ']', '|', '\n', '\r']),
+            false => {
+                a.contains(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '\\' | '<' | '>'))
+            }
+        };
+        if bad {
+            return Err(unsupported(a));
+        }
+    }
+    let frag = anchor.map(|a| format!("#{a}")).unwrap_or_default();
+    let wiki = |t: String| -> Result<String, Error> {
+        if t.contains(['|', ']', '\n', '\r']) {
+            return Err(unsupported(&t));
+        }
+        match label {
+            None => Ok(format!("[[{t}{frag}]]")),
+            Some(l) if l.contains("]]") || l.contains(['\n', '\r']) => Err(unsupported(l)),
+            Some(l) => Ok(format!("[[{t}{frag}|{l}]]")),
+        }
+    };
+    let markdown = |paths: Vec<String>, md_suffix: bool| -> String {
+        let dests: Vec<String> = paths
+            .into_iter()
+            .map(|p| match md_suffix {
+                true => markdown_destination(&p),
+                false => markdown_destination(drop_ext(&p)),
+            })
+            .collect();
+        let dest = first_landing(store, from_rel, to_rel, dests, &|d| format!("[x]({d})"));
+        let text = match label {
+            Some(l) => l.to_owned(),
+            None => store
+                .document(to_rel)
+                .map(|d| title(to_rel, d))
+                .unwrap_or_else(|| stem(to_rel).to_owned()),
+        };
+        format!("[{}]({dest}{frag})", escape_label(&text))
+    };
+    let dir = Path::new(from_rel).parent().unwrap_or(Path::new(""));
+    let file_relative = relative_path(dir, Path::new(to_rel));
+    match style {
+        LinkStyle::WikiStem => wiki(wiki_target(store, from_rel, to_rel, true)),
+        LinkStyle::MarkdownRelative { md_suffix } => Ok(markdown(vec![file_relative], md_suffix)),
+        LinkStyle::MarkdownRootRelative { md_suffix } => Ok(markdown(
+            vec![to_rel.to_owned(), format!("/{to_rel}"), file_relative],
+            md_suffix,
+        )),
+        // WikiPath, and any style added later.
+        _ => wiki(wiki_target(store, from_rel, to_rel, false)),
+    }
+}
+
 /// [`Workspace::wiki_target`] on root-relative paths; without
 /// `stem_first` the stem is not tried.
-fn wiki_target(store: &MemStore, from_rel: &str, to_rel: &str, stem_first: bool) -> String {
+pub(crate) fn wiki_target(
+    store: &MemStore,
+    from_rel: &str,
+    to_rel: &str,
+    stem_first: bool,
+) -> String {
     let s = stem(to_rel);
     let shared = || {
         let s = s.to_lowercase();

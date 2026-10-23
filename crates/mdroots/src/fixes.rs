@@ -1,5 +1,6 @@
-//! [`Workspace::fixes`]: quick fixes for a note's link diagnostics, as
-//! [`WorkspaceEdit`]s the caller applies (D10). Never writes files.
+//! [`Workspace::fixes`]: quick fixes for a note's link diagnostics, link
+//! conversion and link selection, as [`WorkspaceEdit`]s the caller applies
+//! (D10). Never writes files.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -8,9 +9,12 @@ use mdroots_core::fs::clean_path;
 use mdroots_core::memstore::counts;
 use mdroots_core::{Cancel, DiagCode, Diagnostic, Error, FileSystem, MemStore};
 use mdroots_resolve::ResolveStep;
+use mdroots_resolve::dialect::{LinkStyle, link_style};
+use mdroots_resolve::ladder::LinkStatus;
 use mdroots_resolve::normalize::percent_decode;
-use mdroots_syntax::{Anchor, Dialect, Document, Link, LinkKind};
+use mdroots_syntax::{Anchor, Context, Dialect, Document, Link, LinkKind, parse};
 
+use crate::links::{link_text, wiki_target};
 use crate::notes::score;
 use crate::rename::{
     Rewrite, TextEdit, WorkspaceEdit, is_reference_usage, lands_after, link_path, parent,
@@ -26,7 +30,8 @@ const MAX_CANDIDATES: usize = 3;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fix {
     /// What the editor shows: `Change to <title>`, `Create note <path>`,
-    /// `Change to #<slug>`, `Pick <path>`.
+    /// `Change to #<slug>`, `Pick <path>`, `Convert to wiki link`,
+    /// `Convert to Markdown link`, `Link to <title>`.
     pub title: String,
     pub kind: FixKind,
     /// The single candidate of its trigger: safe to apply with one key.
@@ -61,10 +66,19 @@ impl Workspace {
     ///   target matched the same way on slug or text;
     /// - ambiguous link: `Pick <path>` per candidate.
     ///
-    /// Order: by link start, then the list above, then candidate rank.
-    /// Links in code or comments, reference usages (`[x][r]`; their
-    /// definition carries the fixes) and other diagnostics get none; Org
-    /// notes get no anchor fix. Empty for a note that is not indexed.
+    /// Then each selected wiki or Markdown link that resolves to an indexed
+    /// note gets `Convert to Markdown link` / `Convert to wiki link`
+    /// ([`FixKind::ConvertLink`]), anchor and label kept. A non-empty range
+    /// on one line that overlaps no link gets `Link to <title>`
+    /// ([`FixKind::LinkSelection`]) for up to 3 notes whose title, stem or
+    /// alias equals or starts with the trimmed selection: the selection
+    /// becomes the label of a link to it in the root's style.
+    ///
+    /// Order: by link start, then the list above, then conversion, then
+    /// candidate rank; link selection last. Links in code or comments,
+    /// reference usages (`[x][r]`; their definition carries the fixes) and
+    /// other diagnostics get none; Org notes get no anchor fix, conversion
+    /// or link selection. Empty for a note that is not indexed.
     pub fn fixes(
         &self,
         path: &Path,
@@ -103,6 +117,10 @@ impl Workspace {
             for d in diags.iter().filter(|d| d.range == link.range) {
                 out.extend(ctx.for_diagnostic(link, d));
             }
+            out.extend(ctx.convert(link));
+        }
+        if !range.is_empty() {
+            out.extend(ctx.link_selection(range));
         }
         Ok(out)
     }
@@ -315,6 +333,147 @@ impl Ctx<'_> {
             .map(|(_, _, slug)| {
                 let edit = self.one_edit(written.clone(), slug.to_owned());
                 (format!("Change to #{slug}"), edit)
+            })
+            .collect()
+    }
+
+    /// The root's style for inserted links, from the store already held.
+    fn style(&self) -> LinkStyle {
+        link_style(self.store.conventions(), &self.store.vote())
+    }
+
+    /// `Convert to Markdown link` for a wiki link, `Convert to wiki link`
+    /// for a Markdown link: the whole link rewritten by `link_text`, anchor
+    /// (as written) and label kept. Only links outside frontmatter (where
+    /// `[` would start a YAML list) in a Markdown note that resolve to one
+    /// indexed note, and only when the new link resolves to that note too.
+    /// A Markdown label holding `|` (a wiki separator) is not converted.
+    fn convert(&self, link: &Link) -> Option<Fix> {
+        if self.doc.dialect() != Dialect::Markdown
+            || link.context == Context::Frontmatter
+            || link_path(link).is_empty()
+        {
+            return None;
+        }
+        let r = self.store.resolve_link(self.from, link, false);
+        let [target] = r.targets.as_slice() else {
+            return None;
+        };
+        if r.status != LinkStatus::Resolved {
+            return None;
+        }
+        let src = self.doc.source();
+        let anchor = match link.target().anchor() {
+            None => None,
+            Some(_) => Some(&src[anchor_span(src, link)?]).filter(|a| !a.is_empty()),
+        };
+        let (title, text) = match link.kind {
+            LinkKind::Wiki => {
+                let style = match self.style() {
+                    s @ (LinkStyle::MarkdownRelative { .. }
+                    | LinkStyle::MarkdownRootRelative { .. }) => s,
+                    _ => LinkStyle::MarkdownRelative { md_suffix: true },
+                };
+                let text = link_text(self.store, self.from, target, style, anchor, link.label());
+                ("Convert to Markdown link", text.ok()?)
+            }
+            LinkKind::Markdown => {
+                let label = src.get(link.text_range.clone())?;
+                if label.contains('|') {
+                    return None;
+                }
+                let generated = wiki_target(self.store, self.from, target, true);
+                let label = (!label.is_empty() && label != generated).then_some(label);
+                let style = LinkStyle::WikiStem;
+                let text = link_text(self.store, self.from, target, style, anchor, label);
+                ("Convert to wiki link", text.ok()?)
+            }
+            _ => return None,
+        };
+        let doc = parse(&text, Dialect::Markdown);
+        let new = doc.links().next()?;
+        let landed = self.store.resolve_link(self.from, new, false);
+        if landed.status != LinkStatus::Resolved || landed.targets.first() != Some(target) {
+            return None;
+        }
+        Some(Fix {
+            title: title.to_owned(),
+            kind: FixKind::ConvertLink,
+            preferred: false,
+            edit: self.one_edit(link.range.clone(), text),
+        })
+    }
+
+    /// `Link to <title>`: the trimmed selection, on one line and
+    /// overlapping no link, becomes the label of a link (root style) to
+    /// each of up to 3 notes, not this one, matching it exactly or as a
+    /// prefix (tiers 0–1). Markdown notes only; a selection in code, a
+    /// comment or frontmatter gets none.
+    fn link_selection(&self, range: Range<usize>) -> Vec<Fix> {
+        let src = self.doc.source();
+        let Some(sel) = src.get(range.clone()) else {
+            return Vec::new();
+        };
+        let trimmed = sel.trim();
+        if self.doc.dialect() != Dialect::Markdown
+            || trimmed.is_empty()
+            || sel.contains(['\n', '\r'])
+            || self
+                .doc
+                .links()
+                .any(|l| l.range.start < range.end && range.start < l.range.end)
+        {
+            return Vec::new();
+        }
+        let start = range.start + (sel.len() - sel.trim_start().len());
+        let span = start..start + trimmed.len();
+        let style = self.style();
+        let wiki = !matches!(
+            style,
+            LinkStyle::MarkdownRelative { .. } | LinkStyle::MarkdownRootRelative { .. }
+        );
+        let found: Vec<Candidate> = self
+            .ws
+            .search_scored(self.store, trimmed)
+            .into_iter()
+            .filter(|(rel, (tier, _))| *tier <= 1 && rel != self.from)
+            .take(MAX_CANDIDATES)
+            .filter_map(|(rel, _)| {
+                let plain = link_text(self.store, self.from, &rel, style, None, None).ok();
+                // `[[b]]`, not `[[b|b]]`.
+                let text = match plain {
+                    Some(p) if wiki && p == format!("[[{trimmed}]]") => p,
+                    _ => link_text(self.store, self.from, &rel, style, None, Some(trimmed)).ok()?,
+                };
+                // In place, the new link must be one in prose or a heading
+                // (not code, a comment or frontmatter) that reaches `rel`.
+                let spliced = format!("{}{text}{}", &src[..span.start], &src[span.end..]);
+                let doc = parse(&spliced, Dialect::Markdown);
+                let new = doc
+                    .links()
+                    .find(|l| l.range == (span.start..span.start + text.len()))?;
+                let r = self.store.resolve_link(self.from, new, false);
+                if !matches!(new.context, Context::Prose | Context::Heading)
+                    || r.status != LinkStatus::Resolved
+                    || r.targets.first() != Some(&rel)
+                {
+                    return None;
+                }
+                let title = title(&rel, self.store.document(&rel)?);
+                Some((
+                    format!("Link to {title}"),
+                    self.one_edit(span.clone(), text),
+                ))
+            })
+            .collect();
+        let one = found.len() == 1;
+        found
+            .into_iter()
+            .map(|(title, edit)| Fix {
+                title,
+                kind: FixKind::LinkSelection,
+                preferred: one,
+                edit,
             })
             .collect()
     }
