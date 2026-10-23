@@ -323,6 +323,153 @@ fn rename_refusals() {
     assert_eq!(err.kind(), ErrorKind::Cancelled);
 }
 
+fn mv(pairs: &[(&str, &str)]) -> Vec<(PathBuf, PathBuf)> {
+    pairs.iter().map(|(a, b)| (p(a), p(b))).collect()
+}
+
+/// The new text of every file `rename_notes` edits.
+fn rename_many(ws: &Workspace, pairs: &[(&str, &str)]) -> Vec<(PathBuf, String)> {
+    let we = ws.rename_notes(&mv(pairs), &Cancel::new()).unwrap();
+    assert_eq!(we.rename, None);
+    assert!(we.create.is_empty());
+    we.edits
+        .iter()
+        .map(|(f, e)| (f.clone(), apply(&ws.text(f).unwrap(), e)))
+        .collect()
+}
+
+#[test]
+fn rename_notes_keeps_links_between_notes_that_move_together() {
+    let files = [
+        ("/v/.mdroots", ""),
+        ("/v/a.md", "[b](b.md)\n"),
+        ("/v/b.md", "[a](a.md)\n"),
+    ];
+    let ws = open(&files, "/v/a.md");
+    let both = [("/v/a.md", "/v/new/a.md"), ("/v/b.md", "/v/new/b.md")];
+    assert!(rename_many(&ws, &both).is_empty());
+    // Separate calls plan each move against the tree as it is.
+    let got = rename(&ws, "/v/a.md", "/v/new/a.md");
+    assert_eq!(
+        got,
+        [
+            (p("/v/a.md"), "[b](../b.md)\n".to_owned()),
+            (p("/v/b.md"), "[a](new/a.md)\n".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn rename_notes_expands_folders() {
+    let ws = open(
+        &[
+            ("/v/.mdroots", ""),
+            ("/v/notes/a.md", "[c](../c.md) [s](sub/s.md)\n"),
+            ("/v/notes/sub/s.md", "[a](../a.md)\n"),
+            ("/v/c.md", "[x](notes/a.md) [[a]]\n"),
+        ],
+        "/v/c.md",
+    );
+    // Only the outside note changes: the moved notes keep their relative
+    // links to each other and to `c.md`; `[[a]]` is by stem.
+    let got = rename_many(&ws, &[("/v/notes", "/v/archive")]);
+    assert_eq!(
+        got,
+        [(p("/v/c.md"), "[x](archive/a.md) [[a]]\n".to_owned())]
+    );
+    // Moved one level deeper, `../c.md` follows.
+    let got = rename_many(&ws, &[("/v/notes", "/v/x/archive")]);
+    assert_eq!(got[1].1, "[c](../../c.md) [s](sub/s.md)\n");
+}
+
+#[test]
+fn rename_notes_skips_unknown_pairs_and_refuses_double_moves() {
+    let ws = open(
+        &[
+            ("/v/.mdroots", ""),
+            ("/v/a.md", "[b](b.md)\n"),
+            ("/v/b.md", ""),
+        ],
+        "/v/a.md",
+    );
+    assert!(rename_many(&ws, &[("/v/none.md", "/v/x.md")]).is_empty());
+    assert!(rename_many(&ws, &[("/v/b.md", "/elsewhere/b.md")]).is_empty());
+    let err = ws
+        .rename_notes(
+            &mv(&[("/v/b.md", "/v/x.md"), ("/v/b.md", "/v/y.md")]),
+            &Cancel::new(),
+        )
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    // A folder and a file inside it: the note is mapped twice.
+    let ws = open(
+        &[("/v/.mdroots", ""), ("/v/d/a.md", ""), ("/v/b.md", "")],
+        "/v/b.md",
+    );
+    let err = ws
+        .rename_notes(
+            &mv(&[("/v/d", "/v/e"), ("/v/d/a.md", "/v/f.md")]),
+            &Cancel::new(),
+        )
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+}
+
+#[test]
+fn rename_notes_one_pair_equals_rename_note() {
+    let ws = open(RENAME_VAULT, "/v/top.md");
+    let one = ws
+        .rename_note(
+            Path::new("/v/notes/old.md"),
+            Path::new("/v/archive/new.md"),
+            &Cancel::new(),
+        )
+        .unwrap();
+    let many = ws
+        .rename_notes(
+            &mv(&[("/v/notes/old.md", "/v/archive/new.md")]),
+            &Cancel::new(),
+        )
+        .unwrap();
+    assert_eq!(many.rename, None);
+    assert_eq!(many.edits, one.edits);
+}
+
+#[test]
+fn rename_does_not_write_a_stem_another_note_shares_after_the_move() {
+    let top = ("/v/top.md", "[[b]]\n");
+    // Single rename: a/new.md exists, so `[[new]]` would find it.
+    let ws = open(
+        &[
+            ("/v/.mdroots", ""),
+            top,
+            ("/v/old/b.md", ""),
+            ("/v/a/new.md", ""),
+        ],
+        "/v/top.md",
+    );
+    let got = rename(&ws, "/v/old/b.md", "/v/z/new.md");
+    assert_eq!(got, [(p("/v/top.md"), "[[z/new]]\n".to_owned())]);
+    // Batch: another moved note takes the same stem.
+    let ws = open(
+        &[
+            ("/v/.mdroots", ""),
+            top,
+            ("/v/old/b.md", ""),
+            ("/v/else/c.md", ""),
+        ],
+        "/v/top.md",
+    );
+    let got = rename_many(
+        &ws,
+        &[
+            ("/v/old/b.md", "/v/z/new.md"),
+            ("/v/else/c.md", "/v/a/new.md"),
+        ],
+    );
+    assert_eq!(got, [(p("/v/top.md"), "[[z/new]]\n".to_owned())]);
+}
+
 /// Temp-dir trees through the non-canonical path the OS hands out (on
 /// macOS `/var/…`, a symlink to `/private/var/…`).
 fn std_opts() -> Options {

@@ -1,6 +1,7 @@
 //! [`Workspace::rename_note`]: the text edits that keep links working when
 //! a note moves. Never writes files.
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -64,26 +65,78 @@ impl Workspace {
         if store.document(&new_rel).is_some() || self.fs().stat(&new_abs).is_ok() {
             return Err(refuse(format!("{new_rel}: already exists")));
         }
-        let old_abs = self.abs(&old_rel);
+        let mut out = self.rename_notes(&[(old.to_owned(), new.to_owned())], cancel)?;
+        out.rename = Some((self.abs(&old_rel), new_abs));
+        Ok(out)
+    }
+
+    /// The link edits for several moves planned together, so notes that
+    /// move together keep correct links. Each pair is a note or a folder:
+    /// a note moves to `new`; a folder maps every indexed note under it to
+    /// the same sub-path under `new`. A pair whose old path is neither an
+    /// indexed note nor a folder holding one, or whose new path is outside
+    /// the root or not a note extension (for a note), is skipped. A note
+    /// moved by two pairs is [`ErrorKind::Unsupported`]. Links are
+    /// rewritten as for [`rename_note`](Self::rename_note), against the
+    /// layout after all the moves. Edits only: `rename` is `None`, `create`
+    /// is empty. Checks `cancel` per note.
+    pub fn rename_notes(
+        &self,
+        moves: &[(PathBuf, PathBuf)],
+        cancel: &Cancel,
+    ) -> Result<WorkspaceEdit, Error> {
+        cancel.check()?;
+        let store = self.store();
+        let mut map: HashMap<String, String> = HashMap::new();
+        for (old, new) in moves {
+            cancel.check()?;
+            let (Ok(old_rel), Ok(new_rel)) = (self.rel(old), self.rel(new)) else {
+                continue;
+            };
+            let mut pairs = Vec::new();
+            if store.document(&old_rel).is_some() {
+                if is_note(new_rel.rsplit('/').next().unwrap_or_default()) {
+                    pairs.push((old_rel.clone(), new_rel));
+                }
+            } else {
+                let prefix = format!("{old_rel}/");
+                for f in store.files() {
+                    if let Some(sub) = f.strip_prefix(&prefix) {
+                        pairs.push((f.to_owned(), format!("{new_rel}/{sub}")));
+                    }
+                }
+            }
+            for (from, to) in pairs {
+                if map.insert(from.clone(), to).is_some() {
+                    return Err(refuse(format!("{from}: moved twice")));
+                }
+            }
+        }
         let root = self.root().path;
         let docs_dir = store.conventions().docs_dir.clone();
-        let mut out = WorkspaceEdit {
-            edits: Vec::new(),
-            rename: Some((old_abs.clone(), new_abs.clone())),
-            create: Vec::new(),
+        let mut out = WorkspaceEdit::default();
+        // Stems of every note path after the moves, and before.
+        let count_stems = |paths: Vec<&str>| {
+            let mut m: HashMap<String, usize> = HashMap::new();
+            for p in paths {
+                *m.entry(stem(p).to_lowercase()).or_default() += 1;
+            }
+            m
         };
-        let moved_dir = parent(&old_rel) != parent(&new_rel);
-        let new_stem = stem(&new_rel).to_lowercase();
-        let stem_taken = store
-            .files()
-            .any(|f| f != old_rel && stem(f).to_lowercase() == new_stem);
+        let before = count_stems(store.files().collect());
+        let after = count_stems(
+            store
+                .files()
+                .map(|f| map.get(f).map_or(f, String::as_str))
+                .collect(),
+        );
         for from in store.files() {
             cancel.check()?;
             let Some(doc) = store.document(from) else {
                 continue;
             };
-            let is_old = from == old_rel;
-            let from_after = if is_old { new_rel.as_str() } else { from };
+            let from_after = map.get(from).map_or(from, String::as_str);
+            let own_moved_dir = parent(from) != parent(from_after);
             let mut edits = Vec::new();
             for (link, r) in store.links(from) {
                 if !counts(&link) || r.hint || link.target().path().is_empty() {
@@ -92,16 +145,16 @@ impl Workspace {
                 let Some(first) = r.targets.first() else {
                     continue;
                 };
-                let to_old = first == &old_rel
+                let moved_to = map.get(first.as_str());
+                let to_moved = moved_to.is_some()
                     && matches!(r.status, LinkStatus::Resolved | LinkStatus::Ambiguous);
-                let own_relative = is_old
-                    && moved_dir
+                let own_relative = own_moved_dir
                     && r.step == Some(ResolveStep::FileRelative)
                     && matches!(
                         r.status,
                         LinkStatus::Resolved | LinkStatus::Ambiguous | LinkStatus::Unindexed
                     );
-                if !to_old && !own_relative {
+                if !to_moved && !own_relative {
                     continue;
                 }
                 if is_reference_usage(doc, &link) {
@@ -110,14 +163,10 @@ impl Workspace {
                 let Some(span) = path_span(doc.source(), &link) else {
                     continue;
                 };
-                let target_after = if to_old {
-                    new_rel.as_str()
-                } else {
-                    first.as_str()
-                };
-                let site_key = to_old
+                let target_after = moved_to.map_or(first.as_str(), String::as_str);
+                let site_key = to_moved
                     && store
-                        .document(&old_rel)
+                        .document(first)
                         .and_then(|d| d.frontmatter())
                         .and_then(|f| f.site_path())
                         .is_some();
@@ -131,17 +180,28 @@ impl Workspace {
                     docs_dir: docs_dir.as_deref(),
                     site_key,
                 };
+                let new_stem = stem(target_after).to_lowercase();
+                let taken_after = after.get(&new_stem).copied().unwrap_or(0) > 1;
+                // A bare stem that other notes also carry after the moves
+                // would find another note (or none): write the path. A name
+                // that did not change and was shared before stays as is.
+                let taken_before = before.get(&new_stem).copied().unwrap_or(0) > 1;
+                let same_name = new_stem == stem(first).to_lowercase();
+                let stem_taken = taken_after && !(same_name && taken_before);
                 // A slash-less wiki target is written by name even when the
                 // ladder found it by path (a note at the root): keep that
                 // style unless the new name is taken.
                 let step = match r.step {
                     Some(ResolveStep::FileRelative | ResolveStep::RootRelative)
-                        if to_old
+                        if to_moved
                             && matches!(link.kind, LinkKind::Wiki | LinkKind::WikiEmbed)
                             && !ctx.written.contains('/')
                             && !stem_taken =>
                     {
                         Some(ResolveStep::Stem)
+                    }
+                    Some(ResolveStep::Stem) if to_moved && stem_taken => {
+                        Some(ResolveStep::RootRelative)
                     }
                     s => s,
                 };
@@ -170,13 +230,13 @@ fn refuse(msg: String) -> Error {
 }
 
 /// A `[text][ref]` usage: its definition carries the destination.
-fn is_reference_usage(doc: &Document, l: &Link) -> bool {
+pub(crate) fn is_reference_usage(doc: &Document, l: &Link) -> bool {
     l.kind == LinkKind::Reference && !doc.link_defs().any(|d| d.range == l.range)
 }
 
 /// The byte range of the link's target path (no anchor, no brackets) in
 /// `src`, checked against `target.path`.
-fn path_span(src: &str, l: &Link) -> Option<Range<usize>> {
+pub(crate) fn path_span(src: &str, l: &Link) -> Option<Range<usize>> {
     let slice = src.get(l.range.clone())?;
     let base = l.range.start;
     let (start, end) = match l.kind {
@@ -243,24 +303,24 @@ fn dest(slice: &str, open: usize) -> (usize, usize) {
 }
 
 /// How to write one rewritten target.
-struct Rewrite<'a> {
-    root: &'a Path,
+pub(crate) struct Rewrite<'a> {
+    pub(crate) root: &'a Path,
     /// Root-relative path of the linking note after the rename.
-    from_after: &'a str,
+    pub(crate) from_after: &'a str,
     /// Root-relative path of the target after the rename.
-    target_after: &'a str,
+    pub(crate) target_after: &'a str,
     /// The path as written (no anchor).
-    written: &'a str,
-    bracketed: bool,
-    kind: LinkKind,
-    docs_dir: Option<&'a str>,
+    pub(crate) written: &'a str,
+    pub(crate) bracketed: bool,
+    pub(crate) kind: LinkKind,
+    pub(crate) docs_dir: Option<&'a str>,
     /// The target is found by its frontmatter site path: renaming the file
     /// does not change it.
-    site_key: bool,
+    pub(crate) site_key: bool,
 }
 
 impl Rewrite<'_> {
-    fn text(&self, step: ResolveStep) -> Option<String> {
+    pub(crate) fn text(&self, step: ResolveStep) -> Option<String> {
         let decoded = percent_decode(self.written);
         let target = self.with_ext(self.target_after, &decoded);
         let out = match step {
@@ -332,13 +392,13 @@ impl Rewrite<'_> {
 }
 
 /// The file name without its extension.
-fn stem(rel: &str) -> &str {
+pub(crate) fn stem(rel: &str) -> &str {
     let name = rel.rsplit('/').next().unwrap_or(rel);
     name.rsplit_once('.').map_or(name, |(s, _)| s)
 }
 
 /// The directory part of a root-relative path (`""` at the root).
-fn parent(rel: &str) -> &str {
+pub(crate) fn parent(rel: &str) -> &str {
     rel.rsplit_once('/').map_or("", |(d, _)| d)
 }
 
