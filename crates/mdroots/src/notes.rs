@@ -5,9 +5,10 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::Path;
 
-use mdroots_core::memstore::heading_index;
+use mdroots_core::memstore::{counts, heading_index};
 use mdroots_core::{Error, ErrorKind};
-use mdroots_syntax::{Document, Heading, Value};
+use mdroots_resolve::ladder::LinkStatus;
+use mdroots_syntax::{Document, Heading, Link, Value};
 
 use crate::workspace::{Backlink, NoteSummary, Workspace, title};
 
@@ -147,6 +148,81 @@ impl Workspace {
             .collect())
     }
 
+    /// The links of the note that go where the one at byte `offset` goes:
+    /// counting links (prose, heading, HTML, frontmatter; not code or
+    /// footnotes) with the same best target and the same anchor as written
+    /// (both absent or equal), the one at `offset` included, in source
+    /// order. A link with no resolved target (broken, external) groups with
+    /// nothing, so a cursor on one gives `[]`. With no link at `offset`
+    /// but inside a heading, the links of this note whose target is this
+    /// note and whose anchor names that heading (matched as
+    /// [`goto`](Self::goto) matches). Otherwise `[]`.
+    pub fn same_target_links(
+        &self,
+        path: &Path,
+        offset: usize,
+    ) -> Result<Vec<Range<usize>>, Error> {
+        let rel = self.rel(path)?;
+        let store = self.store();
+        let Some(doc) = store.document(&rel) else {
+            return Ok(Vec::new());
+        };
+        // Counting links with a resolved best target (root-relative).
+        let links: Vec<_> = store
+            .links(&rel)
+            .into_iter()
+            .filter(|(l, _)| counts(l))
+            .filter_map(|(l, r)| match r.status {
+                LinkStatus::Resolved | LinkStatus::Ambiguous | LinkStatus::Unindexed => {
+                    let t = r.targets.into_iter().next()?;
+                    Some((l, t))
+                }
+                _ => None,
+            })
+            .collect();
+        if let Some((here, target)) = links.iter().find(|(l, _)| l.range.contains(&offset)) {
+            let anchor = raw_anchor(here);
+            return Ok(links
+                .iter()
+                .filter(|(l, t)| t == target && raw_anchor(l) == anchor)
+                .map(|(l, _)| l.range.clone())
+                .collect());
+        }
+        if doc.links().any(|l| l.range.contains(&offset)) {
+            return Ok(Vec::new());
+        }
+        let Some(h) = doc.headings().position(|h| h.range.contains(&offset)) else {
+            return Ok(Vec::new());
+        };
+        Ok(links
+            .iter()
+            .filter(|(l, t)| {
+                *t == rel
+                    && l.target()
+                        .anchor()
+                        .is_some_and(|a| heading_index(doc, a) == Some(h))
+            })
+            .map(|(l, _)| l.range.clone())
+            .collect())
+    }
+
+    /// The tag at byte `offset` of the note, frontmatter tags included: its
+    /// name as written and its byte range. Read from the stored document
+    /// (the root's tag syntaxes, as [`notes_with_tag`](Self::notes_with_tag)
+    /// sees it). `None` off a tag or for a note that is not indexed.
+    pub fn tag_at(
+        &self,
+        path: &Path,
+        offset: usize,
+    ) -> Result<Option<(String, Range<usize>)>, Error> {
+        let rel = self.rel(path)?;
+        let store = self.store();
+        Ok(store
+            .document(&rel)
+            .and_then(|d| d.tags().find(|t| t.range.contains(&offset)))
+            .map(|t| (t.name.clone(), t.range.clone())))
+    }
+
     /// The note's current text (the overlay wins). `Unsupported` for a note
     /// that is not indexed.
     pub fn text(&self, path: &Path) -> Result<String, Error> {
@@ -155,6 +231,15 @@ impl Workspace {
         let doc = store.document(&rel).ok_or_else(|| not_indexed(&rel))?;
         Ok(doc.source().to_owned())
     }
+}
+
+/// The text after the first `#` of the link's target as written.
+fn raw_anchor(l: &Link) -> Option<&str> {
+    l.target()
+        .raw()
+        .split_once('#')
+        .map(|(_, a)| a)
+        .filter(|a| !a.is_empty())
 }
 
 fn not_indexed(rel: &str) -> Error {

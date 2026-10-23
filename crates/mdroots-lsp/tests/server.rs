@@ -313,6 +313,8 @@ fn falls_back_to_utf16() {
         "definitionProvider",
         "referencesProvider",
         "hoverProvider",
+        "documentHighlightProvider",
+        "inlayHintProvider",
         "documentSymbolProvider",
         "workspaceSymbolProvider",
     ] {
@@ -2546,5 +2548,114 @@ fn query_paths_and_exclude_fold_dot_dot_before_the_root_check() {
         json!({ "tag": ["x"], "exclude": [format!("{dir}/sub/../d.md"), format!("{dir}/x/../gone.md")] }),
     );
     assert_eq!(names(&r), ["e.md", "c.md"]);
+    c.shutdown().unwrap();
+}
+
+// ---- documentHighlight, inlayHint, tags ----
+
+/// Notes for the small requests: `[[alpha]]` has the title "Alpha Note",
+/// `[[beta]]` has the title "Beta" (equal to its stem up to case).
+fn small_vault() -> Vault {
+    let v = Vault::corpus("zk-min");
+    v.write("alpha.md", "---\ntags: [Proj, other]\n---\n# Alpha Note\n");
+    v.write("beta.md", "# Beta\n\nTagged #proj here.\n");
+    v.write(
+        "small.md",
+        "---\ntags: [proj]\n---\n# Small\n\n[[alpha]] and [[beta]] and [[alpha|label]] and [again](alpha.md).\n\nTo [[#Usage]] and [[gone]].\n\n## Usage\n",
+    );
+    v
+}
+
+#[test]
+fn document_highlight_marks_links_to_the_same_target() {
+    let v = small_vault();
+    let mut c = session(&v, UTF8, &["small.md"]);
+    let uri = v.uri("small.md");
+    let ranges = |r: &Value| {
+        r.as_array()
+            .unwrap()
+            .iter()
+            .map(|h| (h["range"].clone(), h["kind"].clone()))
+            .collect::<Vec<_>>()
+    };
+    // On `[[alpha]]`: the three links to alpha (kind TEXT = 1).
+    let r = ok(c.request("textDocument/documentHighlight", at(&uri, 5, 2)));
+    assert_eq!(
+        ranges(&r),
+        [
+            (range(5, 0, 5, 9), json!(1)),
+            (range(5, 27, 5, 42), json!(1)),
+            (range(5, 47, 5, 64), json!(1)),
+        ]
+    );
+    // On the heading: the in-note links to it.
+    let r = ok(c.request("textDocument/documentHighlight", at(&uri, 9, 4)));
+    assert_eq!(ranges(&r), [(range(7, 3, 7, 13), json!(1))]);
+    // A broken link, plain text: nothing.
+    for (l, ch) in [(7, 20), (5, 12)] {
+        let r = ok(c.request("textDocument/documentHighlight", at(&uri, l, ch)));
+        assert_eq!(r, Value::Null);
+    }
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn inlay_hint_shows_the_title_after_a_bare_wiki_link() {
+    let v = small_vault();
+    let mut c = session(&v, UTF8, &["small.md"]);
+    let uri = v.uri("small.md");
+    let params = |l0: u32, l1: u32| json!({ "textDocument": { "uri": uri }, "range": range(l0 as u64, 0, l1 as u64, 0) });
+    let r = ok(c.request("textDocument/inlayHint", params(0, 12)));
+    let hints = r.as_array().unwrap();
+    // Only `[[alpha]]`: [[beta]]'s title is its stem, `[[alpha|label]]` has
+    // a label, the Markdown link is not a wiki link, [[#Usage]] has no stem,
+    // [[gone]] is broken.
+    assert_eq!(hints.len(), 1, "{r}");
+    assert_eq!(hints[0]["label"], " Alpha Note");
+    assert_eq!(hints[0]["position"], json!({ "line": 5, "character": 9 }));
+    assert_eq!(hints[0]["paddingLeft"], true);
+    assert!(hints[0].get("kind").is_none_or(Value::is_null));
+    // Outside the requested range: none.
+    let r = ok(c.request("textDocument/inlayHint", params(0, 3)));
+    assert_eq!(r, json!([]));
+    c.shutdown().unwrap();
+}
+
+#[test]
+fn hover_and_references_on_a_frontmatter_tag() {
+    let v = small_vault();
+    let mut c = session(&v, UTF8, &["small.md"]);
+    let uri = v.uri("small.md");
+    // `proj` in small.md's frontmatter (line 1, `tags: [proj]`).
+    let r = ok(c.request("textDocument/hover", at(&uri, 1, 9)));
+    assert_eq!(
+        r["contents"]["value"],
+        "**#proj**: 3 notes\n- Alpha Note\n- Beta\n- Small"
+    );
+    assert_eq!(r["range"], range(1, 7, 1, 11));
+    let r = ok(c.request("textDocument/references", at(&uri, 1, 9)));
+    assert_eq!(
+        spots(&r),
+        [
+            spot("alpha.md", 0, 0),
+            spot("beta.md", 0, 0),
+            spot("small.md", 0, 0)
+        ]
+    );
+    // A body tag in another note, case-insensitively the same tag.
+    let beta = v.uri("beta.md");
+    c.open(&beta, &v.read("beta.md"));
+    c.ready(&beta);
+    let r = ok(c.request("textDocument/hover", at(&beta, 2, 10)));
+    assert!(
+        r["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .starts_with("**#proj**: 3 notes"),
+        "{r}"
+    );
+    // Off a tag, hover is the link hover as before.
+    let r = ok(c.request("textDocument/hover", at(&uri, 3, 2)));
+    assert_eq!(r, Value::Null);
     c.shutdown().unwrap();
 }

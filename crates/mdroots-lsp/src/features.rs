@@ -11,11 +11,12 @@ use std::path::{Path, PathBuf};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeLens, Command, CompletionItem, CompletionItemKind,
     CompletionList, CompletionTextEdit, CreateFile, CreateFileOptions, DocumentChangeOperation,
-    DocumentChanges, DocumentLink, DocumentSymbol, FoldingRange, FoldingRangeKind, Hover,
-    HoverContents, Location, MarkupContent, MarkupKind, OneOf,
-    OptionalVersionedTextDocumentIdentifier, Position, PrepareRenameResponse, RenameFile,
-    ResourceOp, SymbolInformation, SymbolKind, TextDocumentEdit,
+    DocumentChanges, DocumentHighlight, DocumentHighlightKind, DocumentLink, DocumentSymbol,
+    FoldingRange, FoldingRangeKind, Hover, HoverContents, InlayHint, InlayHintLabel, Location,
+    MarkupContent, MarkupKind, OneOf, OptionalVersionedTextDocumentIdentifier, Position,
+    PrepareRenameResponse, RenameFile, ResourceOp, SymbolInformation, SymbolKind, TextDocumentEdit,
 };
+use mdroots::syntax::{Context, LinkKind};
 use mdroots::syntax::{Heading, LineIndex, PositionEncoding};
 use mdroots::{Cancel, ErrorKind, LinkStatus, Workspace, markdown_destination, relative_path};
 
@@ -27,6 +28,8 @@ use crate::{position, uri};
 const NOTE_LIMIT: usize = 50;
 /// Notes returned by `workspace/symbol`.
 pub(crate) const SYMBOL_LIMIT: usize = 100;
+/// Titles listed when hovering a tag.
+const TAG_HOVER_NOTES: usize = 10;
 /// Lines of a note shown on hover.
 const PREVIEW_LINES: usize = 10;
 
@@ -180,6 +183,15 @@ fn backlink_locations(c: &Ctx, note: &Path, skip_self: bool) -> Result<Vec<Locat
 
 pub(crate) fn references(c: &Ctx, pos: Position) -> Result<Vec<Location>, Fail> {
     let off = c.offset(pos);
+    if let Some((name, _)) = c.ws.tag_at(&c.path, off)? {
+        // Every note carrying the tag, at line 0.
+        return Ok(c
+            .ws
+            .notes_with_tag(&name)
+            .iter()
+            .filter_map(|n| location(&n.path, at_line(0)))
+            .collect());
+    }
     let on_link =
         c.ws.document_links(&c.path)?
             .iter()
@@ -372,6 +384,20 @@ pub(crate) fn code_lenses(c: &Ctx) -> Result<Vec<CodeLens>, Fail> {
 
 pub(crate) fn hover(c: &Ctx, pos: Position) -> Result<Option<Hover>, Fail> {
     let off = c.offset(pos);
+    if let Some((name, range)) = c.ws.tag_at(&c.path, off)? {
+        let notes = c.ws.notes_with_tag(&name);
+        let mut value = format!("**#{name}**: {}", count(notes.len(), "note", "notes"));
+        for n in notes.iter().take(TAG_HOVER_NOTES) {
+            value.push_str(&format!("\n- {}", n.title));
+        }
+        return Ok(Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }),
+            range: Some(c.range(range)),
+        }));
+    }
     let Some(link) =
         c.ws.document_links(&c.path)?
             .into_iter()
@@ -394,6 +420,71 @@ pub(crate) fn hover(c: &Ctx, pos: Position) -> Result<Option<Hover>, Fail> {
         }),
         range: Some(c.range(link.range)),
     }))
+}
+
+/// `textDocument/documentHighlight`: the links of this note going where
+/// the one under the cursor goes; on a heading, the in-note links to it.
+pub(crate) fn document_highlights(c: &Ctx, pos: Position) -> Result<Vec<DocumentHighlight>, Fail> {
+    Ok(c.ws
+        .same_target_links(&c.path, c.offset(pos))?
+        .into_iter()
+        .map(|r| DocumentHighlight {
+            range: c.range(r),
+            kind: Some(DocumentHighlightKind::TEXT),
+        })
+        .collect())
+}
+
+/// `textDocument/inlayHint`: after each bare `[[stem]]` in `range` (no
+/// directory, no label) that resolves to one note whose title differs from
+/// the stem, ` <title>`.
+pub(crate) fn inlay_hints(c: &Ctx, range: Range<usize>) -> Result<Vec<InlayHint>, Fail> {
+    let mut out = Vec::new();
+    for l in c.ws.document_links(&c.path)? {
+        let counts = matches!(
+            l.context,
+            Context::Prose | Context::Heading | Context::Html | Context::Frontmatter
+        );
+        if l.kind != LinkKind::Wiki
+            || !counts
+            || l.status != LinkStatus::Resolved
+            || !(range.start..=range.end).contains(&l.range.end)
+        {
+            continue;
+        }
+        let (Some(target), Some(text)) = (&l.target, c.text.get(l.range.clone())) else {
+            continue;
+        };
+        let inner = text.trim_start_matches('[').trim_end_matches(']');
+        if inner.contains(['/', '|']) {
+            continue;
+        }
+        let written = inner.split('#').next().unwrap_or_default();
+        if written.is_empty() {
+            continue; // `[[#heading]]`: no stem to annotate
+        }
+        let stem = ["md", "markdown", "org"]
+            .iter()
+            .find_map(|e| written.strip_suffix(&format!(".{e}")))
+            .unwrap_or(written);
+        let Ok(p) = c.ws.preview(target, 0) else {
+            continue;
+        };
+        if p.title.to_lowercase() == stem.to_lowercase() {
+            continue;
+        }
+        out.push(InlayHint {
+            position: c.range(l.range.end..l.range.end).start,
+            label: InlayHintLabel::String(format!(" {}", p.title)),
+            kind: None,
+            text_edits: None,
+            tooltip: None,
+            padding_left: Some(true),
+            padding_right: None,
+            data: None,
+        });
+    }
+    Ok(out)
 }
 
 /// One link per link of the note with a target path (resolved,

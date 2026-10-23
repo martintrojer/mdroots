@@ -428,6 +428,26 @@ impl Server {
             "textDocument/references" => self.at(p, cancel, |c, pos| {
                 features::references(c, pos).map(|v| json!(v))
             }),
+            "textDocument/documentHighlight" => self.at(p, cancel, |c, pos| {
+                features::document_highlights(c, pos).map(|v| match v.is_empty() {
+                    true => Value::Null,
+                    false => json!(v),
+                })
+            }),
+            "textDocument/inlayHint" => {
+                let uri = p.pointer("/textDocument/uri").and_then(Value::as_str);
+                let range = p
+                    .get("range")
+                    .cloned()
+                    .and_then(|r| serde_json::from_value::<lsp_types::Range>(r).ok());
+                match range {
+                    Some(r) => self.with_doc(uri, cancel, |c| {
+                        let (s, e) = (c.offset(r.start), c.offset(r.end));
+                        features::inlay_hints(c, s..e).map(|v| json!(v))
+                    }),
+                    None => Ok(Value::Null),
+                }
+            }
             "textDocument/hover" => self.at(p, cancel, |c, pos| {
                 features::hover(c, pos).map(|v| json!(v))
             }),
@@ -1211,6 +1231,8 @@ fn capabilities(enc: PositionEncoding) -> ServerCapabilities {
         definition_provider: Some(OneOf::Left(true)),
         references_provider: Some(OneOf::Left(true)),
         hover_provider: Some(true.into()),
+        document_highlight_provider: Some(OneOf::Left(true)),
+        inlay_hint_provider: Some(OneOf::Left(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         completion_provider: Some(CompletionOptions {
