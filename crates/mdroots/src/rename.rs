@@ -6,7 +6,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use mdroots_core::memstore::counts;
-use mdroots_core::{Cancel, Error, ErrorKind};
+use mdroots_core::{Cancel, Error, ErrorKind, MemStore};
 use mdroots_resolve::ResolveStep;
 use mdroots_resolve::ladder::LinkStatus;
 use mdroots_resolve::normalize::percent_decode;
@@ -65,7 +65,7 @@ impl Workspace {
         if store.document(&new_rel).is_some() || self.fs().stat(&new_abs).is_ok() {
             return Err(refuse(format!("{new_rel}: already exists")));
         }
-        let mut out = self.rename_notes(&[(old.to_owned(), new.to_owned())], cancel)?;
+        let mut out = self.plan(&store, &[(old.to_owned(), new.to_owned())], cancel)?;
         out.rename = Some((self.abs(&old_rel), new_abs));
         Ok(out)
     }
@@ -86,7 +86,18 @@ impl Workspace {
         cancel: &Cancel,
     ) -> Result<WorkspaceEdit, Error> {
         cancel.check()?;
-        let store = self.store();
+        self.plan(&self.store(), moves, cancel)
+    }
+
+    /// The body of [`rename_notes`](Self::rename_notes) over one read of
+    /// the store: callers hold the guard, so a public call takes the lock
+    /// once (a nested read behind a queued writer would deadlock).
+    fn plan(
+        &self,
+        store: &MemStore,
+        moves: &[(PathBuf, PathBuf)],
+        cancel: &Cancel,
+    ) -> Result<WorkspaceEdit, Error> {
         let mut map: HashMap<String, String> = HashMap::new();
         for (old, new) in moves {
             cancel.check()?;
@@ -115,20 +126,12 @@ impl Workspace {
         let root = self.root().path;
         let docs_dir = store.conventions().docs_dir.clone();
         let mut out = WorkspaceEdit::default();
-        // Stems of every note path after the moves, and before.
-        let count_stems = |paths: Vec<&str>| {
-            let mut m: HashMap<String, usize> = HashMap::new();
-            for p in paths {
-                *m.entry(stem(p).to_lowercase()).or_default() += 1;
-            }
-            m
-        };
-        let before = count_stems(store.files().collect());
-        let after = count_stems(
-            store
-                .files()
-                .map(|f| map.get(f).map_or(f, String::as_str))
-                .collect(),
+        let case_sensitive = self.fs().case_sensitive(&root);
+        let layout = Layout::new(
+            store.files().map(|f| map.get(f).map_or(f, String::as_str)),
+            case_sensitive,
+            docs_dir.as_deref(),
+            &root,
         );
         for from in store.files() {
             cancel.check()?;
@@ -180,14 +183,9 @@ impl Workspace {
                     docs_dir: docs_dir.as_deref(),
                     site_key,
                 };
-                let new_stem = stem(target_after).to_lowercase();
-                let taken_after = after.get(&new_stem).copied().unwrap_or(0) > 1;
-                // A bare stem that other notes also carry after the moves
-                // would find another note (or none): write the path. A name
-                // that did not change and was shared before stays as is.
-                let taken_before = before.get(&new_stem).copied().unwrap_or(0) > 1;
-                let same_name = new_stem == stem(first).to_lowercase();
-                let stem_taken = taken_after && !(same_name && taken_before);
+                // A bare stem that another note carries after the moves
+                // would find that note (or be ambiguous): write the path.
+                let stem_taken = layout.stem_shared(target_after);
                 // A slash-less wiki target is written by name even when the
                 // ladder found it by path (a note at the root): keep that
                 // style unless the new name is taken.
@@ -205,7 +203,20 @@ impl Workspace {
                     }
                     s => s,
                 };
-                if let Some(new_text) = step.and_then(|s| ctx.text(s))
+                let new_text = step.and_then(|st| ctx.text(st)).and_then(|preferred| {
+                    // Every rewritten link must land on its target in the
+                    // layout after the moves: the preferred text, else the
+                    // site-rooted path, else the file-relative path.
+                    if !layout.contains(target_after)
+                        || layout.lands(from_after, &preferred, target_after)
+                    {
+                        return Some(preferred);
+                    }
+                    [ctx.slash_rooted(), ctx.file_relative()]
+                        .into_iter()
+                        .find(|t| layout.lands(from_after, t, target_after))
+                });
+                if let Some(new_text) = new_text
                     && new_text != ctx.written
                 {
                     edits.push(TextEdit {
@@ -325,8 +336,7 @@ impl Rewrite<'_> {
         let target = self.with_ext(self.target_after, &decoded);
         let out = match step {
             ResolveStep::FileRelative => {
-                let from_dir = self.root.join(parent(self.from_after));
-                let rel = relative_path(&from_dir, &self.root.join(&target));
+                let rel = self.relative(&target);
                 match decoded.starts_with("./") && !rel.starts_with("../") {
                     true => format!("./{rel}"),
                     false => rel,
@@ -363,6 +373,25 @@ impl Rewrite<'_> {
         Some(self.encode(out))
     }
 
+    /// The target path as written by [`ResolveStep::FileRelative`], in
+    /// the link's encoding, without a leading `./`.
+    fn file_relative(&self) -> String {
+        let decoded = percent_decode(self.written);
+        self.encode(self.relative(&self.with_ext(self.target_after, &decoded)))
+    }
+
+    /// The target as a `/`-prefixed root-relative path, in the link's
+    /// encoding.
+    fn slash_rooted(&self) -> String {
+        let decoded = percent_decode(self.written);
+        self.encode(format!("/{}", self.with_ext(self.target_after, &decoded)))
+    }
+
+    fn relative(&self, target: &str) -> String {
+        let from_dir = self.root.join(parent(self.from_after));
+        relative_path(&from_dir, &self.root.join(target))
+    }
+
     /// `path` with its note extension kept iff `written` had one.
     fn with_ext(&self, path: &str, written: &str) -> String {
         let last = written.rsplit('/').next().unwrap_or(written);
@@ -389,6 +418,136 @@ impl Rewrite<'_> {
             false => s,
         }
     }
+}
+
+/// The indexed notes after the moves, keyed as the resolver keys them
+/// (path and stem, without the note extension, case-folded on a
+/// case-insensitive filesystem), to check where a written link lands.
+struct Layout<'a> {
+    paths: HashMap<String, Vec<String>>,
+    stems: HashMap<String, Vec<String>>,
+    case_sensitive: bool,
+    docs_dir: Option<&'a str>,
+    root: &'a Path,
+}
+
+impl<'a> Layout<'a> {
+    fn new<'f>(
+        files: impl Iterator<Item = &'f str>,
+        case_sensitive: bool,
+        docs_dir: Option<&'a str>,
+        root: &'a Path,
+    ) -> Self {
+        let mut l = Layout {
+            paths: HashMap::new(),
+            stems: HashMap::new(),
+            case_sensitive,
+            docs_dir,
+            root,
+        };
+        for f in files {
+            let key = l.fold(strip_ext(f));
+            let name = key.rsplit('/').next().unwrap_or(&key).to_owned();
+            l.paths.entry(key).or_default().push(f.to_owned());
+            l.stems.entry(name).or_default().push(f.to_owned());
+        }
+        l
+    }
+
+    fn fold(&self, s: &str) -> String {
+        match self.case_sensitive {
+            true => s.to_owned(),
+            false => s.to_lowercase(),
+        }
+    }
+
+    fn contains(&self, rel: &str) -> bool {
+        self.paths
+            .get(&self.fold(strip_ext(rel)))
+            .is_some_and(|v| v.iter().any(|p| p == rel))
+    }
+
+    /// Another note than `rel` has its stem.
+    fn stem_shared(&self, rel: &str) -> bool {
+        let stem = self.fold(stem(rel));
+        self.stems
+            .get(&stem)
+            .is_some_and(|v| v.iter().any(|p| p != rel))
+    }
+
+    /// Whether `text` (a written link path, `from` the linking note's path
+    /// after the moves) resolves to `target`, by the resolver's order: the
+    /// file-relative path, the root-relative path (a leading `/` or the
+    /// root's own path maps to root-relative; site-rooted links try the
+    /// docs dir first), then, for a bare name, the stem.
+    fn lands(&self, from: &str, text: &str, target: &str) -> bool {
+        let decoded = percent_decode(text);
+        let (key, rooted, mapped) = match Path::new(&decoded).strip_prefix(self.root) {
+            Ok(rest) if Path::new(&decoded).is_absolute() => {
+                (rest.to_string_lossy().replace('\\', "/"), false, true)
+            }
+            _ => match decoded.strip_prefix('/') {
+                Some(r) => (r.to_owned(), true, false),
+                None => (decoded.clone(), false, false),
+            },
+        };
+        let hit = |dir: &str| -> Option<bool> {
+            let joined = join(dir, &key)?;
+            let v = self.paths.get(&self.fold(strip_ext(&joined)))?;
+            Some(v.len() == 1 && v[0] == target)
+        };
+        if !rooted
+            && !mapped
+            && let Some(r) = hit(parent(from))
+        {
+            return r;
+        }
+        if rooted
+            && let Some(d) = self.docs_dir
+            && let Some(r) = hit(d)
+        {
+            return r;
+        }
+        if let Some(r) = hit("") {
+            return r;
+        }
+        if mapped || rooted || key.contains('/') {
+            return false;
+        }
+        let name = self.fold(strip_ext(&key));
+        self.stems
+            .get(&name)
+            .is_some_and(|v| v.len() == 1 && v[0] == target)
+    }
+}
+
+/// `path` without its note extension.
+fn strip_ext(path: &str) -> &str {
+    let name_at = path.rfind('/').map_or(0, |i| i + 1);
+    match is_note(&path[name_at..]) {
+        true => path.rsplit_once('.').map_or(path, |(s, _)| s),
+        false => path,
+    }
+}
+
+/// `dir` and `key` joined with `.` dropped and `..` folded; `None` when it
+/// climbs above the root.
+fn join(dir: &str, key: &str) -> Option<String> {
+    let mut out: Vec<&str> = Vec::new();
+    for s in dir
+        .split('/')
+        .chain(key.split('/'))
+        .filter(|s| !s.is_empty())
+    {
+        match s {
+            "." => {}
+            ".." => {
+                out.pop()?;
+            }
+            _ => out.push(s),
+        }
+    }
+    Some(out.join("/"))
 }
 
 /// The file name without its extension.

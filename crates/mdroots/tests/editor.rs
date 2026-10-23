@@ -3,7 +3,7 @@
 //! the same files) or temp dirs.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use mdroots::{
     Cancel, ErrorKind, FileSystem, IndexMode, NoEnumerator, Options, StdFs, StdProbe, TextEdit,
@@ -468,6 +468,174 @@ fn rename_does_not_write_a_stem_another_note_shares_after_the_move() {
         ],
     );
     assert_eq!(got, [(p("/v/top.md"), "[[z/new]]\n".to_owned())]);
+}
+
+#[test]
+fn rename_note_takes_the_store_lock_once() {
+    use std::io;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// Pauses `stat` of one path until told to go on.
+    struct Pausing {
+        inner: MemFs,
+        at: PathBuf,
+        paused: Mutex<mpsc::Sender<()>>,
+        go: Mutex<mpsc::Receiver<()>>,
+    }
+    impl FileSystem for Pausing {
+        fn read(&self, p: &Path) -> io::Result<(Arc<[u8]>, mdroots_core::Meta)> {
+            self.inner.read(p)
+        }
+        fn stat(&self, p: &Path) -> io::Result<mdroots_core::Meta> {
+            if p == self.at {
+                self.paused.lock().unwrap().send(()).unwrap();
+                self.go.lock().unwrap().recv().unwrap();
+            }
+            self.inner.stat(p)
+        }
+        fn read_dir(&self, p: &Path) -> io::Result<Vec<(String, mdroots_core::Meta)>> {
+            self.inner.read_dir(p)
+        }
+        fn canonicalize(&self, p: &Path) -> io::Result<PathBuf> {
+            self.inner.canonicalize(p)
+        }
+        fn case_sensitive(&self, d: &Path) -> bool {
+            self.inner.case_sensitive(d)
+        }
+        fn fs_kind(&self, d: &Path) -> mdroots_core::FsKind {
+            self.inner.fs_kind(d)
+        }
+    }
+
+    let files = [
+        ("/v/.mdroots", ""),
+        ("/v/a.md", "[b](b.md)\n"),
+        ("/v/b.md", ""),
+    ];
+    let (fs, probe) = both(&files);
+    let (paused_tx, paused_rx) = mpsc::channel();
+    let (go_tx, go_rx) = mpsc::channel();
+    let fs = Arc::new(Pausing {
+        inner: fs,
+        at: p("/v/new.md"),
+        paused: Mutex::new(paused_tx),
+        go: Mutex::new(go_rx),
+    });
+    let ws =
+        Arc::new(Workspace::open_for(Path::new("/v/a.md"), opts(fs, Arc::new(probe))).unwrap());
+    let (done_tx, done_rx) = mpsc::channel();
+    let w = ws.clone();
+    let tx = done_tx.clone();
+    std::thread::spawn(move || {
+        let r = w.rename_note(Path::new("/v/b.md"), Path::new("/v/new.md"), &Cancel::new());
+        tx.send(("rename", r.is_ok())).unwrap();
+    });
+    paused_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    // A writer queues behind the rename's read of the store.
+    let w = ws.clone();
+    std::thread::spawn(move || {
+        let r = w.set_overlay(Path::new("/v/a.md"), "changed");
+        done_tx.send(("overlay", r.is_ok())).unwrap();
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    go_tx.send(()).unwrap();
+    for _ in 0..2 {
+        let (what, ok) = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("rename_note and set_overlay both return");
+        assert!(ok, "{what}");
+    }
+}
+
+#[test]
+fn rename_writes_a_path_that_lands_on_the_moved_note() {
+    // The root-relative path `z/new` would be found file-relatively at
+    // near/z/new.md: use the `/`-prefixed form.
+    let ws = open(
+        &[
+            ("/v/.mdroots", ""),
+            ("/v/near/top.md", "[[b]]\n"),
+            ("/v/old/b.md", ""),
+            ("/v/else/c.md", ""),
+            ("/v/near/z/new.md", ""),
+        ],
+        "/v/near/top.md",
+    );
+    let got = rename_many(
+        &ws,
+        &[
+            ("/v/old/b.md", "/v/z/new.md"),
+            ("/v/else/c.md", "/v/a/new.md"),
+        ],
+    );
+    let text = &got[0].1;
+    assert_eq!(text, "[[/z/new]]\n");
+    // Single rename: same.
+    let got = rename(&ws, "/v/old/b.md", "/v/z/new.md");
+    assert_eq!(got[0].1, "[[/z/new]]\n");
+    // Reopened, every link in top.md reaches the moved note.
+    let after = open(
+        &[
+            ("/v/.mdroots", ""),
+            ("/v/near/top.md", text),
+            ("/v/z/new.md", ""),
+            ("/v/else/c.md", ""),
+            ("/v/near/z/new.md", ""),
+        ],
+        "/v/near/top.md",
+    );
+    let r = after
+        .resolve(Path::new("/v/near/top.md"), "[[/z/new]]")
+        .unwrap();
+    assert_eq!(r.targets.first(), Some(&p("/v/z/new.md")), "{r:?}");
+}
+
+#[test]
+fn rename_keeps_a_shadowed_root_relative_link_landing() {
+    // `old/b.md` moves to `z/new.md`; near/z/new.md would shadow the
+    // root-relative `z/new.md` seen from near/top.md.
+    let ws = open(
+        &[
+            ("/v/.mdroots", ""),
+            ("/v/near/top.md", "[y](old/b.md)\n"),
+            ("/v/old/b.md", ""),
+            ("/v/near/z/new.md", ""),
+        ],
+        "/v/near/top.md",
+    );
+    let got = rename(&ws, "/v/old/b.md", "/v/z/new.md");
+    assert_eq!(got[0].1, "[y](/z/new.md)\n");
+    let ws = open(
+        &[
+            ("/v/.mdroots", ""),
+            ("/v/near/top.md", "[y](../old/b.md)\n"),
+            ("/v/old/b.md", ""),
+            ("/v/near/z/new.md", ""),
+        ],
+        "/v/near/top.md",
+    );
+    let got = rename(&ws, "/v/old/b.md", "/v/z/new.md");
+    assert_eq!(got[0].1, "[y](../z/new.md)\n");
+}
+
+#[test]
+fn rename_writes_a_path_for_a_stem_shared_before_the_move() {
+    let ws = open(
+        &[
+            ("/v/.mdroots", ""),
+            ("/v/a/top.md", "[[b]]\n"),
+            ("/v/a/sub/b.md", ""),
+            ("/v/else/b.md", ""),
+        ],
+        "/v/a/top.md",
+    );
+    for got in [
+        rename(&ws, "/v/a/sub/b.md", "/v/z/deep/b.md"),
+        rename_many(&ws, &[("/v/a/sub/b.md", "/v/z/deep/b.md")]),
+    ] {
+        assert_eq!(got, [(p("/v/a/top.md"), "[[z/deep/b]]\n".to_owned())]);
+    }
 }
 
 /// Temp-dir trees through the non-canonical path the OS hands out (on
