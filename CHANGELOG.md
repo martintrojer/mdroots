@@ -4,7 +4,7 @@ All crates share one version. `mdroots` (the library) and `mdroots-cli` (the
 `mdroots` binary) are the public crates; the `mdroots-*` crates they depend
 on are internal and pinned to the exact version.
 
-## Unreleased
+## 0.4.0
 
 - **Quick fixes** (`mdroots lsp` code actions) for link diagnostics: a
   broken link gets `Change to <title>` (up to 3 close notes) and `Create
