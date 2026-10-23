@@ -640,6 +640,41 @@ fn markdown_to_wiki_keeps_formatting_at_the_label_edges() {
 }
 
 #[test]
+fn markdown_to_wiki_keeps_a_nested_image_label_whole() {
+    let a = "[![Bee](img.png)](b.md) [see ![x](i.png)](b.md) [![](i.png)](b.md#part-two)\n";
+    let w = ws(&[
+        ("/v/a.md", a),
+        BEE,
+        ("/v/img.png", "png"),
+        ("/v/i.png", "png"),
+    ]);
+    let wiki = "Convert to wiki link".to_owned();
+    for (link, new) in [
+        ("[![Bee](img.png)](b.md)", "[[b|![Bee](img.png)]]"),
+        ("[see ![x](i.png)](b.md)", "[[b|see ![x](i.png)]]"),
+        ("[![](i.png)](b.md#part-two)", "[[b#part-two|![](i.png)]]"),
+    ] {
+        assert_eq!(
+            converted(&w, a, link),
+            [(wiki.clone(), a.replace(link, new))],
+            "{link}"
+        );
+    }
+}
+
+#[test]
+fn change_to_finds_the_path_after_a_nested_image() {
+    let a = "[![x](i.png)](missin.md)\n";
+    let w = ws(&[("/v/a.md", a), ("/v/missing.md", ""), ("/v/i.png", "png")]);
+    let f = quick(&w, "/v/a.md", at(a, "(missin.md)"));
+    assert_eq!(f[0].title, "Change to missing");
+    assert_eq!(
+        apply(a, "/v/a.md", &f[0].edit),
+        "[![x](i.png)](missing.md)\n"
+    );
+}
+
+#[test]
 fn markdown_conversion_uses_the_root_relative_style_the_root_votes() {
     let a = "[[deep]]\n";
     let files = [("/v/sub/a.md", a), ("/v/sub/deep/deep.md", "# Deep\n")];

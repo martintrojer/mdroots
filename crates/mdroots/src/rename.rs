@@ -550,11 +550,7 @@ pub(crate) fn path_span(src: &str, l: &Link) -> Option<Range<usize>> {
     let slice = src.get(l.range.clone())?;
     let base = l.range.start;
     let (start, end) = match l.kind {
-        LinkKind::Markdown | LinkKind::Image => {
-            let from = l.text_range.end.saturating_sub(base).min(slice.len());
-            let open = from + slice[from..].find("](")? + 2;
-            dest(slice, open)
-        }
+        LinkKind::Markdown | LinkKind::Image => dest(slice, text_close(slice)? + 2),
         LinkKind::Reference => {
             let open = slice.find("]:")? + 2;
             dest(slice, open)
@@ -593,6 +589,54 @@ pub(crate) fn path_span(src: &str, l: &Link) -> Option<Range<usize>> {
         let end = start + text.find('#').unwrap_or(text.len());
         base + start..base + end
     })
+}
+
+/// The offset in `slice` (an inline link or image, from its `[` or `![`)
+/// of the `]` closing the link text: the one matching the first `[` by
+/// bracket depth, so nested links and images (`[![a](i.png)](b.md)`) are
+/// skipped, as are backslash escapes and code spans. `None` unless a `(`
+/// follows it.
+pub(crate) fn text_close(slice: &str) -> Option<usize> {
+    let b = slice.as_bytes();
+    let mut i = slice.find('[')? + 1;
+    let mut depth = 0usize;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 1,
+            b'`' => {
+                let run = b[i..].iter().take_while(|&&c| c == b'`').count();
+                let fence = &slice[i..i + run];
+                let rest = &slice[i + run..];
+                // An unmatched run is literal backticks.
+                if let Some(end) = find_run(rest, fence) {
+                    i += run + end + run;
+                    continue;
+                }
+                i += run;
+                continue;
+            }
+            b'[' => depth += 1,
+            b']' if depth == 0 => return (b.get(i + 1) == Some(&b'(')).then_some(i),
+            b']' => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The offset in `s` of a backtick run exactly as long as `fence`.
+fn find_run(s: &str, fence: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(at) = s[from..].find(fence) {
+        let at = from + at;
+        let run = s[at..].bytes().take_while(|&c| c == b'`').count();
+        if run == fence.len() {
+            return Some(at);
+        }
+        from = at + run;
+    }
+    None
 }
 
 /// A link destination starting at or after `open` (whitespace skipped):
@@ -755,5 +799,25 @@ mod tests {
         assert_eq!(&s[dest(s, 4).0..dest(s, 4).1], "a b.md");
         let s = "[t](a(1).md)";
         assert_eq!(&s[dest(s, 4).0..dest(s, 4).1], "a(1).md");
+    }
+
+    #[test]
+    fn text_close_matches_the_outer_bracket() {
+        for (s, label) in [
+            ("[t](b.md)", "t"),
+            ("[![Bee](img.png)](b.md)", "![Bee](img.png)"),
+            ("[see ![x](i.png)](b.md)", "see ![x](i.png)"),
+            ("[![](i.png)](b.md)", "![](i.png)"),
+            ("![alt [x]](i.png)", "alt [x]"),
+            ("[a \\] b](b.md)", "a \\] b"),
+            ("[`]` b](b.md)", "`]` b"),
+            ("[``a`]``](b.md)", "``a`]``"),
+            ("[](b.md)", ""),
+        ] {
+            let open = s.find('[').unwrap() + 1;
+            assert_eq!(text_close(s).map(|c| &s[open..c]), Some(label), "{s}");
+        }
+        assert_eq!(text_close("[a](b"), Some(2));
+        assert_eq!(text_close("[a] b"), None);
     }
 }

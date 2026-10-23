@@ -18,7 +18,7 @@ use crate::links::{link_text, wiki_target};
 use crate::notes::score;
 use crate::rename::{
     Rewrite, TextEdit, WorkspaceEdit, is_reference_usage, lands_after, link_path, parent,
-    path_span, stem,
+    path_span, stem, text_close,
 };
 use crate::workspace::{Freshness, Workspace, is_note, slash, title};
 
@@ -379,11 +379,11 @@ impl Ctx<'_> {
                 ("Convert to Markdown link", text.ok()?)
             }
             LinkKind::Markdown => {
-                // The whole source between `[` and `](`: `text_range`
-                // covers text events only, not formatting at the edges.
-                let from = link.text_range.end.max(link.range.start + 1);
-                let close = from + src.get(from..link.range.end)?.find("](")?;
-                let label = src.get(link.range.start + 1..close)?;
+                // The whole source between `[` and its matching `](`:
+                // `text_range` covers text events only, not formatting at
+                // the edges or a nested image's destination.
+                let slice = src.get(link.range.clone())?;
+                let label = &slice[1..text_close(slice)?];
                 if label.contains('|') {
                     return None;
                 }
