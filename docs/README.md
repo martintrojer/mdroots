@@ -12,7 +12,7 @@ repeating it.
 | [README.md](README.md) | this map and the doc rules |
 | [specs/roots.md](specs/roots.md) | root discovery, filesystem classification, walk budgets, modes, nested roots, cache file and lock names, process roles, fixtures |
 | [specs/index.md](specs/index.md) | DB schema, reconcile, freshness, watcher, failures, GC, link model, resolution ladder, dialects, frontmatter, diagnostics, tests; a "Planned design" appendix |
-| [specs/library.md](specs/library.md) | crates, public API, design rules, server behaviour, CLI, [Neovim](https://neovim.io) integration |
+| [specs/library.md](specs/library.md) | crates, public API, design rules, server behaviour, CLI, [Neovim](https://neovim.io) integration; a "Planned design" appendix |
 | [DECISIONS.md](DECISIONS.md) | decisions in force: the rule, why, what was rejected, at most one number per decision |
 | [ROADMAP.md](ROADMAP.md) | everything not built or not validated, open questions, thresholds to validate |
 | [research/gopls.md](research/gopls.md) | what makes [gopls](https://go.dev/gopls) fast, what mdroots adopts, why no daemon |
@@ -36,4 +36,5 @@ repeating it.
   or a decision.
 - **Links.** An open-source tool is linked on its first mention in each
   file. Cross-file section references are anchor links, not bare `§N`.
-- mdroots is a scanner: it reads notes and never creates them.
+- mdroots reads notes and proposes edits; the editor applies them, new
+  files and moves included. mdroots writes nothing under a notebook (D10).

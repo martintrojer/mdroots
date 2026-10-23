@@ -418,3 +418,78 @@ nvim --clean --headless -u NONE -c 'luafile bench/nvim_smoke.lua'   # from the r
 Checks: one client with root_dir nil and settings sent; utf-8 position encoding; maps and `:MdrootsInfo` (its `window/showMessage` names the root); `gO` overriding the ftplugin; definition; symbols; backlinks via `exec_cmd` into the loclist (self-links excluded); `[[#` heading completion (H1 title excluded); no completion for `#` at line start; a broken-link diagnostic; cross-file goto from a vault README (backlinks and this goto are polled until the root's background open finishes); the LSP `foldexpr` on a note; the `6 backlinks` code lens on a vault A note; extract note via `<leader>nn` on a visual selection (next free file name, selection becomes the link, nothing written outside the scratch dir); `mdroots.renameFile` (the `workspace/applyEdit` fixes the linking note and moves the file, the buffer follows); unmodified vault buffers.
 
 Passes on NVIM 0.12.5: 38 checks (33 `check` calls, two in loops over 4 files and 3 buffers); attach ≈ 25–500 ms. Not covered: the fold ranges themselves, anchor `N links` lenses, the progress notification.
+
+## Planned design
+
+Not built. [ROADMAP §3](../ROADMAP.md#3-deferred-work) orders the phases; [D10](../DECISIONS.md#d10-mdroots-proposes-edits-the-editor-applies-them) is the decision behind them. Each item moves into §3.2 or §3.6 when it ships.
+
+### Fixes (phase 1: link repair)
+
+Library first (D2): a fix is a `WorkspaceEdit` (`rename.rs`) the caller applies; the LSP turns each into a `CodeAction`.
+
+```rust
+let fixes = ws.fixes(&path, range, &cancel)?;   // Vec<Fix>, in source order of their link
+#[non_exhaustive] pub struct Fix { pub title: String, pub kind: FixKind, pub preferred: bool, pub edit: WorkspaceEdit }
+#[non_exhaustive] pub enum FixKind { QuickFix(Diagnostic), ConvertLink, LinkSelection }
+```
+
+`range` is in bytes. A non-empty range selects the links overlapping it; an empty range at `off` (a cursor) selects the link whose range contains `off` or ends at it, so a cursor just after `]]` or `)` counts. `QuickFix` carries the diagnostic it fixes, range and code included, so the server sets the action's `diagnostics` from the fix alone.
+
+| Trigger | Fixes | Built on |
+|---|---|---|
+| `broken-link` | `Change to <title>`: up to 3 notes from `search_notes` on the target's stem, exact, prefix or substring tiers only (no gapped subsequence); only the link's path is replaced, in the form it was written in (wiki stem or path, relative or root-relative, with or without extension); syntax, anchor and label stay | `search_notes`; the path rewrite `rename_note` uses (`rename.rs`) |
+| `broken-link` | `Create note <file>`: `CreateFile` (`overwrite: false`, `ignoreIfExists: false`) for the path the link names (stem links: `<stem>.<from's extension>` in `from`'s directory), content `# <target as written>\n`; never preferred; not offered when the path exists on disk, is outside the root, or is not a note extension | the extract-note create path |
+| `broken-anchor` | `Change to #<slug>`: up to 3 headings of the target, same tiers over slug and text | `outline` |
+| `ambiguous-link` | `Pick <rel path>`: one per candidate in `Diagnostic.related`; the path replaced as for `Change to`, with the shortest form that resolves to that candidate alone (`wiki_target` for stem links) | `wiki_target`; the `rename_note` path rewrite |
+| a link under the cursor (no diagnostic) | `Convert to wiki link`: `[[<wiki_target>#anchor\|label]]`. `Convert to Markdown link`: the root's Markdown style when it votes one, else relative with the extension. Anchor and label kept (a wiki link without a label gets the target's title) | `link_text` (below) |
+| a non-empty selection that is not a link | `Link to <title>`: the selection becomes the label of a link to the best `search_notes` hit (exact or prefix tier only), up to 3 | `search_notes`, `link_to` |
+
+Conversion needs one new library call; `link_to(from, target, label)` stays, as `link_text` with the root's style and no anchor:
+
+```rust
+ws.link_text(&from, &target, style, anchor, label)?   // String: style: LinkStyle, anchor: Option<&str>, label: Option<&str>
+```
+
+The anchor is added after the path is encoded (`markdown_destination` encodes `#`), before a wiki `|label`.
+
+Rules:
+- A fix is `preferred` only when it is the single candidate of its trigger (one close note, one heading; never for ambiguity or `Create note`), so editors may apply it with one key and it never creates a file (D10).
+- Links in code or comments get no fixes (D7). Org notes: broken-link and ambiguous fixes only; no conversion.
+- Fixes are computed per request from `Workspace::diagnostics` over the current store and overlay (nothing is cached, nothing rides in the diagnostic's `data`), so a fix requested during the 500 ms publish debounce matches the current text.
+- LSP kinds: diagnostic fixes `quickfix` (each with `diagnostics` set to the diagnostic it fixes), conversion `refactor.rewrite.link`, link selection `refactor.rewrite.linkSelection`; extract note keeps `refactor.extract.note`. `context.only` filters by prefix, as today. The empty-range early return applies to extract note only.
+- Out of scope here: `source.fixAll`, adding a missing heading to the target, `mdroots check --fix` (D10).
+
+### Notebook commands (phase 2)
+
+`workspace/executeCommand`, first argument the URI of a note in the notebook (its workspace answers). Note lists are `Location[]` (line 0, or the hit's line), in the order the table gives, each optionally with a `message` string; other results are JSON. The Neovim handler builds quickfix items itself, one per location in server order, with `message` (else the buffer line) as the text: `vim.lsp.util.locations_to_items` re-sorts by file and position and drops `message`.
+
+| Command | Arguments | Result | Library |
+|---|---|---|---|
+| `mdroots.orphans` | uri | `Location[]`, by path | `orphans` |
+| `mdroots.missingBacklinks` | uri | `Location[]`, one per pair `from → to` where `to` does not link back: `from` at line 0, `message` `→ <to, root-relative>`; by `from`, then `to` | `missing_backlinks` |
+| `mdroots.related` | uri | `Location[]`, most intermediaries first | `related` |
+| `mdroots.query` | uri, an object of the `notes` flags in camelCase (below) | `Location[]`, in the query's sort | `query` |
+| `mdroots.search` | uri, query, limit? | `Location[]` at each hit's line; the snippet in a `message` field | `full_text` |
+| `mdroots.check` | uri | `{uri, diagnostics}[]` for every note, as published | `diagnostics` per file |
+| `mdroots.tags` | uri | `[{name, count}]` | `tags` |
+| `mdroots.reindex` | uri | `null`; full `refresh`, then re-publish | `refresh` |
+| `mdroots.info` | uri | today's text plus each effective setting and its source | `settings` |
+| `mdroots.linkTo` | uri, target uri, label? | the link text | `link_to` |
+
+`mdroots.query` object, every field optional: `paths` (the positional PATHs), `tag`, `exclude`, `linkTo`, `linkedBy`, `related` are arrays (repeatable flags: and); `tag` entries are tag expressions as `notes -t` parses them; the path fields are `file:` URIs, each an indexed note (`paths`, `exclude`: any file or directory under the root), else a params error; `match` is one string (as `NoteQuery`; no repeat); `tagless`, `orphan`, `missingBacklink` are booleans; `created`, `createdAfter`, `createdBefore`, `modified`, `modifiedAfter`, `modifiedBefore` are strings parsed as `notes` parses dates; `sort` is a string as `notes -s`; `limit` a number. An unknown field is a params error.
+
+Graph commands on a lazy root are an error (as `query`), shown with `window/showMessage`. The Neovim plugin gains that handler and mappings under `<leader>n`.
+
+### Smaller requests (phase 3)
+
+- **`textDocument/documentHighlight`**: every link in this note that resolves to the same target (and anchor) as the one under the cursor; on a heading, the in-note links to it.
+- **`workspace/willRenameFiles`**: the link edits for every file and folder in the request, planned together; the client moves the files (D10). Registered with two filters: `**/*.{md,markdown,org}` matching files, `**` matching folders. Library:
+
+  ```rust
+  ws.rename_notes(&[(old, new), ...], &cancel)?   // WorkspaceEdit, edits only (rename: None)
+  ```
+
+  Every moved note's path after the move is known when any link is rewritten, so links between notes that move together stay right (A and B linking each other, both moved into `new/`: no edit). A folder pair expands to the indexed notes under it. `rename_note(old, new)` is `rename_notes(&[(old, new)])` plus its `RenameFile`. A pair whose old path is neither an indexed note nor a folder holding one is skipped.
+- **`textDocument/inlayHint`**: after a bare `[[stem]]` whose resolved title differs from the stem, the title. Always answered; display is the client's switch (off by default in Neovim, `vim.lsp.inlay_hint.enable()`).
+- **Tags**: hover on a `#tag` shows its note count and up to 10 titles; references on a tag list every note carrying it (case-insensitive, as `notes_with_tag`).
+- **Frontmatter key collision**: the planned info diagnostic on the losing key ([index §4.1](index.md#41-formats-and-parsing)), new `DiagCode::FrontmatterKeyCollision`, so `mdroots check` reports it too.

@@ -52,8 +52,8 @@ zk and 105 MB for marksman). Numbers are from local main after 0.2.10
 ## What it is not
 
 - **Not a note manager.** It reads notes and answers questions about them;
-  it never creates notes or fills templates. Renames and extract-note come
-  back as edits for your editor to apply.
+  it never writes to your notes or folders, and fills no templates.
+  Renames and extract-note come back as edits for your editor to apply.
 - **Not a daemon.** Each editor runs it in-process; the first process on a
   notebook writes the cache, the others read it.
 - **Not a tenant in your notes.** Nothing is written into your trees; tool

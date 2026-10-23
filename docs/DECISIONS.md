@@ -52,7 +52,8 @@ Measurements come from two testbed vaults: a ~730-note
   serves the file with `Workspace::open_single` and runs `open_for` on its
   own thread, as `mdroots lsp` does
   ([library spec §3.6](specs/library.md#36-embedding-the-server)).
-- The library never writes user files. Refactors return a `WorkspaceEdit`.
+- The library never writes user files. Refactors return a `WorkspaceEdit`
+  (D10).
 - Extension traits (`FileSystem`, `Probe`, `Enumerator`, `ResolveEnv`) are
   `Send + Sync`. The DB connection sits behind a mutex
   ([rusqlite](https://github.com/rusqlite/rusqlite)'s `Connection` is
@@ -409,3 +410,35 @@ required or written.
 **Rejected**
 - Derived tables before the in-memory layer is measured to fall short.
 - Hash column next to the content: redundant with stored bytes.
+
+## D10. mdroots proposes edits; the editor applies them
+
+**Decision**
+- mdroots reads notes and returns edits. The editor applies them: text
+  changes, new files and moves alike, saved or not. Nothing in mdroots
+  (library, server, CLI) writes under a notebook; its only writes are
+  its cache (D5).
+- Every feature that changes notes returns a `WorkspaceEdit`: rename,
+  extract note, quick fixes, link conversion, the link edits for a move
+  someone else made (`willRenameFiles`).
+- Within that line, a quick fix that creates a file (`Create note`) is
+  never the preferred fix, so a one-key or bulk fix only edits text.
+- Whole-notebook graph facts (orphans, missing backlinks) are commands
+  returning lists, not per-note diagnostics.
+
+**Why**
+- One rule a user can check and a reviewer can grep: does mdroots write
+  a user path? Undo, saving and conflict handling stay with the editor.
+- Language servers for code work this way (rename, create-file fixes):
+  the server proposes, the editor applies.
+- Orphans and one-way links fire on most notes of a typical vault and
+  change with every edit elsewhere; as diagnostics they are noise (D7).
+
+**Rejected**
+- A write path in the library or the server, even for "safe" fixes.
+- Templates or frontmatter in created notes: note management.
+- Orphan and missing-backlink diagnostics, even off by default.
+
+**Deferred** ([ROADMAP §3](ROADMAP.md#3-deferred-work))
+- `mdroots check --fix`: a CLI has no editor to apply edits, so it would
+  be the first mdroots code to write notes; it waits for a user who asks.

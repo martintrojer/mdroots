@@ -76,11 +76,11 @@ the planned ones.
 - **The root opens on the first `didOpen`**, not during `initialize`.
 - **No read semaphore or recent-mtime guard**: reads of a slow
   virtual-filesystem root are uncapped, and there is no cheap mtime scan.
-- **No `mdroots.reindex` command.** LSP commands: `backlinks`,
-  `anchorLinks`, `info`, `renameFile`.
-- **`info` does not show settings.** `mdroots.info` (`:MdrootsInfo`) shows
-  root, mode, reason and file count; only `mdroots roots` prints effective
-  settings and their sources.
+- **LSP commands** are `backlinks`, `anchorLinks`, `info`, `renameFile`:
+  no `reindex`, no graph or search commands, and `info` does not show
+  settings (planned: phase 2 below).
+- **No quick fixes.** The only code action is extract note (planned:
+  phase 1 below).
 
 **Index and processes**
 - **Peers learn of writes on `refresh`**, not per query: no per-query
@@ -140,8 +140,12 @@ Ordered by expected value. (§2) means the gap is described there.
 
 | Item | Why not yet |
 |---|---|
+| **LSP phase 1, link repair**: quick fixes for broken links, anchors and ambiguous links, create note, convert link, link selection ([library spec, planned](specs/library.md#fixes-phase-1-link-repair)) | designed, not built |
+| **LSP phase 2, notebook commands**: orphans, missing backlinks, related, query, search, check, tags, reindex, info with settings, linkTo ([library spec, planned](specs/library.md#notebook-commands-phase-2)) | designed; less value than link repair |
+| **LSP phase 3**: document highlight, `willRenameFiles`, inlay hints, tag hover and references, the frontmatter key-collision diagnostic ([library spec, planned](specs/library.md#smaller-requests-phase-3)) | designed; small, and `willRenameFiles` needs a client that sends it (Neovim 0.12 does not) |
+| LSP later: fix-all, add a missing heading to the target, link-style and ambiguous-stem diagnostics, linkify unlinked mentions, inline note, extract section, TOC, call hierarchy as link graph, semantic tokens | no user asked; fix-all waits for phase 1 in use |
+| `mdroots check --fix` | a CLI has no editor to apply edits; it would be the first mdroots code to write notes ([D10](DECISIONS.md#d10-mdroots-proposes-edits-the-editor-applies-them)) |
 | Library heading sections (`Workspace::sections(path)`) | folding is computed in `mdroots-lsp`; in the library, [ramble](https://github.com/martintrojer/ramble), a read-only TUI, could fold by section too (per-heading link counts exist: `anchor_backlinks`, `heading_backlinks`) |
-| `workspace/willRenameFiles`, a full-text LSP request, semantic tokens | small; no client asked (Neovim 0.12 never sends `willRenameFiles`) |
 | Embedder API: typed `subscribe` events, `Preview.summary`, unfenced front matter as a workspace option (today only `ParseOptions`), a server builder sharing an embedder's `Workspaces` | ramble works around them ([research/ramble](research/ramble.md)); none blocks it |
 | Scheduling (§2, Server) | one request at a time is fast enough on the target vaults ([research/gopls](research/gopls.md)) |
 | Peer freshness, takeover retry timer, stale-reconciler warning (§2) | peers refresh on save and watched-file events; no measured staleness |
