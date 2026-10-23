@@ -10,6 +10,7 @@ repeating it.
 | [../README.md](../README.md) | pitch, install, quick start |
 | [../CHANGELOG.md](../CHANGELOG.md) | release history: user-visible changes per version |
 | [README.md](README.md) | this map and the doc rules |
+| [features.md](features.md) | the full feature list: one line per feature, linking to the spec that owns its behaviour |
 | [specs/roots.md](specs/roots.md) | root discovery, filesystem classification, walk budgets, modes, nested roots, cache file and lock names, process roles, fixtures |
 | [specs/index.md](specs/index.md) | DB schema, reconcile, freshness, watcher, failures, GC, link model, resolution ladder, dialects, frontmatter, diagnostics, tests; a "Planned design" appendix |
 | [specs/library.md](specs/library.md) | crates, public API, design rules, server behaviour, CLI, [Neovim](https://neovim.io) integration |

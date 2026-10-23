@@ -6,7 +6,7 @@ library.
 
 ```sh
 cargo install mdroots-cli        # installs the `mdroots` binary
-mise use -g github:martintrojer/mdroots   # or a prebuilt binary (macOS arm64, Linux x86_64)
+mise use -g github:martintrojer/mdroots   # or a prebuilt binary (macOS arm64, Linux x86_64/aarch64)
 
 mdroots check notes/             # broken links etc.; exit 1 on errors or warnings (CI-friendly)
 mdroots roots notes/garden.md    # which root was picked, and why
@@ -14,6 +14,11 @@ mdroots resolve notes/a.md '[[garden]]'
 mdroots backlinks notes/garden.md
 mdroots lsp                      # the language server, over stdio
 ```
+
+`mdroots lsp` is a full-featured language server for notes: navigation,
+completion, diagnostics with quick fixes, renames and moves that keep links
+intact, link refactorings and notebook-wide commands. The full list:
+[features](https://github.com/martintrojer/mdroots/blob/main/docs/features.md).
 
 `mdroots notes` takes `zk list`'s filters (`-t`, `-m`, `-l`, `-L`,
 `--orphan`, `--related`, dates, sort, formats). Where it differs from zk:

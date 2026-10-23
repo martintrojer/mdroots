@@ -3,7 +3,8 @@
 A zero-config library for markdown and org notes. Give it any file;
 it finds the notes root around it (without ever walking a huge, remote
 or virtual tree), indexes the root, and answers link, backlink, tag,
-outline, search, rename and diagnostics queries. It understands the link
+graph, outline, search and diagnostics queries; it also plans quick fixes,
+renames, moves and link rewrites as edits. It understands the link
 styles of [zk](https://github.com/zk-org/zk),
 [Obsidian](https://obsidian.md),
 [marksman](https://github.com/artempyanykh/marksman), wiki links,
@@ -27,7 +28,7 @@ for b in ws.backlinks(note)? {
 
 Notes are cached per root in the user cache dir (`IndexMode::Memory`
 turns that off), so a later process starts without re-reading unchanged
-files. The library never writes your notes: renames come back as a
+files. The library never writes your notes: renames, moves and fixes come back as a
 `WorkspaceEdit`.
 
 The command line and language server are in

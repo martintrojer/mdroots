@@ -3,10 +3,13 @@
 [![CI](https://github.com/martintrojer/mdroots/actions/workflows/ci.yml/badge.svg)](https://github.com/martintrojer/mdroots/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/mdroots.svg)](https://crates.io/crates/mdroots)
 
-**A markdown and org language server that works the moment you open a note.**
-No init step, no config, no root markers. mdroots finds the notebook a file
-belongs to, indexes it in the background, and keeps the index in your user
-cache dir, so the next editor that opens the notebook starts warm.
+**A full-featured markdown and org language server that works the moment
+you open a note.** Navigation, completion, diagnostics with quick fixes,
+renames and moves that keep links intact, refactorings and notebook-wide
+queries, with no init step, no config and no root markers. mdroots finds
+the notebook a file belongs to, indexes it in the background, and keeps the
+index in your user cache dir, so the next editor that opens the notebook
+starts warm.
 
 It understands the link styles your notes already use:
 [zk](https://github.com/zk-org/zk), [Obsidian](https://obsidian.md),
@@ -53,7 +56,8 @@ zk and 105 MB for marksman). Numbers are from local main after 0.2.10
 
 - **Not a note manager.** It reads notes and answers questions about them;
   it never writes to your notes or folders, and fills no templates.
-  Renames and extract-note come back as edits for your editor to apply.
+  Renames, moves, quick fixes and refactorings come back as edits for your
+  editor to apply.
 - **Not a daemon.** Each editor runs it in-process; the first process on a
   notebook writes the cache, the others read it.
 - **Not a tenant in your notes.** Nothing is written into your trees; tool
@@ -96,15 +100,30 @@ mdroots roots notes/a.md            # the notebook root mdroots picked, and why
 mdroots lsp                         # the language server on stdio
 ```
 
-Editor features: go to definition (links, headings, `path:line` code
-mentions), references and backlinks, hover previews, symbols, completion of
-notes, headings, paths and tags, rename with link updates, broken-link
-diagnostics with quick fixes, link conversion, notebook commands (orphans,
-related, search, queries), highlights, inlay hints, folding, code lenses,
-document links and extract-note.
+## In your editor
+
+- **Navigate:** go to definition on every link form, heading and
+  `path:line` mention; references and backlinks (of notes and tags); hover
+  previews; highlights; document and workspace symbols; folding.
+- **Write:** completion of notes, headings, paths and tags; inlay hints
+  with resolved titles; backlink code lenses.
+- **Fix:** diagnostics for broken links, missing anchors, ambiguous links
+  and frontmatter problems, each with quick fixes (change to the closest
+  note or heading, create the note, pick a candidate).
+- **Refactor:** rename a note and update every link; moves made in your
+  file tree (`willRenameFiles`) fix links to moved notes and folders;
+  convert links between wiki and Markdown; turn a selection into a link;
+  extract a selection to a new note.
+- **Explore the notebook:** orphans, missing backlinks, related notes,
+  full-text search, `zk list`-style queries, tags and a notebook-wide
+  check, as commands that fill your quickfix list.
+
+The full list, with links to the exact behaviour:
+[docs/features.md](docs/features.md).
 
 ## Learn more
 
+- [Everything mdroots does](docs/features.md)
 - [How roots are found](docs/specs/roots.md) and what happens on huge or
   remote trees
 - [The index, links and resolution](docs/specs/index.md)
